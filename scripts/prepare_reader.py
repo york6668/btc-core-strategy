@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, default=ROOT / '.local/reader')
+    parser.add_argument('--ssh', action='store_true',
+                        help='use existing GitHub SSH authentication for all private dependencies')
     args = parser.parse_args()
     destination = args.output_dir.expanduser().absolute()
     if destination.exists() or destination.is_symlink():
@@ -26,7 +28,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix='btc-reader-source-') as directory:
         checkout = Path(directory)
         subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
-        git = ['git', '-C', str(checkout)]
+        git = ['git']
+        if args.ssh:
+            git += ['-c', 'url.ssh://git@github.com/.insteadOf=https://github.com/']
+        git += ['-C', str(checkout)]
         subprocess.run(git + ['remote', 'add', 'origin', locked['repository']], check=True)
         subprocess.run(git + ['fetch', '--depth=1', 'origin', revision], check=True)
         subprocess.run(git + ['checkout', '--detach', '-q', 'FETCH_HEAD'], check=True)

@@ -22,6 +22,8 @@ python3 scripts/run_tests.py
 
 遵循共享 `codex-framework` 的源码与数据边界：合成、脱敏及测试用途不构成数据入库例外。测试准备在临时目录构造账户文件、历史报告和数据库，退出后清理，不读取旧仓库样本。
 
+本机已配置 GitHub SSH 时，使用 `python3 scripts/prepare_reader.py --ssh`，无需修改全局 Git 配置。
+
 首次准备依赖需要对 `market-roles` 和 `market-collector` 私有仓库的读取权限；只有准备阶段访问 Git，离线测试阶段禁止网络。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
 
 与 `market-roles` 当前 reader 组合验证：
