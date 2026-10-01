@@ -1,0 +1,58 @@
+{
+  "value_zone": {
+    "lower": 77000,
+    "upper": 77500
+  },
+  "samples": [
+    {
+      "label": "below",
+      "prices": {
+        "binance": "76900",
+        "coinbase": "76910",
+        "kraken": "76905"
+      },
+      "prior_relation": "INSIDE_ZONE",
+      "expected_relation": "BELOW_ZONE"
+    },
+    {
+      "label": "inside",
+      "prices": {
+        "binance": "77100",
+        "coinbase": "77110",
+        "kraken": "77105"
+      },
+      "prior_relation": "BELOW_ZONE",
+      "expected_relation": "INSIDE_ZONE"
+    },
+    {
+      "label": "13:46",
+      "prices": {
+        "binance": "77600",
+        "coinbase": "77610",
+        "kraken": "77605"
+      },
+      "prior_relation": "INSIDE_ZONE",
+      "expected_relation": "ABOVE_ZONE"
+    },
+    {
+      "label": "inside-again",
+      "prices": {
+        "binance": "77300",
+        "coinbase": "77310",
+        "kraken": "77305"
+      },
+      "prior_relation": "ABOVE_ZONE",
+      "expected_relation": "INSIDE_ZONE"
+    },
+    {
+      "label": "above-again",
+      "prices": {
+        "binance": "77900",
+        "coinbase": "77910",
+        "kraken": "77905"
+      },
+      "prior_relation": "INSIDE_ZONE",
+      "expected_relation": "ABOVE_ZONE"
+    }
+  ]
+}

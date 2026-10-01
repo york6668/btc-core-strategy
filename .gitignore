@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+.strategy/
+node.json
+*.sqlite*
+*.db
+*.log
+.env*
+RELEASE.json
+releases/

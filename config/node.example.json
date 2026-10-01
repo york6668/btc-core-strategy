@@ -1,0 +1,16 @@
+{
+  "schema": "BTC_NODE_CONFIG_V1",
+  "project_dir": "/absolute/local/btc-data",
+  "release_root": "/absolute/local/btc-runtime",
+  "python": "/absolute/local/python3",
+  "frozen_market_python": "/absolute/local/python-used-for-frozen-evidence",
+  "reader_code_dir": "/absolute/local/reader-code",
+  "reader_data_dir": "/absolute/local/reader-data",
+  "reader_evidence_path": "/absolute/local/reader-evidence.md",
+  "observation_db": "/absolute/local/btc-data/.strategy/market_observation.sqlite3",
+  "legacy_revision2_dir": "/absolute/local/btc-runtime/legacy/revision2",
+  "codex_state_db": "/absolute/local/codex/state_5.sqlite",
+  "automation_id": "LOCAL_AUTOMATION_ID",
+  "report_destination": "EXISTING_LOCAL_DESTINATION",
+  "automation_memory": "/absolute/local/codex/automations/btc/memory.md"
+}

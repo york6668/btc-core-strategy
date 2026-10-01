@@ -1,0 +1,7 @@
+interface:
+  display_name: "BTC 核心策略"
+  short_description: "完成三类收益与组合的综合研判，报告明确结论，持续核验重要条件"
+  default_prompt: "使用 $btc-core-strategy 按研判与报告的职责边界完成综合判断，明确方向、周期、依据和组合应对；Astra 研究并审阅，Sol 核验发布和小时维护，汇报不重新解释因子，实质反证返回原研究。"
+
+policy:
+  allow_implicit_invocation: true
