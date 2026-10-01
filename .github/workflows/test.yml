@@ -45,4 +45,3 @@ jobs:
         run: |
           python .local/market-roles/roles/export_role.py reader .local/reader
           python scripts/run_tests.py
-
