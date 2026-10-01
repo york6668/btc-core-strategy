@@ -13,4 +13,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python scripts/run_tests.py
+      - name: Check private dependency access
+        env:
+          READ_TOKEN: ${{ secrets.MARKET_SOURCE_READ_TOKEN }}
+        run: |
+          if [ -z "$READ_TOKEN" ]; then
+            echo "::error::Configure MARKET_SOURCE_READ_TOKEN with read access to market-roles and market-collector."
+            exit 1
+          fi
+      - name: Read pinned reader revision
+        id: reader
+        run: |
+          python - <<'PYTHON'
+          import json, os
+          lock = json.load(open('test_support/reader.lock.json'))
+          revision = lock['commit']
+          assert len(revision) == 40 and all(c in '0123456789abcdef' for c in revision)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('commit=' + revision + '\n')
+          PYTHON
+      - uses: actions/checkout@v4
+        with:
+          repository: york6668/market-roles
+          ref: ${{ steps.reader.outputs.commit }}
+          path: .local/market-roles
+          token: ${{ secrets.MARKET_SOURCE_READ_TOKEN }}
+          submodules: false
+      - name: Prepare only the collector dependency
+        run: git -C .local/market-roles submodule update --init core/market-collector
+      - name: Export reader and run offline tests
+        run: |
+          python .local/market-roles/roles/export_role.py reader .local/reader
+          python scripts/run_tests.py
+

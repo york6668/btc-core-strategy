@@ -25,12 +25,17 @@ class ReleaseTests(unittest.TestCase):
         self.config = {'schema': 'BTC_NODE_CONFIG_V1', 'project_dir': str(self.project),
                        'release_root': str(self.base / 'runtime'), 'python': sys.executable,
                        '_path': str(self.base / 'node.json')}
+        reader = self.base / 'reader'; reader.mkdir()
+        (reader / 'reader.py').write_text('# synthetic installed reader\n')
+        self.config['reader_code_dir'] = str(reader)
         self.source = self.base / 'source'; self.source.mkdir()
         self.git('init', '-q', '-b', 'main')
         self.git('config', 'user.email', 'synthetic@example.invalid')
         self.git('config', 'user.name', 'Synthetic release test')
         (self.source / 'scripts').mkdir()
-        (self.source / 'scripts/run_tests.py').write_text('raise SystemExit(0)\n')
+        (self.source / 'scripts/run_tests.py').write_text(
+            'import sys\nfrom pathlib import Path\n'
+            'assert sys.argv[1] == "--reader" and (Path(sys.argv[2]) / "reader.py").is_file()\n')
         (self.source / 'export-manifest.json').write_text(json.dumps({'files': ['scripts/run_tests.py']}))
         self.first = self.commit('first')
         release.install(self.config, self.source)

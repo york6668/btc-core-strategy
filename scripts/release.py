@@ -130,7 +130,11 @@ def install(config, source, ref='HEAD', *, activate_after=True):
                     path = stage / filename
                     if not path.is_file() or path.is_symlink() or stage not in path.resolve().parents:
                         raise ValueError('missing or unsafe release source: ' + filename)
-                subprocess.run([config['python'], str(stage / 'scripts/run_tests.py')], cwd=stage, check=True)
+                reader = Path(config['reader_code_dir']).expanduser().resolve()
+                if not (reader / 'reader.py').is_file():
+                    raise ValueError('configured reader_code_dir must contain the installed reader')
+                subprocess.run([config['python'], str(stage / 'scripts/run_tests.py'),
+                                '--reader', str(reader)], cwd=stage, check=True)
                 write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
                       'tested_python': config['python'], 'repository': 'york6668/btc-core-strategy'})
                 os.rename(str(stage), str(destination))

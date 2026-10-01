@@ -10,3 +10,8 @@ node.json
 .env*
 RELEASE.json
 releases/
+
+# Local dependencies and generated test inputs
+.local/
+test_support/reader/
+skill/btc-core-strategy/tests/fixtures/

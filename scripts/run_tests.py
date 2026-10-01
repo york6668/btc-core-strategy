@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,10 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--reader', type=Path, default=ROOT / 'test_support/reader')
+    parser.add_argument('--reader', type=Path, default=ROOT / '.local/reader')
     parser.add_argument('--pattern', default='test_*.py')
     args = parser.parse_args()
     reader = args.reader.resolve()
+    if not (reader / 'reader.py').is_file():
+        parser.error('reader missing: run scripts/prepare_reader.py or supply --reader')
     skill = ROOT / 'skill/btc-core-strategy'
     with tempfile.TemporaryDirectory(prefix='btc-core-tests-') as directory:
         node = Path(directory)
@@ -27,12 +30,14 @@ def main():
         config = node / 'node.json'
         config.write_text(json.dumps({
             'schema': 'BTC_NODE_CONFIG_V1', 'project_dir': str(node),
-            'legacy_revision2_dir': str(skill / 'tests/fixtures'),
+            'legacy_revision2_dir': str(node / 'legacy'),
             'python': sys.executable,
             'frozen_market_python': sys.executable,
         }), encoding='utf-8')
         # Subprocesses inherit only this isolated configuration, never node secrets.
         os.environ['BTC_NODE_CONFIG'] = str(config)
+        subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/build_synthetic_fixtures.py'),
+                        '--output-dir', str(node / 'legacy')], check=True)
         os.environ['BTC_COLLECTOR_CONTRACT_PATH'] = str(reader / 'btc_evidence.py')
         for key in ('BOT_TOKEN', 'TELEGRAM_BOT_TOKEN', 'CHAT_ID', 'BTC_READER_DATA_DIR',
                     'BTC_READER_EVIDENCE_PATH', 'BTC_FROZEN_MARKET_PYTHON'):

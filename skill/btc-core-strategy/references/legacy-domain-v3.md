@@ -334,18 +334,18 @@ revision 2到revision 3的首次激活使用一次性`MIGRATION`，不伪装成 
      --input RUN/bundle.json \
      --previous-state $BTC_PROJECT/策略状态.md \
      --previous-plan $BTC_PROJECT/当前预期计划.md \
-     --previous-report $BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_report_1346.md \
-     --previous-report-projection $BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_report_1346_semantics.json
+     --previous-report $BTC_LEGACY_REVISION2_DIR/revision2_report_1346.md \
+     --previous-report-projection $BTC_LEGACY_REVISION2_DIR/revision2_report_1346_semantics.json
    ```
 
-   工具还会逐字比对写前 Owner 与不可变`revision2_state_1346.md`、`revision2_plan_1346.md`。四份固定 fixture 为：
+   工具还会逐字比对写前 Owner 与不可变`revision2_state_1346.md`、`revision2_plan_1346.md`。`$BTC_LEGACY_REVISION2_DIR` 取自当前节点配置的 `legacy_revision2_dir`，仅使用本机已保存的历史基线，不能用测试生成材料补齐。四份本机历史文件为：
 
-   - `$BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_state_1346.md`
-   - `$BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_plan_1346.md`
-   - `$BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_report_1346.md`
-   - `$BTC_RELEASE/skill/btc-core-strategy/tests/fixtures/revision2_report_1346_semantics.json`
+   - `$BTC_LEGACY_REVISION2_DIR/revision2_state_1346.md`
+   - `$BTC_LEGACY_REVISION2_DIR/revision2_plan_1346.md`
+   - `$BTC_LEGACY_REVISION2_DIR/revision2_report_1346.md`
+   - `$BTC_LEGACY_REVISION2_DIR/revision2_report_1346_semantics.json`
 
-   它们由工具内固定 SHA-256 保护；调用方自报哈希、替代路径或事后新建副本不能作为迁移基线。
+   它们由节点 `profile.json` 中已审阅的 SHA-256 绑定保护；调用方自报哈希、替代路径或事后新建副本不能作为迁移基线。
 
 3. 仅在派生控制要求 D/E/MIGRATION patch 时，以唯一全文 renderer 分别生成两份候选 Owner。非 MIGRATION 的两个 invocation 都必须携带同一对 write-before snapshot：
 

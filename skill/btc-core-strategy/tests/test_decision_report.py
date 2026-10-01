@@ -238,7 +238,8 @@ class DecisionReportTests(unittest.TestCase):
         self.assertTrue(report.validate_report_projection(other))
 
     def test_legacy_normalizer_reports_unknowns_without_inventing_new_fingerprint(self):
-        path = Path(__file__).parent / "fixtures" / "revision2_report_1346_semantics.json"
+        import node_config
+        path = node_config.legacy_directory() / "revision2_report_1346_semantics.json"
         legacy = json.loads(path.read_text(encoding="utf-8"))
         result = report.normalize_legacy_report_semantics(legacy)
         self.assertFalse(result["complete"])

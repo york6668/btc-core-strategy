@@ -14,7 +14,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
+import node_config
+FIXTURES = node_config.legacy_directory()
 sys.path.insert(0, str(SCRIPTS))
 
 import strategy_contract as contract  # noqa: E402

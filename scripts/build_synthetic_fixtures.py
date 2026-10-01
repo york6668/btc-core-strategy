@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Construct synthetic legacy documents; never read a real report or account."""
 from __future__ import annotations
+import argparse
 import hashlib
 import json
 import os
@@ -10,18 +11,20 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skill/btc-core-strategy'
-FIXTURES = SKILL / 'tests/fixtures'
 
 
 def main():
-    FIXTURES.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    fixtures = parser.parse_args().output_dir.resolve()
+    fixtures.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as directory:
         node = Path(directory)
         for name in ('资产配置.md', '操作记录.md', '纠正记录.md'):
             (node / name).write_text('SYNTHETIC TEST FACTS ONLY\n')
         config = node / 'node.json'
         config.write_text(json.dumps({'schema': 'BTC_NODE_CONFIG_V1', 'project_dir': str(node),
-                                     'legacy_revision2_dir': str(FIXTURES)}))
+                                     'legacy_revision2_dir': str(fixtures)}))
         os.environ['BTC_NODE_CONFIG'] = str(config)
         sys.path[:0] = [str(SKILL / 'scripts'), str(SKILL / 'tests')]
         import test_strategy_contract as fixture
@@ -70,27 +73,27 @@ def main():
                   'report_projection': ('revision2_report_1346_semantics.json', json.dumps(projection, ensure_ascii=False, indent=2) + '\n')}
         artifacts = {}
         for key, (filename, text) in values.items():
-            (FIXTURES / filename).write_text(text, encoding='utf-8')
+            (fixtures / filename).write_text(text, encoding='utf-8')
             artifacts[key] = [filename, 'sha256:' + hashlib.sha256(text.encode()).hexdigest()]
         import revision2_report_bridge as bridge
         profile = {'schema': 'BTC_LEGACY_PROFILE_V1', 'codec': bridge.CODEC, 'artifacts': artifacts,
                    'bridge': {'codec': bridge.CODEC, 'semantic_projection': expressive, 'audit_witness': audit,
                               'artifact_fingerprints': {k: v[1] for k, v in artifacts.items()},
                               'explicit_unknowns': list(bridge.HISTORICAL_UNKNOWN_PATHS)}}
-        (FIXTURES / 'profile.json').write_text(json.dumps(profile, ensure_ascii=False, indent=2) + '\n')
+        (fixtures / 'profile.json').write_text(json.dumps(profile, ensure_ascii=False, indent=2) + '\n')
         samples = []
         for label, price, previous, expected in [('below', 76900, 'INSIDE_ZONE', 'BELOW_ZONE'),
             ('inside', 77100, 'BELOW_ZONE', 'INSIDE_ZONE'), ('13:46', 77600, 'INSIDE_ZONE', 'ABOVE_ZONE'),
             ('inside-again', 77300, 'ABOVE_ZONE', 'INSIDE_ZONE'), ('above-again', 77900, 'INSIDE_ZONE', 'ABOVE_ZONE')]:
             samples.append({'label': label, 'prices': {'binance': str(price), 'coinbase': str(price + 10), 'kraken': str(price + 5)},
                             'prior_relation': previous, 'expected_relation': expected})
-        (FIXTURES / 'history_replays.json').write_text(json.dumps({'value_zone': {'lower': 77000, 'upper': 77500}, 'samples': samples}, indent=2) + '\n')
+        (fixtures / 'history_replays.json').write_text(json.dumps({'value_zone': {'lower': 77000, 'upper': 77500}, 'samples': samples}, indent=2) + '\n')
         cutoff = 1788324299999
         candles = [{'open_time': cutoff - (3 - n) * 3600000 + 1,
                     'close_time': cutoff - (2 - n) * 3600000,
                     'open': '77600', 'high': '77800', 'low': '77400' if n == 0 else '77500', 'close': '77700'} for n in range(3)]
         candles[-1]['close_time'] = cutoff + 1000
-        (FIXTURES / 'candles_1346.json').write_text(json.dumps(candles, indent=2) + '\n')
+        (fixtures / 'candles_1346.json').write_text(json.dumps(candles, indent=2) + '\n')
 
 
 if __name__ == '__main__':
