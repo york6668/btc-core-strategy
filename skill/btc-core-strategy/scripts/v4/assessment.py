@@ -46,14 +46,13 @@ def scenario(value):
         atoms(value[key], 'scenario.' + key)
 
 
-def validate_analysis_sections(draft, revision, resolve):
-    """Reuse the publication structure checks before disclosing a cycle candidate."""
-    outlook = draft['outlook']
+def validate_outlook(outlook, revision, resolve, cutoff=None):
+    """Public preflight before portfolio disclosure; no private inputs needed."""
     exact(outlook, 'semantic narrative refs' + (' market_assessment dispute_zones' if revision >= 5 else ''), 'outlook')
     if revision >= 5:
         from . import market_state
-        market_state.validate_assessment(outlook['market_assessment'], resolve, draft.get('temporal_scope', {}).get('knowledge_cutoff'))
-        market_state.validate_zones(outlook['dispute_zones'], resolve, cutoff=draft.get('temporal_scope', {}).get('knowledge_cutoff'))
+        market_state.validate_assessment(outlook['market_assessment'], resolve, cutoff, revision=revision)
+        market_state.validate_zones(outlook['dispute_zones'], resolve, cutoff=cutoff, revision=revision)
     exact(outlook['semantic'], 'status baseline alternatives next_evidence', 'outlook semantics')
     require(outlook['semantic']['status'] == 'ASSESSED', 'new assessment cannot hide outlook as historical unknown')
     scenario(outlook['semantic']['baseline'])
@@ -64,6 +63,13 @@ def validate_analysis_sections(draft, revision, resolve):
     text(outlook['narrative'], 'forward outlook explanation')
     for ref in outlook['refs']:
         resolve(ref)
+
+
+def validate_analysis_sections(draft, revision, resolve):
+    """Reuse the publication structure checks before disclosing a cycle candidate."""
+    origin = draft.get('section_provenance', {}).get('outlook', {})
+    cutoff = origin.get('assessed_at') if origin.get('mode') == 'REUSED' else draft.get('temporal_scope', {}).get('knowledge_cutoff')
+    validate_outlook(draft['outlook'], revision, resolve, cutoff)
     robust = draft['robustness']
     exact(robust, 'semantic narrative refs', 'robustness')
     exact(robust['semantic'], 'failed_primary module_impacts adjustment_conditions', 'robustness semantics')
@@ -97,7 +103,7 @@ def validate_analysis_sections(draft, revision, resolve):
 
 def validate(draft, evidence_dir, prior, project, review):
     revision = draft.get('revision', 1)
-    require(revision in (1, 2, 3, 4, 5), 'unsupported assessment revision')
+    require(revision in (1, 2, 3, 4, 5, 6), 'unsupported assessment revision')
     extra = ' revision recommendations maintenance_binding' if revision >= 2 else ''
     if revision >= 3:
         extra += ' conclusion section_provenance research_absorptions'
@@ -144,8 +150,10 @@ def validate(draft, evidence_dir, prior, project, review):
     validate_analysis_sections(draft, revision, lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True))
     if revision >= 2:
         from .recommendations import validate as validate_recommendations
+        from .closed_loop import public_hash
         validate_recommendations(draft['recommendations'], scope['knowledge_cutoff'],
-                                 lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True))
+                                 lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True), revision,
+                                 public_hash(draft) if revision >= 6 else None, draft['fact_version'])
     require(isinstance(draft['evidence_bindings'], dict), 'domain evidence bindings required')
     source_by_id = {s['id']: s for s in package['sources'] if s['trust'] == 'PUBLIC_RAW'}
     for dimension, entry in draft['domain']['evidence_matrix'].items():

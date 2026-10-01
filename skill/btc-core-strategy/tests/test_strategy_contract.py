@@ -14,8 +14,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
-import node_config
-FIXTURES = node_config.legacy_directory()
+FIXTURES = Path(__import__('os').environ['BTC_TEST_FIXTURE_DIR']).resolve()
 sys.path.insert(0, str(SCRIPTS))
 
 import strategy_contract as contract  # noqa: E402

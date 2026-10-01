@@ -30,20 +30,24 @@ def main():
         config = node / 'node.json'
         config.write_text(json.dumps({
             'schema': 'BTC_NODE_CONFIG_V1', 'project_dir': str(node),
-            'legacy_revision2_dir': str(node / 'legacy'),
+            'legacy_revision2_dir': str(node / 'fixtures'),
             'python': sys.executable,
             'frozen_market_python': sys.executable,
         }), encoding='utf-8')
         # Subprocesses inherit only this isolated configuration, never node secrets.
         os.environ['BTC_NODE_CONFIG'] = str(config)
-        subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/build_synthetic_fixtures.py'),
-                        '--output-dir', str(node / 'legacy')], check=True)
         os.environ['BTC_COLLECTOR_CONTRACT_PATH'] = str(reader / 'btc_evidence.py')
         for key in ('BOT_TOKEN', 'TELEGRAM_BOT_TOKEN', 'CHAT_ID', 'BTC_READER_DATA_DIR',
                     'BTC_READER_EVIDENCE_PATH', 'BTC_FROZEN_MARKET_PYTHON'):
             os.environ.pop(key, None)
+        os.environ['BTC_TEST_FIXTURE_DIR'] = str(node / 'fixtures')
+        os.environ['BTC_READER_TEST_FIXTURE_DIR'] = str(node / 'reader-fixtures')
+        subprocess.run([sys.executable, str(ROOT / 'scripts/build_synthetic_fixtures.py'),
+                        '--output', str(node / 'fixtures')], check=True)
         sys.path[:0] = [str(skill / 'scripts'), str(skill / 'tests'),
                         str(reader), str(reader / 'tests')]
+        from build_reader_fixtures import build
+        build(node / 'reader-fixtures')
         def deny_network(*args, **kwargs):
             raise AssertionError('offline tests cannot open network connections')
         socket.socket.connect = deny_network

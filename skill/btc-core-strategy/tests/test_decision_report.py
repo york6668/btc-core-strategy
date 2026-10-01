@@ -238,8 +238,7 @@ class DecisionReportTests(unittest.TestCase):
         self.assertTrue(report.validate_report_projection(other))
 
     def test_legacy_normalizer_reports_unknowns_without_inventing_new_fingerprint(self):
-        import node_config
-        path = node_config.legacy_directory() / "revision2_report_1346_semantics.json"
+        path = Path(__import__('os').environ['BTC_TEST_FIXTURE_DIR']) / 'revision2_report_1346_semantics.json'
         legacy = json.loads(path.read_text(encoding="utf-8"))
         result = report.normalize_legacy_report_semantics(legacy)
         self.assertFalse(result["complete"])

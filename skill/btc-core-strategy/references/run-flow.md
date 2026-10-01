@@ -78,3 +78,9 @@
 周期修正与既有降耗验收分别保留；本次需求优先修正的日检查和三日窗口见[运行维护](runtime-maintenance.md)。先用 run_usage.py --status 只读检查待办，已完成的日检查不重复，不能用工程测试或新研究收据代替自然运行证据。
 
 revision 5 深评独立阶段先交付纯市场 JSON，冻结后在同一研究中追加个人应对，Sol 将完整正文原文写入 conclusion.narrative；第二阶段 Astra 在结构化结果中用 report_narrative 返回同一正文，或按 v4 契约用 report_hash 绑定本人已写且本次已读的冻结正文，避免重复输出。结果登记保留真实原回复及绑定全文，并支持已确认的末尾通知标记；不能手工删改真实回复或补造批准。研究来源、模型或实际输入无法核实时，保留现场并暴露交付异常。
+
+## revision 6 两项结果
+
+新 CLI run-prepare 使用 revision 6 市场→组合→观察→报告材料，细节见[完整闭环](closed-loop.md)。market 阶段复用观察校验，在冻结前检查全部公开结构、引用、时间与适用性；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 增加 allocation_review；主评估由真实 allocation_decision 进入 revision 6，不自动转换旧结论。
+
+report 材料只含最终两项结果、适用性及必要来源，result_binding 已由模板绑定。完整内部研究不通过报告 read_set 再次提供。旧 run.json 未含 workflow_revision 时按旧上下文接续，不为升级重建输入或重发报告。

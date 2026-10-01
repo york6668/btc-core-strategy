@@ -51,7 +51,9 @@ def price_status(value, decision):
     checked = max(instant(ctx['knowledge_cutoff']), instant(ctx.get('evaluated_at', ctx['knowledge_cutoff'])))
     for side, status in statuses.items():
         rec = decision['assessment']['recommendations'][side]
-        if rec['status'] == 'NOT_RECOMMENDED':
+        if rec['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED'):
+            require(status == 'REVIEW_REQUIRED', 'execution-limited direction is not an executable tier or a withdrawn decision')
+        elif rec['status'] == 'NOT_RECOMMENDED':
             require(status in {'REVIEW_REQUIRED', 'WITHDRAWN'}, 'inactive advice cannot be presented as valid')
         elif pending or instant(rec['validity']['until']) <= checked:
             require(status == 'REVIEW_REQUIRED', 'unreviewed or expired advice cannot be presented as valid')
@@ -117,6 +119,9 @@ def render(value, decision):
     price_status(value, decision)
     values = {k: ctx.get(k) for k in ('metrics', 'observation', 'public_evidence', 'report_subjects', 'report_quote_policy')}
     values.update(assessment=decision['assessment'], evaluation_time=evaluation_time(ctx))
+    if ctx.get('market_revision', 0) >= 6:
+        from .closed_loop import validate_report_binding
+        values.update(validate_report_binding(value, ctx))
     require(isinstance(layout['bindings'], list), 'authored evidence bindings required')
     covered = set()
     for binding in layout['bindings']:
@@ -128,7 +133,10 @@ def render(value, decision):
         supported = set()
         for ref in binding['refs']:
             if binding['scope'] == 'market':
-                require(ref.startswith(PUBLIC), 'market conclusion cannot bind personal portfolio data')
+                allowed = ('/market_result/', '/metrics/', '/public_evidence/', '/report_subjects/') if ctx.get('market_revision', 0) >= 6 else PUBLIC
+                require(ref.startswith(allowed), 'market conclusion cannot bind personal portfolio data or internal research prose')
+            if binding['scope'] == 'personal' and ctx.get('market_revision', 0) >= 6:
+                require(ref.startswith(('/allocation_decision/', '/applicability/portfolio/', '/execution_plans/')), 'personal report consumes only final arrangements and execution limits')
             if binding['scope'] == 'clock':
                 require(ref == '/evaluation_time' and excerpt == values['evaluation_time'], 'only frozen evaluation time is a clock binding')
             scalar = pointer(values, ref)
@@ -138,7 +146,7 @@ def render(value, decision):
                     and isinstance(scalar, (int, float, str)) and re.fullmatch(r'[-+]?\d+(?:\.\d+)?', str(scalar))):
                 require('price' in binding, 'market price binding must identify its instrument and unit')
             for side, status in layout['price_status'].items():
-                if ref.startswith('/assessment/recommendations/'+side+'/tiers/'):
+                if ref.startswith(('/assessment/recommendations/'+side+'/tiers/', '/execution_plans/'+side+'/tiers/')):
                     require(binding['scope'] == 'personal' and status in {'VALID','ADJUSTED'},
                             'withdrawn or expired recommendation prices cannot be restored')
         require(numbers(excerpt) <= supported, 'authored numbers must match their frozen references without conversion')

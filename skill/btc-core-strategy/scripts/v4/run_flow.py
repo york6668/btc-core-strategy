@@ -90,6 +90,9 @@ def observation_template(ctx, raw):
             'outcome': None, 'explanation': None, 'refs': [], 'limitations': None}
     if ctx.get('revision', 1) >= 5:
         form.update(market_assessment=None, dispute_zones=[], market_result_hash=None)
+    if ctx.get('revision', 1) >= 6:
+        from .closed_loop import review_template
+        form['allocation_review'] = review_template()
     return form
 
 
@@ -114,10 +117,16 @@ def report_template(ctx):
         basis = ctx['cycle_baseline']
         form['report_basis'] = {'result_id': basis['result_id'], 'report_hash': basis.get('report_hash'),
                                 'mode': None, 'verification': None}
-    if ctx.get('market_revision') == 5:
+    if ctx.get('market_revision', 0) >= 5:
         form['maintenance']['retired'] = []
         if 'report_basis' in form:
             form['report_basis'].update(observation_id=ctx['observation']['observation_id'], evidence_id=ctx['identity'].get('factor_evidence_id'))
+    if ctx.get('market_revision', 0) >= 6:
+        from .closed_loop import report_inputs
+        form['result_binding'] = report_inputs(ctx)['result_binding']
+        form['maintenance']['checked']['outcomes'] = {'MARKET': None, 'PORTFOLIO': None}
+        for item, prior in zip(form['maintenance']['checked']['trigger_results'], previous.get('triggers', [])):
+            item.update(scope=prior.get('scope'), material=None)
     return form
 
 
@@ -135,6 +144,15 @@ def report_brief(ctx):
         basis.pop('report_narrative', None)
         basis['report_narrative_ref'] = '/current_strategy/conclusion/narrative'
     brief['applicability_instructions'] = cycle.APPLICABILITY_REVIEW
+    if ctx.get('market_revision', 0) >= 6:
+        from .closed_loop import report_inputs, INSTRUCTIONS
+        for key in ('current_strategy', 'observation', 'collector_observations'):
+            brief.pop(key, None)
+        basis = brief.get('cycle_baseline') or {}
+        brief['cycle_baseline'] = {k: basis.get(k) for k in
+            ('status', 'market_status', 'portfolio_status', 'result_id', 'report_hash', 'recheck_at')}
+        brief.update(report_inputs(ctx))
+        brief['result_instructions'] = INSTRUCTIONS
     return brief
 
 
@@ -159,7 +177,7 @@ def anchors(root, project):
         'report_review': _latest(root, 'report-review-current.json')}
 
 
-def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None):
+def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None):
     text(run_ref, 'actual run reference')
     text(agent_id, 'actual main agent id')
     root, project, directory = Path(root).resolve(), Path(project).resolve(), Path(directory).resolve()
@@ -234,7 +252,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                                         evidence_dir, cutoff, additional=additional, retained_directories=retained_directories,
                                         collector_file=collector_path)
         ctx = sensing.context(root, project / '.strategy/market_observation.sqlite3', project, raw,
-                              evidence_dir=evidence_dir)
+                              evidence_dir=evidence_dir, workflow_revision=workflow_revision)
         # Preparation is not a publication, an observation completion, or a report completion.
         require(before == anchors(root, project), 'state changed during preparation; use a new run directory')
         save(directory / 'sensing-context.json', ctx)
@@ -321,6 +339,8 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         if collector_path:
             run.update(collector=collector_path, collector_input=str(Path(collector_file).resolve()) if collector_file else None,
                        collector_input_hash=digest(Path(collector_file).read_bytes()) if collector_file else None)
+        if ctx.get('revision', 1) >= 6:
+            run['workflow_revision'] = 6
         save(path, run)
         return result_paths(run, 'prepared')
 
@@ -370,7 +390,7 @@ def phase_material(run, label, stage='report'):
         base_reads = str(max(portfolio_reads, key=lambda path: path.stat().st_mtime_ns))
     if stage == 'main':
         ctx = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
-                              run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True)
+                              run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True, workflow_revision=run.get('workflow_revision'))
         prefix = label + '-main-' + digest(ctx)[7:19]
         path = save(d / (prefix + '-context.json'), ctx)
         form = main_template(storage.current(root)['assessment'])
@@ -401,9 +421,9 @@ def phase_material(run, label, stage='report'):
     if stage == 'report-body':
         extra = {'layout_template': save(d / (prefix + '-layout-template.json'), layout),
                  'report_metrics': save(d / (prefix + '-metrics.json'), ctx['metrics'])}
-    reads = {'report': material_reads.make(d, 'report', brief_path, base=base_reads,
+    reads = {'report': material_reads.make(d, 'report', brief_path, base=None if ctx.get('market_revision', 0) >= 6 else base_reads,
                 required={'report_template': template_path},
-                on_demand={'full_context': full_path, **extra})}
+                on_demand=({**extra} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path, **extra}))}
     recovery = [{'delivery_id': v['delivery_id'], 'state': v['state'],
                  'next_action': 'READ_BACK_EXISTING_ATTEMPT' if v['state'] in ('SENDING','UNKNOWN') else 'REVIEW_EXISTING_DELIVERY',
                  'blocks_new_reports': False}
@@ -478,15 +498,12 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         authored = material_reads.compose(template, resolve_answers(run, read(answers_path)))
     exact(authored, ' '.join(market_template(ctx, raw)), 'independent hourly market result')
     latest = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
-                             run['project'], raw, evidence_dir=run['evidence'])
+                             run['project'], raw, evidence_dir=run['evidence'], workflow_revision=run.get('workflow_revision'))
     require(market_state.market_projection(ctx) == market_state.market_projection(latest),
             'public market inputs changed; refresh market material')
     package = evidence.validate(read(Path(run['evidence']) / 'evidence.json'), run['evidence'])
     resolve = lambda ref: evidence.resolve(package, run['evidence'], ref, verified=True)
-    market_state.validate_assessment(authored['market_assessment'], resolve, package['cutoff'])
-    market_state.validate_zones(authored['dispute_zones'], resolve, ctx['market_baseline']['dispute_zones'], package['cutoff'])
-    from . import factors
-    factors.validate(authored['factor_checks'], package, run['evidence'])
+    sensing.validate_public(root, ctx, raw, authored, run['evidence'])
     frozen = {'payload': authored, 'result_hash': digest(authored),
               'market_context_id': market_state.market_projection(ctx)['market_context_id']}
     with locked(d):
@@ -501,16 +518,31 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                      'instructions': '仅完成仓位适配及建议核验；不得改写已冻结市场结果。未知数量与覆盖保持未知，不阻断市场报告。'}
         if not portfolio['facts_match_current']:
             portfolio['confirmed_account_facts'] = None
-        if package.get('collector'):
+        if package.get('collector') and ctx.get('revision', 1) < 6:
             from .collector import context as collector_context
             portfolio['collector_observations'] = collector_context(package, run['evidence'])
-        portfolio_path = save(d / 'portfolio-context.json', portfolio)
+        form_path = d / 'observation-template.json'
+        if ctx.get('revision', 1) >= 6:
+            from .closed_loop import INSTRUCTIONS, allocation
+            portfolio = {'market_result': frozen, 'allocation_decision': allocation(core),
+                         'current_recommendations': core.get('recommendations'),
+                         'fact_version': latest['identity']['fact_version'],
+                         'confirmed_account_facts': portfolio['confirmed_account_facts'],
+                         'fact_files': portfolio['fact_files'], 'instructions': INSTRUCTIONS}
+            # A facts-only change can refresh this stage around the same public
+            # freeze, without recollecting evidence or rebuilding research.
+            context_path = save(d / ('portfolio-sensing-' + latest['context_id'][7:] + '.json'), latest)
+            form = observation_template(latest, raw)
+            form['_binding'] = {'context_file': context_path, 'context_hash': digest(latest)}
+            form_path = d / ('portfolio-' + latest['context_id'][7:] + '-observation-template.json')
+            save(form_path, form)
+        portfolio_path = save(d / ('portfolio-context-' + digest(portfolio)[7:] + '.json' if ctx.get('revision', 1) >= 6 else 'portfolio-context.json'), portfolio)
         reads = material_reads.make(d, 'portfolio', portfolio_path,
-            base=run.get('read_set', {}).get('observe'),
-            required={'observation_template': d / 'observation-template.json'})
+            base=None if ctx.get('revision', 1) >= 6 else run.get('read_set', {}).get('observe'),
+            required={'observation_template': form_path})
     return {'status': 'MARKET_RESULT_FROZEN', 'market_result': path,
             'market_result_hash': frozen['result_hash'], 'portfolio_context': portfolio_path,
-            'observation_template': str(d / 'observation-template.json'), 'read_set': {'portfolio': reads},
+            'observation_template': str(form_path), 'read_set': {'portfolio': reads},
             'next': 'Complete only portfolio checks and main_evaluation, then run-advance --stage observe.'}
 
 
@@ -529,14 +561,21 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
         template_path = Path(template_path).resolve()
         require(template_path.parent == d.resolve(), 'template must belong to this run')
         if stage == 'observe':
-            require(template_path == d.resolve() / 'observation-template.json', 'use this run observation template')
+            require(template_path == d.resolve() / 'observation-template.json' or
+                    (run.get('workflow_revision', 0) >= 6 and template_path.name.startswith('portfolio-') and template_path.name.endswith('-observation-template.json')), 'use this run observation template')
         else:
             require(template_path.name.endswith('-main-template.json') if stage == 'main' else
                     template_path.name.endswith('-template.json') and not template_path.name.endswith(('-main-template.json', '-layout-template.json', '-cycle-request-template.json')),
                     'template does not match stage')
         template = read(template_path)
         if stage == 'observe':
-            expected_template = observation_template(read(d / 'sensing-context.json'), read(run['market']))
+            bound = template.get('_binding')
+            frozen_context = read(bound['context_file']) if bound else read(d / 'sensing-context.json')
+            if bound:
+                require(Path(bound['context_file']).resolve().parent == d.resolve() and digest(frozen_context) == bound['context_hash'], 'observation context binding changed')
+            expected_template = observation_template(frozen_context, read(run['market']))
+            if bound:
+                expected_template['_binding'] = bound
         else:
             binding = template.get('_binding') or {}
             require(binding.get('context_file') and binding.get('context_hash'), 'use a bound stage template')
@@ -557,7 +596,7 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
     if check_only:
         ctx = _bound_context(run, authored, stage)
         latest = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
-            run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True)
+            run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True, workflow_revision=run.get('workflow_revision'))
         require(ctx['context_id'] == latest['context_id'], 'stage context changed; ' + json.dumps(context_changes(ctx, latest), ensure_ascii=False))
         exact(authored, 'components checks', 'authored main input')
         candidate, review = main_flow.assemble(root, run['project'], authored['components'], run['evidence'],
@@ -584,18 +623,18 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
         intent = read(intent_path) if intent_path.exists() else None
         result = _already_completed(run, stage, intent) if intent else None
         if result is None:
-            require(facts(run['project']) == run['anchors']['fact_version'], 'facts changed; prepare new material and reassess')
             ctx = _bound_context(run, authored, stage)
+            require(facts(run['project']) == (ctx['identity']['fact_version'] if run.get('workflow_revision', 0) >= 6 else run['anchors']['fact_version']), 'facts changed; refresh portfolio material and reassess')
             if stage in ('observe', 'main'):
                 latest = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
-                    run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=stage == 'main')
+                    run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=stage == 'main', workflow_revision=run.get('workflow_revision'))
             else:
                 latest = reporting.context(root)
             require(ctx['context_id'] == latest['context_id'],
                     'stage context changed; ' + json.dumps(context_changes(ctx, latest), ensure_ascii=False))
             if intent is None:
                 if stage == 'observe':
-                    exact(authored, 'market_review recommendation_checks extra_findings main_evaluation research_findings factor_checks' + (' applicability_review' if 'cycle_baseline' in ctx else '') + (' market_assessment dispute_zones market_result_hash' if ctx.get('revision', 1) >= 5 else ''), 'authored observation')
+                    exact(authored, 'market_review recommendation_checks extra_findings main_evaluation research_findings factor_checks' + (' applicability_review' if 'cycle_baseline' in ctx else '') + (' market_assessment dispute_zones market_result_hash' if ctx.get('revision', 1) >= 5 else '') + (' allocation_review' if ctx.get('revision', 1) >= 6 else ''), 'authored observation')
                     payload = deepcopy(authored)
                     payload.update(schema='BTC_SENSING_REVIEW_V4', revision=ctx.get('revision', 4), context_id=ctx['context_id'])
                     raw = read(run['market'])
@@ -614,7 +653,7 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
                 save(intent_path, intent)
             if stage == 'observe':
                 result = sensing.record(root, Path(run['project']) / '.strategy/market_observation.sqlite3', run['project'],
-                                        read(run['market']), intent['payload'], evidence_dir=run['evidence'])
+                                        read(run['market']), intent['payload'], evidence_dir=run['evidence'], workflow_revision=run.get('workflow_revision'))
             elif stage == 'main':
                 result = storage.commit(root, run['project'], intent['draft'], run['evidence'], intent['review'], intent['expected'])
                 result = {k: result[k] for k in ('status', 'decision_id', 'comparison', 'report_required') if k in result}

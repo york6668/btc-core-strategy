@@ -32,7 +32,7 @@ def _validate_allocation(value):
 
 
 def total(side, field):
-    if any(t[field] is None for t in side['tiers']):
+    if side.get('status') in ('EXECUTION_LIMITED', 'UNDETERMINED') or any(t[field] is None for t in side['tiers']):
         return None
     return sum((Decimal(numbered(t[field])) for t in side['tiers']), Decimal(0))
 
@@ -55,24 +55,25 @@ def sequences(value):
             else:
                 cash += capital
             if side == 'lower_spot':
-                spot += amount
+                spot = None if amount is None else spot + amount
             else:
-                short += amount
+                short = None if amount is None else short + amount
             steps.append({'side': side, 'capital_u': numbered(capital) if capital is not None else None, 'cumulative_capital_u': numbered(cash) if not unknown else None,
                           'known_capital_u': numbered(cash), 'unknown_capital_sides': list(unknown),
-                          'spot_capital_u': numbered(spot), 'short_notional_u': numbered(short)})
+                          'spot_capital_u': numbered(spot) if spot is not None else None,
+                          'short_notional_u': numbered(short) if short is not None else None})
             if explicit_allocation:
                 steps[-1]['spot_capital_by_asset_u'] = spot_capital_by_asset(value['lower_spot']) if spot else {}
         result[name] = steps
     return result
 
 
-def validate(value, cutoff, resolve):
+def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=None):
     exact(value, 'upper_short lower_spot portfolio', 'recommendations')
     for key in SIDES:
         side = value[key]
         exact(side, 'status unit tiers validity purpose amount_basis allocation_percent rationale impact refs', key)
-        require(side['status'] in ('RECOMMENDED', 'NOT_RECOMMENDED'), 'recommendation needs explicit validity conclusion')
+        require(side['status'] in (('RECOMMENDED', 'NOT_RECOMMENDED', 'EXECUTION_LIMITED', 'UNDETERMINED') if revision >= 6 else ('RECOMMENDED', 'NOT_RECOMMENDED')), 'recommendation needs explicit validity conclusion')
         require(side['unit'] == ('SHORT_NOTIONAL_U' if key == 'upper_short' else 'SPOT_CAPITAL_U'), 'recommendation amount unit mismatch')
         require(isinstance(side['tiers'], list), 'recommendation tiers required')
         require(bool(side['tiers']) == (side['status'] == 'RECOMMENDED'), 'valid recommendation requires prices and positive amounts; no-recommendation has no invented tiers')
@@ -105,7 +106,7 @@ def validate(value, cutoff, resolve):
         validity = side['validity']
         start, end = instant(validity['from']), instant(validity['until'])
         require(start <= instant(cutoff) and start < end, 'invalid or future-start recommendation validity')
-        if side['status'] == 'RECOMMENDED':
+        if side['status'] in ('RECOMMENDED', 'EXECUTION_LIMITED'):
             require(instant(cutoff) < end, 'cannot publish already expired or future-start recommendation')
         atoms(validity['conditions'], 'recommendation support conditions')
         atoms(validity['invalidations'], 'recommendation invalidations')
@@ -117,15 +118,18 @@ def validate(value, cutoff, resolve):
         for ref in side['refs']:
             resolve(ref)
     portfolio = value['portfolio']
-    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative', 'recommendation portfolio')
+    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative' + (' allocation_decision' if revision >= 6 else ''), 'recommendation portfolio')
     capitals = [total(value[s], 'capital_u') for s in SIDES]
-    if any(c is None for c in capitals):
+    if any(c is None for c in capitals) or any(value[s]['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED') for s in SIDES):
         require(portfolio['capital_envelope_u'] is None, 'unknown short capital cannot become a confirmed total funding envelope')
     else:
         require(Decimal(numbered(portfolio['capital_envelope_u'])) >= sum(capitals), 'shared capital envelope double counted')
     require(portfolio['sequence_policy'] == 'REEVALUATE_AFTER_FIRST', 'sequential proposals require Codex reassessment after first confirmed fact change')
     for field in ('existing_exposure', 'uncertainty', 'narrative'):
         text(portfolio[field], 'combined portfolio ' + field)
+    if revision >= 6:
+        from .closed_loop import validate_allocation
+        validate_allocation(portfolio['allocation_decision'], cutoff, market_hash, fact_version)
     return sequences(value)
 
 
@@ -160,4 +164,10 @@ def stable(value):
         result[side]['validity']['until'] = instant(result[side]['validity']['until']).astimezone(timezone.utc).isoformat()
     for field in ('existing_exposure', 'uncertainty', 'narrative'):
         result['portfolio'].pop(field)
+    decision = result['portfolio'].get('allocation_decision')
+    if decision:
+        # Source/time rebinding alone is not a different arrangement. Expiry,
+        # actions, uncertainty and execution limitations still carry meaning.
+        for field in ('market_result_hash', 'fact_version', 'decided_at'):
+            decision.pop(field)
     return result

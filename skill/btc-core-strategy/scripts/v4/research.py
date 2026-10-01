@@ -185,7 +185,7 @@ def _candidate_free(value):
             _candidate_free(item)
 
 
-def request(root, project, spec):
+def request(root, project, spec, workflow_revision=None):
     """Freeze a bounded independent input and an explicit new/reopened question."""
     from . import evidence
     from .storage import current
@@ -336,13 +336,15 @@ def request(root, project, spec):
             packet['cycle_assignment'] = {'role': 'Astra/max cycle analysis', 'required_coverage': list(cycle.COVERAGE),
                 'instructions': cycle.CORE_REPORT_REVIEW + cycle.ANALYSIS_FOCUS_REVIEW,
                 'method_references': cycle.method_references('research', project)}
-        workflow_revision = 5 if market_state.enabled(root, anchor) else 4
+        policy_path = Path(root) / 'write-policy.json'
+        minimum = read(policy_path).get('minimum_assessment_revision', 1) if policy_path.exists() else 1
+        workflow_revision = max(5, minimum, workflow_revision or 4, market_state.revision(anchor)) if market_state.enabled(root, anchor) else 4
         if workflow_revision >= 5:
             packet.pop('fact_files', None)
             packet['historical_anchor'] = market_state.public_content(anchor)
             packet['historical_dispute_zones'] = market_state.effective(root, anchor, pinned['decision_id'])['dispute_zones']
             packet['historical_zone_review'] = 'Historical hypotheses only. Rebuild boundaries from dated public raw evidence first, then retain, revise or reject each old area. An internal level crossing is not a whole-range breakout. Record when each boundary became knowable; never backdate later evidence.'
-            packet['workflow_revision'] = 5
+            packet['workflow_revision'] = workflow_revision
             packet['market_result_contract'] = {
                 'output': 'Single JSON object: outlook, factor_assessment, market_report. outlook includes semantic/narrative/refs/market_assessment/dispute_zones. No portfolio or account analysis.',
                 'instructions': market_state.INSTRUCTIONS,
@@ -352,6 +354,14 @@ def request(root, project, spec):
                 packet['cycle_assignment']['instructions'] = market_state.INSTRUCTIONS
                 packet['cycle_assignment']['required_coverage'] = [v for v in cycle.COVERAGE if v != 'portfolio_waiting']
                 packet['cycle_assignment']['method_references'].pop('recommendations', None)
+            if workflow_revision >= 6:
+                from .closed_loop import INSTRUCTIONS
+                packet['market_result_contract']['instructions'] += INSTRUCTIONS
+                packet['historical_hypotheses'] = {key: packet.pop(key) for key in ('historical_anchor', 'historical_dispute_zones')}
+                for row in packet['report_subjects'].values():
+                    if isinstance(row, dict):
+                        row.pop('product_zones', None)
+                        row.pop('underlying_zones', None)
         _candidate_free(packet)
         input_id = digest(packet)
         input_path = root / 'research' / 'inputs' / (input_id[7:] + '.json')
@@ -386,7 +396,11 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
                  'instructions': '仅完成个人组合应对；公开市场结果与原市场正文保持原文。追加个人部分，不改写市场方向、周期、风险和分歧区判断。'}
         public_input = read(Path(root) / req['independent_input_path'])
         require(digest(public_input) == req['independent_input_id'], 'independent input changed')
-        if public_input.get('collector_observations'):
+        if req.get('workflow_revision', 4) >= 6:
+            from .closed_loop import INSTRUCTIONS, public_hash
+            value['market_content_hash'] = public_hash(independent['market_result'])
+            value['instructions'] = INSTRUCTIONS
+        elif public_input.get('collector_observations'):
             value['collector_observations'] = deepcopy(public_input['collector_observations'])
         identity = digest(value)
     else:
@@ -835,13 +849,19 @@ def _public_result(root, req, analysis, directory=None):
     if req.get('workflow_revision', 4) < 5:
         return {}
     from . import evidence, factors
-    result = market_state.parse_result(analysis)
+    rev = req.get('workflow_revision', 5)
+    result = market_state.parse_result(analysis, rev)
     directory = Path(directory) if directory is not None else Path(root) / 'evidence' / req['evidence_id'][7:]
     package = evidence.validate(read(directory / 'evidence.json'), directory)
     resolve = lambda ref: evidence.resolve(package, directory, ref, verified=True)
-    market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'])
-    previous = read(Path(root) / req['independent_input_path']).get('historical_dispute_zones', [])
-    market_state.validate_zones(result['outlook']['dispute_zones'], resolve, prior=previous, cutoff=package['cutoff'])
+    packet = read(Path(root) / req['independent_input_path'])
+    historical = packet.get('historical_hypotheses', packet)
+    prior_market = ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment')
+    market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'], rev, prior_market)
+    previous = historical.get('historical_dispute_zones', [])
+    market_state.validate_zones(result['outlook']['dispute_zones'], resolve, prior=previous, cutoff=package['cutoff'], revision=rev)
+    from .assessment import validate_outlook
+    validate_outlook(result['outlook'], rev, resolve, package['cutoff'])
     factors.validate(result['factor_assessment'], package, directory)
     for ref in result['outlook']['refs']:
         resolve(ref)

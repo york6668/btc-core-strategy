@@ -138,7 +138,9 @@ def main(argv=None):
     try:
         if args.command == 'run-prepare':
             from v4 import run_flow
-            result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations)
+            from v4 import market_state
+            result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations,
+                                      workflow_revision=6 if market_state.enabled(args.root) else None)
         elif args.command == 'run-material':
             from v4 import run_flow
             run = run_flow.read_run(args.run, args.root, args.project)
@@ -214,7 +216,8 @@ def main(argv=None):
             create(args.output,value)
             result={'source':args.output,'body':value['body'],'body_hash':value['body_hash']}
         elif args.command == 'research-request':
-            result=research.request(args.root,args.project,read(args.spec))
+            from v4 import market_state
+            result=research.request(args.root,args.project,read(args.spec), workflow_revision=6 if market_state.enabled(args.root) else None)
         elif args.command == 'research-result':
             result=research.result(args.root,read(args.spec))
         elif args.command == 'research-orchestrated-independent':

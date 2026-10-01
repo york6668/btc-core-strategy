@@ -35,7 +35,7 @@ APPLICABILITY_REVIEW = (
     '已有研究从真实进度接续，建议到期独立维护；只有明确用户请求可使用 USER_REQUESTED_REVIEW。'
 )
 ANALYSIS_FOCUS_REVIEW = (
-    '主动识别当前定价与需求、供给、融资、盈利等因素的背离，比较竞争解释与抵消因素，不要求预测涨跌路径或兑现日期。'
+    '主动识别当前定价与需求、供给、融资、盈利等因素的背离，比较竞争解释与抵消因素，形成有条件的前瞻路径、判断期限和预期兑现窗口；证据不足说明时间缺口，不编造精确目标或日期。'
     '内部完整评估币安QQQ/VOO与BTC的方向、周期、结构、依据、确认程度及价格风险，完成综合判断后再适配当前组合；这些分析项不是正文必展示清单。'
     '价格判断与个人数量分开，数量未知不撤销有依据的价格判断，不为金额校验编造额度。'
     '结构位、观察价、候选价与有效建议分开；未知不等于中性，宏观利空而上涨不自动等于看跌。'
@@ -72,6 +72,11 @@ SPOT_RISK_REVIEW = (
     '现货减少后复查保护是否过量，重要个人建议改变交回原深评。'
 )
 
+from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW
+CORE_REPORT_REVIEW += CLOSED_LOOP_REVIEW
+MAPPING_REVIEW += CLOSED_LOOP_REVIEW
+REPORT_SCOPE_REVIEW += CLOSED_LOOP_REVIEW
+
 
 def method_references(stage, project=None):
     """Point the model at phase-specific prose; never parse it as market rules."""
@@ -84,6 +89,7 @@ def method_references(stage, project=None):
     }
     result = {key: str(references / value) for key, value in paths[stage].items()}
     result['market_state'] = str(references / 'market-state.md')
+    result['closed_loop'] = str(references / 'closed-loop.md')
     result['report_boundary'] = str(references / 'mobile-report.md') + '#研判与报告的职责边界'
     if project is not None and stage in ('research', 'observe'):
         from node_config import factor_guide
@@ -169,12 +175,15 @@ def validate_candidate(value):
     exact(value, 'assessment', 'cycle candidate')
     exact(value['assessment'], ' '.join((*SECTIONS, 'fact_version', 'temporal_scope')), 'cycle candidate assessment')
     from . import assessment, recommendations
+    from .closed_loop import public_hash
+    revision = market_state.revision(value['assessment'])
     # Apply the existing recommendation contract before spending an Astra
     # review on an unpublishable mapping. Raw refs are resolved separately by
     # the evidence-bound preflight and final assessment validation.
-    assessment.validate_analysis_sections(value['assessment'], market_state.revision(value['assessment']), lambda ref: None)
+    assessment.validate_analysis_sections(value['assessment'], revision, lambda ref: None)
     recommendations.validate(value['assessment']['recommendations'],
-                             value['assessment']['temporal_scope']['knowledge_cutoff'], lambda ref: None)
+                             value['assessment']['temporal_scope']['knowledge_cutoff'], lambda ref: None,
+                             revision, public_hash(value['assessment']) if revision >= 6 else None, value['assessment']['fact_version'])
     # The existing content functions need a revision, which is not an opinion.
     content(dict(value['assessment'], revision=market_state.revision(value['assessment'])))
 
@@ -346,6 +355,10 @@ def validate_publication(root, prior, draft):
     require(saved['fact_version'] == draft['fact_version'], 'cycle repricing requires Astra review of the current confirmed facts')
     require(content(draft) == content(dict(disclosed['candidate']['assessment'], revision=market_state.revision(disclosed['candidate']['assessment']))),
             'published cycle differs from the candidate actually approved by Astra')
+    if draft.get('revision', 1) >= 6:
+        from .closed_loop import allocation
+        require(instant(allocation(draft)['valid_until']) > instant(now()),
+                'allocation decision expired during review; reassess its applicability without renewing the report clock')
     # A check time is not an expiry of the actual authorship/approval proof.
     # Executable proposals retain their separate, immutable real expiry.
     for side in ('upper_short', 'lower_spot'):
@@ -361,7 +374,7 @@ def validate_report_basis(spec, ctx):
         return
     basis = ctx['cycle_baseline']
     binding = spec.get('report_basis')
-    exact(binding, 'result_id report_hash mode verification' + (' observation_id evidence_id' if ctx.get('market_revision') == 5 else ''), 'report source binding')
+    exact(binding, 'result_id report_hash mode verification' + (' observation_id evidence_id' if ctx.get('market_revision', 0) >= 5 else ''), 'report source binding')
     require(binding['result_id'] == basis['result_id'] and binding['report_hash'] == basis.get('report_hash'),
             'summary must bind the adopted full cycle report')
     require(binding['mode'] in ('CYCLE_SUMMARY', 'LIMITED_FEEDBACK', 'URGENT_RISK', 'MARKET_UPDATE'), 'invalid cycle report use')

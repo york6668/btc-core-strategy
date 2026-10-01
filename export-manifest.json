@@ -8,11 +8,14 @@
     "export-manifest.json",
     "project-methods/AGENTS.md",
     "project-methods/价值因子.md",
+    "scripts/build_reader_fixtures.py",
     "scripts/build_synthetic_fixtures.py",
+    "scripts/prepare_reader.py",
     "scripts/release.py",
     "scripts/run_tests.py",
     "skill/btc-core-strategy/SKILL.md",
     "skill/btc-core-strategy/agents/openai.yaml",
+    "skill/btc-core-strategy/references/closed-loop.md",
     "skill/btc-core-strategy/references/collector-evidence.md",
     "skill/btc-core-strategy/references/core-strategy.md",
     "skill/btc-core-strategy/references/equity-products.md",
@@ -43,6 +46,7 @@
     "skill/btc-core-strategy/scripts/v4/assessment.py",
     "skill/btc-core-strategy/scripts/v4/authored_report.py",
     "skill/btc-core-strategy/scripts/v4/brief_report.py",
+    "skill/btc-core-strategy/scripts/v4/closed_loop.py",
     "skill/btc-core-strategy/scripts/v4/collector.py",
     "skill/btc-core-strategy/scripts/v4/common.py",
     "skill/btc-core-strategy/scripts/v4/cycle.py",
@@ -70,6 +74,7 @@
     "skill/btc-core-strategy/scripts/v4/storage.py",
     "skill/btc-core-strategy/tests/test_authored_report.py",
     "skill/btc-core-strategy/tests/test_brief_report.py",
+    "skill/btc-core-strategy/tests/test_closed_loop.py",
     "skill/btc-core-strategy/tests/test_collector_observation.py",
     "skill/btc-core-strategy/tests/test_collector_provenance.py",
     "skill/btc-core-strategy/tests/test_collector_v2_pipeline.py",
@@ -104,7 +109,18 @@
     "skill/btc-core-strategy/tests/test_workflow_research.py",
     "tasks/hourly.md",
     "test_support/reader.lock.json",
-    "tests/test_release.py",
-    "scripts/prepare_reader.py"
-  ]
+    "tests/test_release.py"
+  ],
+  "content_contract": {
+    "read_revisions": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "new_write_revision": 6,
+    "migration": "ACTUAL_ASSESSMENT_AND_ADOPTION_ONLY"
+  }
 }

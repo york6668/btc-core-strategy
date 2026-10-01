@@ -43,13 +43,13 @@
 }
 ```
 
-kind支持MARKET_REVIEW、DEEP_REVIEW、EXPRESSION_ONLY；没有真实深评不能标为DEEP_REVIEW，两类实质分析报告都可满足每日反馈。triggers至少一项，refs指向本轮冻结metrics或正式assessment的真实依据；事件可没有数值引用，但必须说明原因。复核条件中的价格与周期是MAIN报告判断，由证据推导；若改变持仓/资金等正式建议，先走主评估写入，不在报告中另建策略。
+kind支持MARKET_REVIEW、PORTFOLIO_REVIEW、DEEP_REVIEW、EXPRESSION_ONLY；没有真实深评不能标为DEEP_REVIEW，两类实质分析报告都可满足每日反馈。triggers至少一项，refs指向本轮冻结metrics或正式assessment的真实依据；事件可没有数值引用，但必须说明原因。复核条件中的价格与周期是MAIN报告判断，由证据推导；若改变持仓/资金等正式建议，先走主评估写入，不在报告中另建策略。
 
 条件必须让后续任务能实际检查。“连续收盘”写清完整周期及先后次序；“卖压仍未衰减”写清比较窗口或可验证状态，并说明为什么值得修正分析。不能只把这些模糊说法放进结构化字段。价位注明真实产品和报价来源；USD与USDT按美元近似口径比较，常规微差不作为冲突或强制兑换取数理由。精确触价仍由对应产品、时刻和实际报价确认，股票与合约、VOO与SPY代理的身份不能混同。
 
-checked.prior_review_id绑定report-care.prior_review_id，首次旧稿接续为null。trigger_results必须覆盖上一maintenance的每个trigger，结构{id,state,evidence}，state为MET/NOT_MET/UNKNOWN，evidence写实际取得的证据及限制。outcome为VALID/REVISE/EVIDENCE_LIMITED。MET要求复核，不机械强制改变策略；REVISE必须REPORT，VALID且日反馈未到期、无待核实投递才可SILENT。触发依据UNKNOWN不能当作已确认静默。下一recheck_at必须在未来；旧到期点不能被无审阅地覆盖。
+checked.prior_review_id绑定report-care.prior_review_id，首次旧稿接续为null。trigger_results必须覆盖上一maintenance的每个trigger，旧结构{id,state,evidence}；revision 6 按[完整闭环](closed-loop.md)增加 scope/material，checked.outcomes 分别判断市场与组合，state为MET/NOT_MET/UNKNOWN，evidence写实际取得的证据及限制。outcome为VALID/REVISE/EVIDENCE_LIMITED。MET要求复核，不机械强制改变策略；REVISE必须REPORT，旧格式 VALID 且日反馈未到期才可 SILENT；UNKNOWN 不伪装成 NOT_MET。revision 6 独立保留市场和组合状态，已披露且无新增意义的个人缺口不污染市场有效性，重要未决风险仍须反馈。投递恢复独立于市场静默。下一recheck_at必须在未来；旧到期点不能被无审阅地覆盖。
 
-已有缺口被核心报告披露，不等于相应维护条件已核验。实际现金、保证金或资金占用未知时，不能把“投入是否削弱缓冲”改成 NOT_MET；未取得新资料也不证明没有新发布。校验因 UNKNOWN 拒绝 SILENT 时，按事实使用 action=EVIDENCE_LIMITED、checked.outcome=EVIDENCE_LIMITED，不为通过校验改变触发状态。这只记录受限范围，不自动重做研究或重复发送已交付摘要，也不否定仍有证据支持的市场判断。同轮完整报告的 applicability_review、factor_checks 与 maintenance 必须如实承接同一受限范围；纠正误判时保留旧记录并追加修订，不能只修维护记录而留下“未取得资料却已确认无变化”的有效性断言。MET 表示该条件本身成立；“已经检查且事实未变”对于事实变化条件应为 NOT_MET，不能把完成检查写成触发。
+已有缺口被核心报告披露，不等于相应维护条件已核验。实际现金、保证金或资金占用未知时，不能把“投入是否削弱缓冲”改成 NOT_MET；未取得新资料也不证明没有新发布。旧格式校验因 UNKNOWN 拒绝 SILENT 时，按事实使用 action=EVIDENCE_LIMITED、checked.outcome=EVIDENCE_LIMITED，不为通过校验改变触发状态。这只记录受限范围，不自动重做研究或重复发送已交付摘要，也不否定仍有证据支持的市场判断。同轮完整报告的 applicability_review、factor_checks 与 maintenance 必须如实承接同一受限范围；纠正误判时保留旧记录并追加修订，不能只修维护记录而留下“未取得资料却已确认无变化”的有效性断言。MET 表示该条件本身成立；“已经检查且事实未变”对于事实变化条件应为 NOT_MET，不能把完成检查写成触发。
 
 本地事实文件指纹变化也可能来自已确认的概念文字修订，不能自动推断成交。完整研究待审阅期间可用EVIDENCE_LIMITED记录实际差异、影响与接续，无需为保存维护记录强迫生成报告；重要市场风险和每日反馈仍独立判断。该记录不确认事实适配完成，不改变正式建议，不推进送达，也不能把待核验差异写成SILENT。确需REPORT时继续明确事实适配限制和旧建议状态。
 

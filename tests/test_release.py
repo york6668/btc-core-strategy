@@ -87,6 +87,19 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different version'):
             release.bind(self.config, 'new', 'research-request')
 
+    def test_explicit_test_reader_does_not_reconfigure_production_reader(self):
+        dependency = self.base / 'test-reader'; dependency.mkdir()
+        (dependency / 'reader.py').write_text('# synthetic test dependency\n')
+        production = self.config['reader_code_dir']
+        self.config['reader_code_dir'] = str(self.base / 'production-without-test-sources')
+        (self.source / 'change.txt').write_text('test-reader override')
+        revision = self.commit('test reader')
+        result = release.install(self.config, self.source, test_reader=dependency)
+        self.assertEqual(result['commit'], revision)
+        self.assertEqual(self.config['reader_code_dir'], str(self.base / 'production-without-test-sources'))
+        self.assertTrue(Path(production, 'reader.py').is_file())
+        self.assertEqual(self.state.read_bytes(), self.before)
+
     def test_interrupted_stage_cannot_become_current(self):
         root = Path(self.config['release_root'])
         orphan = root / 'releases/.install-interrupted'; orphan.mkdir()
@@ -100,3 +113,14 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'relative regular sources'):
             release.install(self.config, self.source)
         self.assertEqual(self.state.read_bytes(), self.before)
+
+    def test_code_rollback_cannot_make_new_content_unreadable(self):
+        formal = self.project / '.strategy/v4/current/decision.json'
+        formal.parent.mkdir(parents=True)
+        formal.write_text(json.dumps({'assessment': {'revision': 6}}))
+        with self.assertRaisesRegex(ValueError, 'cannot read current assessment'):
+            release.activate(self.config, self.first)
+        self.assertEqual(json.loads(formal.read_text())['assessment']['revision'], 6)
+        # Original UNKNOWN context still resumes its pinned older implementation.
+        metadata = release.enter(self.config, 'old-recovery')
+        self.assertEqual(metadata['commit'], self.first)

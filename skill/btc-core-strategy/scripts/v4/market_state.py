@@ -39,7 +39,10 @@ def enabled(root, assessment=None):
 
 
 def revision(assessment):
-    return 5 if 'market_assessment' in (assessment.get('outlook') or {}) else assessment.get('revision', 4)
+    from .closed_loop import allocation
+    if allocation(assessment) is not None:
+        return 6
+    return max(5, assessment.get('revision', 5)) if 'market_assessment' in (assessment.get('outlook') or {}) else assessment.get('revision', 4)
 
 
 def refs(value, resolve):
@@ -49,7 +52,7 @@ def refs(value, resolve):
             resolve(ref)
 
 
-def validate_assessment(value, resolve, cutoff=None):
+def validate_assessment(value, resolve, cutoff=None, revision=5, prior=None):
     exact(value, 'markets summary', 'public market assessment')
     text(value['summary'], 'independent market synthesis')
     require(isinstance(value['markets'], list), 'markets must be a list')
@@ -64,7 +67,7 @@ def validate_assessment(value, resolve, cutoff=None):
         require(isinstance(item['horizons'], list) and item['horizons'], 'market needs assessed horizons')
         periods = set()
         for h in item['horizons']:
-            exact(h, 'id period direction structure change basis confirmation refs counter_refs', 'market horizon')
+            exact(h, 'id period direction structure change basis confirmation refs counter_refs' + (' forward' if revision >= 6 else ''), 'market horizon')
             for key in ('id', 'period', 'structure', 'change', 'basis'):
                 text(h[key], 'horizon ' + key)
             require(h['id'] not in periods, 'duplicate horizon')
@@ -72,6 +75,11 @@ def validate_assessment(value, resolve, cutoff=None):
             require(h['direction'] in ('BULLISH', 'BEARISH', 'NEUTRAL', 'UNKNOWN'), 'invalid market direction')
             require(h['confirmation'] in ('CONFIRMED', 'PARTIAL', 'PENDING', 'UNKNOWN'), 'invalid confirmation')
             refs(h, resolve)
+            if revision >= 6:
+                from .closed_loop import validate_forward
+                old_market = next((m for m in (prior or {}).get('markets', []) if m['id'] == item['id']), {})
+                old = next((p for p in old_market.get('horizons', []) if p['id'] == h['id']), None)
+                validate_forward(h['forward'], cutoff or item['as_of'], resolve, old)
         for name, statuses in (
             ('resonance', ('ALIGNED', 'CONFLICTED', 'NOT_ESTABLISHED', 'UNKNOWN')),
             ('reversal', ('CONFIRMED', 'FORMING', 'NOT_CONFIRMED', 'UNKNOWN')),
@@ -87,11 +95,16 @@ def validate_assessment(value, resolve, cutoff=None):
     require(CORE_MARKETS <= ids, 'independent assessment must cover SPX, NDX and BTC')
 
 
-def validate_zones(values, resolve, prior=None, cutoff=None):
+def validate_zones(values, resolve, prior=None, cutoff=None, revision=5):
     require(isinstance(values, list), 'dispute zones must be a list')
     ids = set()
     for z in values:
         extra = ''.join(' ' + k for k in ('role', 'boundary_review') if k in z)
+        if revision >= 6:
+            extra += ' evidence_kind limitations'
+            require(z.get('evidence_kind') in ('OHLC_RANGE', 'TRADED_VOLUME', 'ORDER_BOOK', 'PRICE_RESPONSE', 'UNKNOWN'), 'price area evidence kind required')
+            text(z.get('limitations'), 'price area evidence limitations')
+            require('role' in z and (z.get('boundary_review') or {}).get('revision') == 2, 'revision 6 price area needs its actual formation and validation history')
         exact(z, 'id market quote_unit area horizon as_of status state breakout long_risk short_risk response conflicts change_reason next_check retirement_reason supersedes refs counter_refs' + extra, 'dispute zone')
         if 'role' in z:
             require(z['role'] in ('MAIN_DISPUTE', 'INTERNAL_LEVEL', 'HISTORICAL_ANCHOR'), 'invalid price structure role')
@@ -273,16 +286,31 @@ def market_projection(ctx):
     if value['market_baseline']:
         for key in ('decision_id', 'observation_id'):
             value['market_baseline'].pop(key, None)
+    if ctx.get('revision', 5) >= 6:
+        from .closed_loop import INSTRUCTIONS as LOOP_INSTRUCTIONS
+        value['revision'] = 6
+        value['historical_hypotheses'] = {k: value.pop(k) for k in
+            ('market_baseline', 'market_report', 'previous_market_observation')}
+        value['historical_hypotheses']['factor_assessment'] = value['factor_context'].pop('current', None)
+        # Candidate zones are historical interpretations, not newly observed
+        # prices in the factual input. Product identity/quotes remain public.
+        for row in value['report_subjects'].values():
+            if isinstance(row, dict):
+                row.pop('product_zones', None)
+                row.pop('underlying_zones', None)
+        value['instructions'] += LOOP_INSTRUCTIONS
     value['market_context_id'] = digest(value)
     return value
 
 
-def parse_result(analysis):
+def parse_result(analysis, revision=5):
     from .cycle import parse_review
     value = parse_review(analysis)
     exact(value, 'outlook factor_assessment market_report', 'independent public market result')
-    validate_assessment(value['outlook']['market_assessment'], lambda ref: None)
-    validate_zones(value['outlook']['dispute_zones'], lambda ref: None)
+    if any('forward' in h for m in value['outlook']['market_assessment']['markets'] for h in m['horizons']):
+        revision = max(revision, 6)
+    validate_assessment(value['outlook']['market_assessment'], lambda ref: None, revision=revision)
+    validate_zones(value['outlook']['dispute_zones'], lambda ref: None, revision=revision)
     text(value['market_report'], 'independent market and price-risk report')
     return value
 

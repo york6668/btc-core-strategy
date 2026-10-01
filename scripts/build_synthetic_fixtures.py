@@ -15,8 +15,10 @@ SKILL = ROOT / 'skill/btc-core-strategy'
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output-dir', type=Path, required=True)
-    fixtures = parser.parse_args().output_dir.resolve()
+    parser.add_argument('--output-dir', '--output', dest='output', type=Path, required=True)
+    args = parser.parse_args()
+    fixtures = args.output.resolve()
+    os.environ['BTC_TEST_FIXTURE_DIR'] = str(fixtures)
     fixtures.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as directory:
         node = Path(directory)

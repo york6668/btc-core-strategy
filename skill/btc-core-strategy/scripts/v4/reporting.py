@@ -76,7 +76,7 @@ def consensus_prices(root, artifact):
     for side in ('lower_spot', 'upper_short'):
         if authored:
             bound = {ref for b in layout['bindings'] for ref in b['refs']}
-            if not any(ref.startswith('/assessment/recommendations/'+side+'/tiers/') for ref in bound):
+            if not any(ref.startswith(('/assessment/recommendations/'+side+'/tiers/', '/execution_plans/'+side+'/tiers/')) for ref in bound):
                 continue
         if source.get('layout', {}).get('price_status', {}).get(side) == 'WITHDRAWN':
             continue
@@ -90,8 +90,9 @@ def consensus_prices(root, artifact):
         for i, tier in enumerate(tiers):
             fields = {'price_low_usd','price_high_usd','allocation_percent'}
             if authored:
-                prefix = '/assessment/recommendations/'+side+'/tiers/'+str(i)+'/'
-                fields = {key for key in fields if prefix+key in bound}
+                prefixes = ('/assessment/recommendations/'+side+'/tiers/'+str(i)+'/',
+                            '/execution_plans/'+side+'/tiers/'+str(i)+'/')
+                fields = {key for key in fields if any(prefix+key in bound for prefix in prefixes)}
                 if (fields & {'price_low_usd','price_high_usd'}
                         and Decimal(tier['price_low_usd']) == Decimal(tier['price_high_usd'])):
                     fields |= {'price_low_usd','price_high_usd'}
@@ -197,7 +198,7 @@ def context(root):
             identity['cycle_report_hash'] = basis['report_hash']
     if care['enabled']:identity['report_day']=care['day']
     return {'schema':'BTC_REPORT_CONTEXT_V1', 'context_id':digest(identity), 'identity':identity,
-            **cycle_context, **({'market_revision':5} if separated else {}), 'evaluated_at':stamp, 'reported':prior, 'report_care':care, 'coverage':{'start':start or raw['observed_hour'],'end':raw['cutoff']},
+            **cycle_context, **({'market_revision':max(5, observed.get('revision', 5), decision['assessment'].get('revision', 5))} if separated else {}), 'evaluated_at':stamp, 'reported':prior, 'report_care':care, 'coverage':{'start':start or raw['observed_hour'],'end':raw['cutoff']},
             'coverage_display_revision':3,
             'knowledge_cutoff':max([x['retrieved_at'] for x in raw['retrievals'].values()] + ([supplementary['cutoff']] if supplementary else []), key=instant),
             'public_evidence': supplementary if separated else None,
@@ -262,7 +263,10 @@ def record(root, spec, *, prepared_context=None):
                 # Keep the author's frozen clock line. Applicability, deadlines
                 # and price validity still use the live evaluated_at below.
                 ctx['authored_evaluated_at'] = prepared_context['evaluated_at']
-        exact(spec,'schema context_id action purposes reason next_observation baseline_review applicability_review information layout provenance'+(' user_request' if 'user_request' in spec else '')+(' maintenance' if 'maintenance' in spec else '')+(' report_basis' if 'report_basis' in spec else '')+(' delivery_coverage' if 'delivery_coverage' in spec else '')+(' important_events' if 'important_events' in spec else ''),'report review')
+        exact(spec,'schema context_id action purposes reason next_observation baseline_review applicability_review information layout provenance'+(' user_request' if 'user_request' in spec else '')+(' maintenance' if 'maintenance' in spec else '')+(' report_basis' if 'report_basis' in spec else '')+(' delivery_coverage' if 'delivery_coverage' in spec else '')+(' important_events' if 'important_events' in spec else '')+(' result_binding' if ctx.get('market_revision', 0) >= 6 else ''),'report review')
+        if ctx.get('market_revision', 0) >= 6:
+            from .closed_loop import validate_report_binding
+            validate_report_binding(spec, ctx)
         if 'user_request' in spec:
             exact(spec['user_request'],'reference reason','explicit user rewrite request')
             for key in ('reference','reason'):text(spec['user_request'][key],'user request '+key)
@@ -292,9 +296,9 @@ def record(root, spec, *, prepared_context=None):
         for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')
         pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
         facts_match = facts(Path(root).parent.parent) == storage.current(root)['assessment']['fact_version']
-        if not facts_match and ctx.get('market_revision') == 5 and spec['action'] == 'REPORT':
+        if not facts_match and ctx.get('market_revision', 0) >= 5 and spec['action'] == 'REPORT':
             text(spec['information'].get('fact_limitations'), 'personal response must explain changed facts without limiting market eligibility')
-        if not facts_match and ctx.get('market_revision') != 5:
+        if not facts_match and ctx.get('market_revision', 0) < 5:
             require(pending_cycle, 'facts changed; portfolio impact awaits cycle review')
             if spec['action'] == 'REPORT':
                 require(spec['layout'] and (spec['layout'].get('format') in DISPLAY_FORMATS or not spec['layout']['include_recommendations']),
@@ -325,6 +329,9 @@ def record(root, spec, *, prepared_context=None):
         validate_report_basis(spec,ctx)
         require(required <= event_ids or completed_feedback, 'unreported completed research needs result feedback even when rating is unchanged')
         if spec['action']=='REPORT':
+            if ctx.get('market_revision', 0) >= 6:
+                require(spec['layout'] and spec['layout'].get('format') == AUTHORED_FORMAT,
+                        'revision 6 reports use the final authored result, not legacy automatic assembly')
             if ctx.get('cycle_policy_revision') == 1:
                 require(spec['layout'] and spec['layout'].get('format') in ('MARKET_MOBILE_V1','MARKET_MOBILE_V2',AUTHORED_FORMAT), 'cycle reports require the reviewed report layout')
             require(spec['purposes'] and spec['information'],'report purpose and information required')
@@ -443,6 +450,10 @@ def due(root, source_value):
     value=source_value['report_review']; ctx=value['context']; latest=context(root)
     from . import report_care
     if latest['context_id'] != ctx['context_id'] or not report_care.source_current(root,value):return False
+    if ctx.get('market_revision', 0) >= 6:
+        from .closed_loop import report_inputs
+        if value['result_binding'] != report_inputs(latest)['result_binding']:
+            return False
     if duplicate_mobile_body(root,value,latest,source_value['body']):return False
     prior=latest['reported'].get('information')
     return value['action']=='REPORT' and (value['layout'].get('format') in DISPLAY_FORMATS or prior is None or digest(prior)!=digest(value['information']) or latest['reported'].get('display_matches_baseline') is False or user_request_due(root,value) or report_care.daily_override(root,value))

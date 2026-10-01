@@ -30,7 +30,7 @@ def validate_completion(value, path):
 
 
 def sections_for_revision(revision):
-    require(revision in (3, 4, 5), 'unsupported main assessment revision')
+    require(revision in (3, 4, 5, 6), 'unsupported main assessment revision')
     return SECTIONS + (('factor_assessment',) if revision >= 4 else ())
 
 
@@ -83,7 +83,11 @@ def validate_publication(root, prior, draft):
     if draft.get('revision', 1) >= 5:
         from . import market_state
         previous_zones = market_state.effective(root, prior['assessment'], prior['decision_id'])['dispute_zones']
-        market_state.validate_zones(draft['outlook']['dispute_zones'], lambda ref: None, prior=previous_zones)
+        # Identical carried market sections retain their original validation.
+        if draft['section_provenance']['outlook']['mode'] != 'REUSED':
+            market_state.validate_zones(draft['outlook']['dispute_zones'], lambda ref: None, prior=previous_zones, revision=draft['revision'])
+            market_state.validate_assessment(draft['outlook']['market_assessment'], lambda ref: None,
+                draft['temporal_scope']['knowledge_cutoff'], draft['revision'], prior['assessment'].get('outlook', {}).get('market_assessment'))
     from .research import validate_absorptions
     validate_absorptions(root, draft)
     from .cycle import validate_publication as validate_cycle_publication
@@ -185,6 +189,12 @@ def projection(assessment):
     lines = ['# 当前核心策略', '', '行情截止：' + assessment['temporal_scope']['market_cutoff'],
              '证据截止：' + assessment['temporal_scope']['knowledge_cutoff'], '', assessment['conclusion']['narrative'], '',
              '## 价值判断', '']
+    if assessment.get('revision', 1) >= 6:
+        from .closed_loop import allocation
+        decision = allocation(assessment)
+        lines += ['市场结论：' + assessment['outlook']['market_assessment']['summary'], '',
+                  '配置决定：' + decision['summary'], '']
+        lines += [action['scope'] + '：' + action['arrangement'] for action in decision['actions']]
     lines += ['- ' + v for v in assessment['conclusion']['business_meaning'].values()]
     for side, title, unit in (('upper_short', '溢价区空单', 'U名义额'), ('lower_spot', '超卖区现货篮子', 'U投入')):
         v = assessment['recommendations'][side]
@@ -193,6 +203,8 @@ def projection(assessment):
         lines += ['', '## ' + title, '', '| BTC参考位置（USDT/BTC） | 建议金额 | 计划占用 |', '|---|---:|---:|']
         if v['status'] == 'NOT_RECOMMENDED':
             lines += ['| 当前不建议 | — | — |']
+        elif v['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED'):
+            lines += ['| ' + ('方向已决定，价量执行受限' if v['status'] == 'EXECUTION_LIMITED' else '动作未决') + ' | 未知 | 未知 |']
         for tier in v['tiers']:
             price = tier['price_low_usd'] + ('—' + tier['price_high_usd'] if tier['price_low_usd'] != tier['price_high_usd'] else '')
             if side == 'lower_spot' and any('allocation_percent' in t for t in v['tiers']):
@@ -222,7 +234,9 @@ def assemble(root, project, components, evidence_dir, market, identity, checks):
     previous = pinned['assessment']
     exact(components, 'updates section_reviews evidence_bindings domain_market_cutoff stop_reason', 'main authored components')
     require(isinstance(components['updates'], dict), 'main updates must be a mapping')
-    revision = (5 if 'market_assessment' in components['updates'].get('outlook', previous.get('outlook', {}))
+    from .closed_loop import allocation
+    revision = (6 if allocation({'recommendations': components['updates'].get('recommendations', previous.get('recommendations'))}) is not None
+                else 5 if 'market_assessment' in components['updates'].get('outlook', previous.get('outlook', {}))
                 else 4 if previous.get('revision', 1) >= 4 or 'factor_assessment' in components['updates'] else 3)
     sections = sections_for_revision(revision)
     require(set(components['updates']) <= set(sections) | {'research_absorptions'}, 'unknown main update section')
@@ -269,7 +283,9 @@ def report_source(root, decision_id, layout, constraints, author_review):
     from . import report
     pinned = current(root)
     require(pinned and pinned['decision_id'] == decision_id, 'report source must use the current complete conclusion')
-    require(pinned['assessment'].get('revision') in (3, 4, 5), 'new report source requires main revision 3 or later')
+    require(pinned['assessment'].get('revision', 1) < 6,
+            'revision 6 report sources require report-review with final result bindings and applicability')
+    require(pinned['assessment'].get('revision') in (3, 4, 5, 6), 'new report source requires main revision 3 or later')
     value = deepcopy(pinned['assessment'])
     value['report'] = layout
     comparison = report_comparison(root, value, pinned, pinned['review']['material_new_outlook'])

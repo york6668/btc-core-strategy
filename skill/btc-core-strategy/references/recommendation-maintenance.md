@@ -1,12 +1,14 @@
 # 建议与持续维护（v4 周期深评）
 
+新内容使用[revision 6 完整闭环](closed-loop.md)的 allocation_decision；以下原价量结构继续兼容，不能代替整体配置决定。数量或报价缺失使用 EXECUTION_LIMITED，动作本身无法判断用 UNDETERMINED，不自动写成不建议。
+
 先依据公开证据形成指数/BTC的评级、结构及变化、依据与价格风险，再结合本地资产和偏好形成组合方案及数量建议。同一市场证据与期限下，持仓不能改变市场结论。美股组合与加密现货组合是持续建议单位，成分和权重引用当前已确认版本；成分调整须明确是建议、用户已采纳还是实际执行。独立BTC／黄金属于额外机会，保护另评。综合方案覆盖原五模块；有金额的新增档位须满足既有数值契约，无数量的市场价格风险由正文及business_meaning承载，未知数量不抹掉价格判断，也不编造额度。Codex负责条件核验与后续复核，不把内部判断退回用户。
 
 建议承接[核心策略的价值背离与时间优势判断](core-strategy.md#价值背离与时间优势)，在既有rationale、impact、amount_basis与validity中解释其对位置、规模、等待代价和有效性的影响。沿用旧建议也须确认当前前景与等待安排仍适用，不能仅以结构锚未迁移续期；不要求预测兑现周期；分析期限、建议有效期和报告复核期限各有用途。时间优势暂无法判断时仍给出经过组合评估的保守安排及理由，不机械归零或把某一方向判断当作入场资格。
 
 ## 正式契约
 
-AssessmentDraft保持BTC_ASSESSMENT_DRAFT_V4；revision 3沿用recommendations与maintenance_binding，新增主结论与专项吸收。旧revision 1/2保持可读，生产write-policy.json要求minimum_assessment_revision=4，cycle_review_required=true启用真实周期来源校验。历史文件与报告不转换、不重写。新的portfolio_analysis.semantic仅含protection_purpose、amount_basis，禁止继续写scenario_budget；旧domain.trade_candidates仅供历史资格不变量兼容，不能覆盖建议金额。未来建议不声称已获得当前入场资格，不改变position_fact。
+AssessmentDraft保持BTC_ASSESSMENT_DRAFT_V4；revision 3沿用recommendations与maintenance_binding，新增主结论与专项吸收。旧revision 1/2保持可读，旧部署write-policy可保持原值；新入口使用revision 6，正式状态经真实评估采纳，cycle_review_required=true继续核验真实研究来源。历史文件与报告不转换、不重写。新的portfolio_analysis.semantic仅含protection_purpose、amount_basis，禁止继续写scenario_budget；旧domain.trade_candidates仅供历史资格不变量兼容，不能覆盖建议金额。未来建议不声称已获得当前入场资格，不改变position_fact。
 
 recommendations恰好包含upper_short、lower_spot、portfolio。每侧字段如下：
 

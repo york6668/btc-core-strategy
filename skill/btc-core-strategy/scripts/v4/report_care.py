@@ -78,35 +78,53 @@ def validate(root,spec,ctx):
     required=enabled(root)
     if not required and 'maintenance' not in spec:return
     require('maintenance' in spec,'report analysis and follow-up obligations required')
-    m=spec['maintenance'];exact(m,'kind thesis support unresolved triggers recheck_at daily checked'+(' retired' if ctx.get('market_revision') == 5 else ''),'report maintenance')
-    require(m['kind'] in ('MARKET_REVIEW','DEEP_REVIEW','EXPRESSION_ONLY'),'invalid assessment kind')
+    scoped = ctx.get('market_revision', 0) >= 6
+    m=spec['maintenance'];exact(m,'kind thesis support unresolved triggers recheck_at daily checked'+(' retired' if ctx.get('market_revision', 0) >= 5 else ''),'report maintenance')
+    require(m['kind'] in ('MARKET_REVIEW','PORTFOLIO_REVIEW','DEEP_REVIEW','EXPRESSION_ONLY'),'invalid assessment kind')
     for k in ('thesis','support','unresolved'):text(m[k],k);require(len(m[k].strip())>=12,k+' needs actual analysis')
     require(isinstance(m['triggers'],list) and m['triggers'],'at least one model-selected revision trigger required')
     ids=set();values={'metrics':ctx['metrics'],'observation':ctx.get('observation')}
     from .storage import current
     values['assessment']=current(root)['assessment']
+    prefixes = ('/assessment/', '/metrics/', '/observation/')
+    if scoped:
+        from .closed_loop import report_inputs
+        values.update(report_inputs(dict(ctx, current_strategy=ctx.get('current_strategy') or values['assessment'])))
+        values.update({k: ctx.get(k) for k in ('public_evidence', 'report_subjects')})
+        prefixes += ('/market_result/', '/allocation_decision/', '/applicability/', '/execution_plans/', '/public_evidence/', '/report_subjects/')
     for t in m['triggers']:
-        exact(t,'id condition reason refs','revision trigger');require(t['id'] not in ids,'duplicate revision trigger');ids.add(t['id'])
+        exact(t,'id condition reason refs'+(' scope' if scoped else ''),'revision trigger');require(t['id'] not in ids,'duplicate revision trigger');ids.add(t['id'])
+        if scoped:
+            require(t['scope'] in ('MARKET', 'PORTFOLIO'), 'trigger owner required')
         for k in ('id','condition','reason'):text(t[k],k)
         require(len(t['reason'].strip())>=12,'trigger must explain why the analysis needs review')
         require(isinstance(t['refs'],list),'trigger references required')
-        for ref in t['refs']:require(ref.startswith(('/assessment/','/metrics/','/observation/')),'invalid trigger reference');pointer(values,ref)
+        for ref in t['refs']:require(ref.startswith(prefixes),'invalid trigger reference');pointer(values,ref)
+        if scoped and t['scope'] == 'MARKET':
+            from .authored_report import PUBLIC
+            require(all(ref.startswith(PUBLIC + ('/market_result/', '/applicability/market/')) for ref in t['refs']), 'private account condition cannot be a market trigger')
     current_time=ctx['evaluated_at'];require(instant(m['recheck_at'])>instant(current_time),'next review must be in the future')
     daily=m['daily'];exact(daily,'day report_by reason','daily feedback plan')
     require(daily['day']==day(current_time)==day(daily['report_by']),'daily plan must refer to current Japanese day')
     text(daily['reason'],'daily timing rationale');require(len(daily['reason'].strip())>=12,'daily timing needs a reason')
     care=ctx.get('report_care') or status(root,current_time)
-    previous=latest(root);check=m['checked'];exact(check,'prior_review_id basis_review trigger_results outcome','actual report recheck')
+    previous=latest(root);check=m['checked'];exact(check,'prior_review_id basis_review trigger_results outcome'+(' outcomes' if scoped else ''),'actual report recheck')
     require(check['prior_review_id']==(previous['review_id'] if previous else None),'stale report maintenance review')
     text(check['basis_review'],'silence/report basis review');require(len(check['basis_review'].strip())>=12,'check needs actual evidence assessment')
     require(check['outcome'] in ('VALID','REVISE','EVIDENCE_LIMITED'),'invalid review outcome')
     prior_ids={t['id'] for t in previous['maintenance']['triggers']} if previous else set()
     require(isinstance(check['trigger_results'],list),'trigger check results required');seen=set()
     for result in check['trigger_results']:
-        exact(result,'id state evidence','trigger check result');require(result['id'] not in seen,'duplicate trigger check');seen.add(result['id'])
+        exact(result,'id state evidence'+(' scope material' if scoped else ''),'trigger check result');require(result['id'] not in seen,'duplicate trigger check');seen.add(result['id'])
         require(result['state'] in ('MET','NOT_MET','UNKNOWN'),'invalid trigger outcome');text(result['evidence'],'actual trigger evidence')
+        if scoped:
+            require(result['scope'] in ('MARKET', 'PORTFOLIO') and type(result['material']) is bool, 'trigger needs ownership and significance')
+            prior = next((t for t in (previous or {}).get('maintenance', {}).get('triggers', []) if t['id'] == result['id']), {})
+            require(prior.get('scope', result['scope']) == result['scope'], 'existing trigger ownership cannot change during checking')
+            current = next((t for t in m['triggers'] if t['id'] == result['id']), {})
+            require(current.get('scope', result['scope']) == result['scope'], 'retained trigger cannot change ownership')
     require(seen==prior_ids,'all prior report triggers must actually be checked')
-    if ctx.get('market_revision') == 5:
+    if ctx.get('market_revision', 0) >= 5:
         require(isinstance(m['retired'], list), 'retired conditions must be a list')
         retired=set()
         for item in m['retired']:
@@ -116,9 +134,25 @@ def validate(root,spec,ctx):
         require(retired == prior_ids - ids, 'every removed prior condition needs its retirement reason')
     if not care.get('fulfilled') and care.get('report_by'):
         require(instant(daily['report_by'])<=instant(care['report_by']),'unfulfilled daily deadline cannot be postponed')
+    if scoped:
+        exact(check['outcomes'], 'MARKET PORTFOLIO', 'separate market and portfolio outcomes')
+        require(all(v in ('VALID', 'REVISE', 'EVIDENCE_LIMITED') for v in check['outcomes'].values()), 'invalid scoped review outcome')
+        worst = 'REVISE' if 'REVISE' in check['outcomes'].values() else 'EVIDENCE_LIMITED' if 'EVIDENCE_LIMITED' in check['outcomes'].values() else 'VALID'
+        require(check['outcome'] == worst, 'overall recheck must preserve unresolved scope')
+        for r in check['trigger_results']:
+            if r['state'] == 'UNKNOWN':
+                require(check['outcomes'][r['scope']] != 'VALID', 'unknown condition cannot be recorded as valid')
+            if r['material'] and r['state'] in ('MET', 'UNKNOWN'):
+                require(spec['action'] == 'REPORT', 'material change or unresolved risk requires feedback')
+        personal = (ctx.get('observation') or {}).get('review', {}).get('allocation_review') or {}
+        if personal.get('material'):
+            require(spec['action'] == 'REPORT', 'important portfolio review cannot be hidden as no change')
     if spec['action']=='SILENT':
-        require(check['outcome']=='VALID','silence must establish why the previous analysis still holds')
-        require(all(r['state']!='UNKNOWN' for r in check['trigger_results']),'unknown trigger evidence is not market silence')
+        if scoped:
+            require(check['outcomes']['MARKET'] == 'VALID' and check['outcomes']['PORTFOLIO'] != 'REVISE', 'silence needs valid market and no unreported allocation revision')
+        else:
+            require(check['outcome']=='VALID','silence must establish why the previous analysis still holds')
+            require(all(r['state']!='UNKNOWN' for r in check['trigger_results']),'unknown trigger evidence is not market silence')
         require(not care.get('daily_due') and (care.get('fulfilled') or instant(daily['report_by'])>instant(current_time)),'daily feedback is due; unchanged conclusions do not authorize silence')
         # This judges new market meaning only. Delivery obligations have their
         # own recovery state and survive an otherwise valid quiet observation.

@@ -135,7 +135,7 @@ def accumulation(prior, history, current):
     return {'status': 'AVAILABLE', 'start': prior['cutoff'], 'end': current['cutoff'], 'windows': windows, 'revisions': revisions}
 
 
-def context(root, db, project, current_market, limit=240, compact=True, evidence_dir=None, *, frozen_review=False):
+def context(root, db, project, current_market, limit=240, compact=True, evidence_dir=None, *, frozen_review=False, workflow_revision=None):
     from .storage import current
     root = Path(root)
     market.validate_evidence(current_market)
@@ -143,6 +143,9 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     pinned = current(root)
     policy = read(root / 'write-policy.json') if (root / 'write-policy.json').exists() else {}
     active_revision = max(((pinned or {}).get('assessment') or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1))
+    if workflow_revision is not None:
+        require(workflow_revision in (5, 6), 'invalid requested workflow revision')
+        active_revision = max(active_revision, workflow_revision)
     factor_workflow = active_revision >= 4 or evidence_dir is not None
     require(not factor_workflow or evidence_dir is not None, 'revision 4 context requires frozen --evidence')
     workflow = active_revision >= 3 or factor_workflow
@@ -167,6 +170,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         older = instant(current_market['observed_hour']) < instant(latest['observed_hour'])
         require(frozen_review or not older, 'late older-hour observation cannot replace latest sensing')
         saved = observation(root, latest['observation_id'])
+        active_revision = max(active_revision, saved.get('revision', 1))
         require(saved['observed_hour'] == latest['observed_hour'], 'sensing pointer hour mismatch')
         previous = {k: saved[k] for k in ('observation_id', 'observed_hour', 'created_at', 'review', 'measurements', 'triggers')}
         if older:
@@ -197,6 +201,8 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
                 'legacy_hour': legacy['baselines'].get('HOUR'), 'fact_version': current_facts,
                 'market_evidence_id': current_market['evidence_id'], 'retrieval_id': current_market['retrieval_id'],
                 'history_ids': [p['evidence_id'] for p in history]}
+    if active_revision >= 6:
+        identity['workflow_revision'] = 6
     research_context = None
     if workflow:
         from . import research
@@ -241,7 +247,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     # This is an observation of conditions, never a maintained/withdrawn conclusion.
     value['measurements'] = measure(value, current_market)
     if workflow:
-        value['revision'] = 5 if active_revision >= 5 else 4 if factor_workflow else 3
+        value['revision'] = min(6, active_revision) if active_revision >= 5 else 4 if factor_workflow else 3
         if factor_workflow:
             value['factor_context'] = factor_context
         value['current_conclusion'] = core.get('conclusion')
@@ -338,19 +344,51 @@ def measure(ctx, raw):
     return result
 
 
-def record(root, db, project, raw, review, evidence_dir=None):
+def validate_public(root, ctx, raw, authored, evidence_dir):
+    """The same public preflight runs before freeze and before observation commit."""
+    from . import evidence, factors, market_state, cycle, research
+    bundle = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
+    resolve = lambda ref: evidence.resolve(bundle, evidence_dir, ref, verified=True)
+    rev = ctx.get('revision', 5)
+    market_state.validate_assessment(authored['market_assessment'], resolve, bundle['cutoff'], rev,
+        ctx.get('market_baseline', {}).get('market_assessment'))
+    market_state.validate_zones(authored['dispute_zones'], resolve,
+        ctx.get('market_baseline', {}).get('dispute_zones', []), bundle['cutoff'], rev)
+    factors.validate(authored['factor_checks'], bundle, evidence_dir)
+    if 'cycle_baseline' in ctx:
+        cycle.validate_applicability(authored['applicability_review'], ctx, bundle, evidence_dir)
+    candidate = deepcopy(authored['market_review'])
+    candidate.update(schema=market.REVIEW_SCHEMA, evidence_id=raw['evidence_id'], observed_hour=raw['observed_hour'],
+                     context_id=ctx['context_id'], model=dict(market.CURRENT_HOURLY_MODEL))
+    completed = ctx.get('cycle_baseline') if ctx.get('cycle_baseline', {}).get('result_id') else ctx.get('current_core')
+    validation = {'context_id': ctx['context_id'], 'baselines': {}, 'successful_deep': None}
+    if ctx.get('previous_hour'):
+        validation['baselines']['HOUR'] = True
+    if completed:
+        validation['baselines']['DEEP'] = {'completed_at': completed.get('completed_at') or completed.get('created_at')}
+    market.validate_review(raw, candidate, validation, model_market=True)
+    known = market.reference_ids(raw)
+    require(isinstance(authored['extra_findings'], list), 'extra discoveries must remain available')
+    for item in authored['extra_findings']:
+        exact(item, 'summary refs material', 'extra market discovery')
+        text(item['summary'], 'extra discovery')
+        require(type(item['material']) is bool and item['refs'] and set(item['refs']) <= known, 'extra discovery needs evidence and significance')
+    research.findings(root, authored['research_findings'], known, bundle, evidence_dir)
+
+
+def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=None):
     root = Path(root)
     if evidence_dir is not None:
         from .storage import archive_evidence
         evidence_dir = archive_evidence(root, evidence_dir)['directory']
     with locked(root):
-        ctx = context(root, db, project, raw, compact=False, evidence_dir=evidence_dir)
+        ctx = context(root, db, project, raw, compact=False, evidence_dir=evidence_dir, workflow_revision=workflow_revision)
         workflow = ctx.get('revision', 1) >= 3
         factor_workflow = ctx.get('revision', 1) >= 4
         cycle_workflow = 'cycle_baseline' in ctx
         if cycle_workflow:
             require('applicability_review' in review, 'applicability_review required; use a current observation template')
-        exact(review, 'schema context_id market_review recommendation_checks extra_findings' + (' revision main_evaluation research_findings' if workflow else '') + (' factor_checks' if factor_workflow else '') + (' applicability_review' if cycle_workflow else '') + (' market_assessment dispute_zones market_result_hash' if ctx.get('revision', 1) >= 5 else ''), 'v4 sensing review')
+        exact(review, 'schema context_id market_review recommendation_checks extra_findings' + (' revision main_evaluation research_findings' if workflow else '') + (' factor_checks' if factor_workflow else '') + (' applicability_review' if cycle_workflow else '') + (' market_assessment dispute_zones market_result_hash' if ctx.get('revision', 1) >= 5 else '') + (' allocation_review' if ctx.get('revision', 1) >= 6 else ''), 'v4 sensing review')
         require(review['schema'] == 'BTC_SENSING_REVIEW_V4' and review['context_id'] == ctx['context_id'], 'stale recommendation sensing context')
         if workflow:
             require(review['revision'] == ctx['revision'], 'core workflow sensing revision mismatch')
@@ -366,12 +404,14 @@ def record(root, db, project, raw, review, evidence_dir=None):
             factors.validate(review['factor_checks'], factor_package, evidence_dir)
         if ctx.get('revision', 1) >= 5:
             from . import market_state
+            validate_public(root, ctx, raw, review, evidence_dir)
             resolve = lambda ref: evidence.resolve(factor_package, evidence_dir, ref, verified=True)
-            market_state.validate_assessment(review['market_assessment'], resolve, factor_package['cutoff'])
-            market_state.validate_zones(review['dispute_zones'], resolve, ctx['market_baseline']['dispute_zones'], factor_package['cutoff'])
             public = {k: review[k] for k in market_state.MARKET_FIELDS if k in review}
             public['market_review'] = {k:v for k,v in public['market_review'].items() if k not in ('schema','context_id','model','evidence_id','observed_hour')}
             require(review['market_result_hash'] == digest(public), 'portfolio stage changed the frozen market result')
+            if ctx['revision'] >= 6:
+                from .closed_loop import validate_allocation_review
+                validate_allocation_review(review['allocation_review'], ctx, review['market_result_hash'])
         if cycle_workflow:
             from .cycle import validate_applicability
             validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir)
@@ -408,6 +448,8 @@ def record(root, db, project, raw, review, evidence_dir=None):
             text(finding['summary'], 'extra discovery')
             require(type(finding['material']) is bool and finding['refs'] and set(finding['refs']) <= known_refs, 'extra discovery needs evidence and significance')
         triggers = []
+        if ctx.get('revision', 1) >= 6 and review['allocation_review']['outcome'] == 'REVISE':
+            triggers.append('ALLOCATION_REVIEW_REQUIRED')
         if candidate['deep_review']['required']:
             triggers.append('MARKET_CHANGE')
         for check in checks:
@@ -458,7 +500,7 @@ def record(root, db, project, raw, review, evidence_dir=None):
             same_judgement = not workflow or all(previous['review'].get(k) == review.get(k) for k in ('main_evaluation', 'research_findings', 'recommendation_checks', 'extra_findings', 'factor_checks', 'applicability_review'))
             if ctx.get('revision', 1) >= 5:
                 same_judgement = same_judgement and all(previous['review'].get(k) == review.get(k)
-                    for k in ('market_assessment', 'dispute_zones'))
+                    for k in ('market_assessment', 'dispute_zones', 'allocation_review'))
             if workflow:
                 # Re-reading the same raw facts can change the model's account
                 # of them. Only the context identity is bookkeeping here.

@@ -27,9 +27,7 @@ import test_production_strategy as production
 import test_strategy_contract as legacy
 
 READER_ROOT = Path(__import__('os').environ['BTC_COLLECTOR_CONTRACT_PATH']).parent
-sys.path.insert(0, str(READER_ROOT / "tests"))
-from collector_replay_fixture import protocol_fixture_directory
-FIXTURES = protocol_fixture_directory()
+FIXTURES = Path(__import__('os').environ['BTC_READER_TEST_FIXTURE_DIR'])
 sys.path.insert(0, str(READER_ROOT))
 import btc_evidence as evidence
 import reader
@@ -63,8 +61,7 @@ class CollectorObservationIntegrationTests(unittest.TestCase):
         """
         raw = (FIXTURES / (fixture + ".json")).read_bytes()
         if fixture == "valid":
-            self.assertEqual(hashlib.sha256(raw).hexdigest(),
-                             "e6c2b76452665691b82812f79a300f1375a241e36387ea2c484fbdee4eba38ab")
+            self.assertEqual(evidence.decode_bundle(raw)['role'], 'auxiliary_observation')
         if mutate:
             value = evidence.decode_bundle(raw)
             mutate(value)

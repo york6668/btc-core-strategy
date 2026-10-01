@@ -86,7 +86,13 @@ def current(root):
 def activate(config, revision):
     with locked(config) as root:
         target = version_dir(root, revision)
-        check_release(target)
+        metadata = check_release(target)
+        formal = Path(config['project_dir']) / '.strategy/v4/current/decision.json'
+        if formal.exists():
+            content_revision = (read(formal).get('assessment') or {}).get('revision', 1)
+            readable = metadata.get('content_contract', {}).get('read_revisions', [1, 2, 3, 4, 5])
+            if content_revision not in readable:
+                raise ValueError('target code cannot read current assessment revision; preserve code and data')
         active = [read(p) for p in (root / 'runs').glob('*.json') if read(p).get('status') == 'ACTIVE']
         if active:
             write(root / 'pending.json', {'commit': revision, 'status': 'WAITING_FOR_RUN_GAP'})
@@ -104,7 +110,7 @@ def activate(config, revision):
         return {'status': 'ACTIVE', 'commit': revision, 'previous': previous, 'release': str(target)}
 
 
-def install(config, source, ref='HEAD', *, activate_after=True):
+def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None):
     source = Path(source).resolve()
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', ref + '^{commit}'], text=True).strip()
     with locked(config) as root:
@@ -130,12 +136,13 @@ def install(config, source, ref='HEAD', *, activate_after=True):
                     path = stage / filename
                     if not path.is_file() or path.is_symlink() or stage not in path.resolve().parents:
                         raise ValueError('missing or unsafe release source: ' + filename)
-                reader = Path(config['reader_code_dir']).expanduser().resolve()
+                reader = Path(test_reader or config['reader_code_dir']).expanduser().resolve()
                 if not (reader / 'reader.py').is_file():
                     raise ValueError('configured reader_code_dir must contain the installed reader')
                 subprocess.run([config['python'], str(stage / 'scripts/run_tests.py'),
                                 '--reader', str(reader)], cwd=stage, check=True)
                 write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
+                      'content_contract': required.get('content_contract', {'read_revisions': [1, 2, 3, 4, 5], 'new_write_revision': 5}),
                       'tested_python': config['python'], 'repository': 'york6668/btc-core-strategy'})
                 os.rename(str(stage), str(destination))
             finally:
@@ -205,6 +212,7 @@ def main():
     parser.add_argument('--node-config', required=True)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('install'); p.add_argument('--source', required=True); p.add_argument('--ref', default='HEAD'); p.add_argument('--stage-only', action='store_true')
+    p.add_argument('--reader', help='Exported reader with offline test sources; leaves the production reader unchanged')
     p = sub.add_parser('activate'); p.add_argument('commit')
     p = sub.add_parser('enter'); p.add_argument('--run-id', required=True); p.add_argument('--resume-context')
     p = sub.add_parser('bind-context'); p.add_argument('--run-id', required=True); p.add_argument('--context', required=True)
@@ -212,7 +220,7 @@ def main():
     sub.add_parser('status')
     args = parser.parse_args(); config = node(args.node_config)
     if args.command == 'install':
-        result = install(config, args.source, args.ref, activate_after=not args.stage_only)
+        result = install(config, args.source, args.ref, activate_after=not args.stage_only, test_reader=args.reader)
     elif args.command == 'activate':
         result = activate(config, args.commit)
     elif args.command == 'enter':
