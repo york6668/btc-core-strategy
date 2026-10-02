@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 import sys
 
+if __name__ == '__main__':
+    from node_bridge import forward_if_enabled
+    forward_if_enabled(sys.argv[1:])
+
 from v4 import assessment, delivery, domain, draft, evidence, hourly, migration, storage, sensing, main_flow, research, reporting
 from v4.common import Invalid, create, digest, facts, read, locked
 

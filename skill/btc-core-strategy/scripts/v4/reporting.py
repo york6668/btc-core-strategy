@@ -23,7 +23,7 @@ FIELDS = ('overview', 'market', 'explanation', 'risk', 'next_observation')
 def raw_for_observation(root, observed):
     """Read the exact observed package, never a later replacement of its rows."""
     db = Path(root).parent / 'market_observation.sqlite3'
-    with sqlite3.connect('file:' + str(db.resolve()) + '?mode=ro', uri=True) as conn:
+    with market._connect(db, readonly=True) as conn:
         row = conn.execute('SELECT payload FROM evidence WHERE evidence_id=?', (observed['market_evidence_id'],)).fetchone()
     require(row is not None, 'reported observation raw evidence missing')
     raw = json.loads(row[0])

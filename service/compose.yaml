@@ -1,0 +1,94 @@
+name: btc-node
+x-app: &app
+  image: btc-node:${BTC_IMAGE_TAG:-local}
+  build:
+    context: ..
+    dockerfile: service/Dockerfile
+  init: true
+  restart: unless-stopped
+  depends_on:
+    mysql:
+      condition: service_healthy
+  volumes:
+    - ${BTC_DATA_DIR:-./.local/data}:${BTC_CONTAINER_DATA_DIR:-/data}
+    - ${BTC_DATA_DIR:-./.local/data}/objects:${BTC_CONTAINER_DATA_DIR:-/data}/objects
+    - ${BTC_SETTINGS_FILE:-./.local/settings.json}:/run/btc/settings.json:ro
+  secrets:
+    - mysql_password
+  environment:
+    BTC_SERVICE_CONFIG: /run/btc/settings.json
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+services:
+  mysql:
+    image: mysql:8.4.11
+    profiles: [analysis]
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      MYSQL_DATABASE: btc
+      MYSQL_USER: btc
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets: [mysql_password, mysql_root_password]
+    volumes:
+      - mysql:/var/lib/mysql
+    command: [--innodb-buffer-pool-size=512M, --binlog-expire-logs-seconds=604800]
+    healthcheck:
+      test: [CMD, mysqladmin, ping, -h, localhost]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  core:
+    <<: *app
+    profiles: [analysis]
+    command: [serve]
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect('/run/btc/btc.sock'); s.sendall(b'{\"method\":\"status\"}\\n'); assert b'\"ok\":true' in s.recv(4096)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  maintenance:
+    <<: *app
+    profiles: [analysis]
+    command: [maintenance-loop]
+  reader:
+    image: btc-reader:${BTC_IMAGE_TAG:-local}
+    profiles: [reader]
+    init: true
+    restart: "no"
+    stdin_open: true
+    command: [reader, sync]
+    volumes:
+      - ${BTC_READER_DATA_DIR:-./.local/reader}:/data/reader
+    environment:
+      BTC_READER_EVIDENCE_PATH: /data/reader/策略证据.md
+    # The role deployment adds its source image, data mounts and command.
+    # Credentials are passed by the native bridge via stdin for one sync.
+    network_mode: bridge
+  collector:
+    image: btc-collector:${BTC_IMAGE_TAG:-local}
+    profiles: [collector]
+    init: true
+    restart: unless-stopped
+    command: [collector, --config, /run/btc/collector.json]
+    volumes:
+      - ${BTC_COLLECTOR_DATA_DIR:-./.local/collector}:/data
+      - ${BTC_COLLECTOR_CONFIG:-./.local/collector.json}:/run/btc/collector.json:ro
+      - ${BTC_COLLECTOR_PRIVATE_ENV:-./.local/collector-private.json}:/run/btc/collector-private.json:ro
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+volumes:
+  mysql:
+secrets:
+  mysql_password:
+    file: ${BTC_MYSQL_PASSWORD_FILE:-./.local/secrets/mysql}
+  mysql_root_password:
+    file: ${BTC_MYSQL_ROOT_PASSWORD_FILE:-./.local/secrets/mysql-root}

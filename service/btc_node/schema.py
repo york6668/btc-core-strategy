@@ -1,0 +1,126 @@
+"""MySQL schema. JSON originals live in content storage, not JSON reserialization."""
+
+VERSION = 1
+
+DDL = (
+    """CREATE TABLE IF NOT EXISTS projection_sources (
+        document_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        projected_ms BIGINT NOT NULL, outcome VARCHAR(48) NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS node_schema (
+        singleton TINYINT PRIMARY KEY, version INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS blobs (
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        byte_length BIGINT NOT NULL, created_ms BIGINT NOT NULL,
+        unreferenced_ms BIGINT NULL)""",
+    """CREATE TABLE IF NOT EXISTS entities (
+        entity_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        object_id VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,
+        kind VARCHAR(48) COLLATE utf8mb4_bin NOT NULL,
+        scope VARCHAR(16) NOT NULL,
+        product VARCHAR(191) COLLATE utf8mb4_bin NULL,
+        current_version BIGINT NOT NULL, first_identified_ms BIGINT NOT NULL,
+        last_checked_ms BIGINT NOT NULL, active BOOLEAN NOT NULL,
+        review_at_ms BIGINT NULL, valid_until_ms BIGINT NULL,
+        INDEX entities_selection (kind,scope,active),
+        INDEX entities_product (product,active),
+        INDEX entities_review (review_at_ms))""",
+    """CREATE TABLE IF NOT EXISTS entity_versions (
+        entity_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        version BIGINT NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        observed_ms BIGINT NOT NULL, known_ms BIGINT NOT NULL,
+        recorded_ms BIGINT NOT NULL, change_reason TEXT NOT NULL,
+        source_ref TEXT NOT NULL, method_version VARCHAR(191) NOT NULL,
+        PRIMARY KEY (entity_key,version), INDEX versions_known (entity_key,known_ms),
+        FOREIGN KEY(entity_key) REFERENCES entities(entity_key),
+        FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS dependencies (
+        source_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        source_version BIGINT NOT NULL,
+        target_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        target_type VARCHAR(16) NOT NULL, relation VARCHAR(48) NOT NULL,
+        PRIMARY KEY(source_key,source_version,target_key,target_type,relation),
+        INDEX dependency_target (target_key,target_type))""",
+    """CREATE TABLE IF NOT EXISTS review_requirements (
+        requirement_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        entity_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        cause_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        cause_version BIGINT NOT NULL, reason TEXT NOT NULL,
+        opened_ms BIGINT NOT NULL, resolved_ms BIGINT NULL,
+        resolution_ref TEXT NULL, INDEX outstanding_reviews(entity_key,resolved_ms))""",
+    """CREATE TABLE IF NOT EXISTS instruments (
+        product VARCHAR(191) COLLATE utf8mb4_bin PRIMARY KEY,
+        identity_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        FOREIGN KEY(identity_digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS observations (
+        observation_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        sequence BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
+        product VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        series VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        item_key VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        observed_ms BIGINT NOT NULL, known_ms BIGINT NOT NULL,
+        recorded_ms BIGINT NOT NULL, interval_ms BIGINT NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        source_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        INDEX series_window(product,series,observed_ms,known_ms),
+        INDEX observation_revisions(product,series,item_key,known_ms),
+        FOREIGN KEY(product) REFERENCES instruments(product),
+        FOREIGN KEY(digest) REFERENCES blobs(digest),
+        FOREIGN KEY(source_digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS documents (
+        document_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        namespace VARCHAR(48) COLLATE utf8mb4_bin NOT NULL,
+        path TEXT COLLATE utf8mb4_bin NOT NULL, kind VARCHAR(16) NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+        link_target TEXT NULL, byte_length BIGINT NOT NULL,
+        source_mtime_ns BIGINT NOT NULL, recorded_ms BIGINT NOT NULL,
+        retention_class VARCHAR(32) NOT NULL, expires_ms BIGINT NULL,
+        INDEX documents_namespace(namespace), INDEX documents_expiry(expires_ms),
+        FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS series_retrievals (
+        retrieval_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        product VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        series VARCHAR(191) COLLATE utf8mb4_bin NOT NULL, known_ms BIGINT NOT NULL,
+        source_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        FOREIGN KEY(source_digest) REFERENCES blobs(digest), INDEX retrieval_time(known_ms))""",
+    """CREATE TABLE IF NOT EXISTS operations (
+        operation_id VARCHAR(191) COLLATE utf8mb4_bin PRIMARY KEY,
+        request_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        status VARCHAR(32) NOT NULL, started_ms BIGINT NOT NULL,
+        finished_ms BIGINT NULL, result_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+        release_id VARCHAR(191) NULL,
+        INDEX operations_status(status,started_ms))""",
+    """CREATE TABLE IF NOT EXISTS document_recycling (
+        document_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+        retired_ms BIGINT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS legacy_databases (
+        database_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        namespace VARCHAR(48) NOT NULL, path TEXT NOT NULL,
+        schema_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        source_signature VARCHAR(191) NOT NULL,
+        FOREIGN KEY(schema_digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS legacy_rows (
+        database_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        table_name VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        row_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        PRIMARY KEY(database_key,table_name,row_key),
+        FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS legacy_row_blobs (
+        database_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        table_name VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        row_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        PRIMARY KEY(database_key,table_name,row_key,digest),
+        FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS node_metadata (
+        name VARCHAR(191) COLLATE utf8mb4_bin PRIMARY KEY,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS metadata_blobs (
+        name VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        PRIMARY KEY(name,digest), FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+)

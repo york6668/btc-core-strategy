@@ -1,0 +1,6 @@
+**
+!service/
+!service/Dockerfile
+!service/requirements.txt
+!service/btc_node/
+!service/btc_node/*.py

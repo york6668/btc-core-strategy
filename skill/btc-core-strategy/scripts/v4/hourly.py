@@ -57,7 +57,7 @@ def historical_domain(accepted):
 def _already_completed(db, kind, binding):
     if not Path(db).exists():
         return False
-    with sqlite3.connect('file:' + str(Path(db).resolve()) + '?mode=ro', uri=True) as conn:
+    with market_observation._connect(db, readonly=True) as conn:
         return conn.execute("SELECT 1 FROM completion_attempt WHERE kind=? AND review_id=? AND outcome='SUCCEEDED' LIMIT 1", (kind, binding['review_id'])).fetchone() is not None
 
 

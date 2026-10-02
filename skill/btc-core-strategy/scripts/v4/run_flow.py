@@ -181,7 +181,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
     text(run_ref, 'actual run reference')
     text(agent_id, 'actual main agent id')
     root, project, directory = Path(root).resolve(), Path(project).resolve(), Path(directory).resolve()
-    require(root == project / '.strategy/v4', 'run store must belong to the supplied project')
+    require(root == (project / '.strategy/v4').resolve(), 'run store must belong to the supplied project')
     with locked(directory):
         path = directory / 'run.json'
         if path.exists():

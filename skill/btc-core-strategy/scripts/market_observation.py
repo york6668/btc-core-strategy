@@ -628,6 +628,12 @@ CREATE TABLE IF NOT EXISTS completion_attempt (
 
 
 def _connect(db_path, readonly=False):
+    import os
+    if os.environ.get('BTC_SERVICE_CONFIG'):
+        from btc_node.market_store import connect_if_configured
+        connection = connect_if_configured(db_path, readonly)
+        if connection is not None:
+            return connection
     path = Path(db_path).expanduser().resolve()
     if readonly:
         conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10)

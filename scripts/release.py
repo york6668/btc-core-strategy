@@ -207,6 +207,20 @@ def finish(config, run_id):
         return {'run_id': run_id, 'status': 'FINISHED', 'commit': run['commit']}
 
 
+def data_service(config, command):
+    bridge = config.get('docker_service', {})
+    if not bridge.get('enabled'):
+        raise ValueError('Docker data service is not the active node writer')
+    arguments = [bridge['binary'], 'compose', '-p', bridge['project'],
+                 '--env-file', bridge['env_file'], '-f', bridge['compose_file']]
+    for path in bridge.get('override_files', []):
+        arguments += ['-f', path]
+    arguments += ['exec', '-T', 'core', 'python', '-m', 'btc_node',
+                  '--config', '/run/btc/settings.json', 'mcp' if command == 'mcp' else 'request']
+    # Preserve the MCP stream and CLI exit code; credentials stay in node files.
+    os.execv(arguments[0], arguments)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--node-config', required=True)
@@ -218,7 +232,12 @@ def main():
     p = sub.add_parser('bind-context'); p.add_argument('--run-id', required=True); p.add_argument('--context', required=True)
     p = sub.add_parser('finish'); p.add_argument('--run-id', required=True)
     sub.add_parser('status')
+    sub.add_parser('data', help='Read one service JSON request from stdin')
+    sub.add_parser('mcp', help='Project data tools over stdio')
     args = parser.parse_args(); config = node(args.node_config)
+    if args.command in {'data', 'mcp'}:
+        data_service(config, args.command)
+        return
     if args.command == 'install':
         result = install(config, args.source, args.ref, activate_after=not args.stage_only, test_reader=args.reader)
     elif args.command == 'activate':

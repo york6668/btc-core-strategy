@@ -10,6 +10,8 @@
 
 ## 正常路径
 
+Docker 节点返回 `continuity.public_context` 与冻结后的 `continuity.personal_context`，按[持续分析契约](continuous-analysis.md)在对应阶段读取；用稳定对象 ID、版本与证据提交观察和重要变化。历史查询使用事件窗口及 as_of，价格辅助材料保留原产品和单位。报告没提及的前瞻期限、计划条件、研究和纠偏仍由同一轮复核，不以复制上一小时整套内容代替进展。
+
 分析沿[前瞻复核主线](core-strategy.md#前瞻复核主线)：有效论点基线 → 新增及累积变化 → 因果与当前定价复核 → 下一验证。研究积累与最后真实送达是不同基线。先核对材料中的 comparison_baselines 和 pending_work，再读本阶段必要证据；它们由现有状态派生，不产生第二份结论。
 
 `run-material --run <run.json>` 默认只生成报告必要性材料；需正式写入或接续深评时指定 `--stage main`，决定 REPORT 后才用 `--stage report-body` 获取正文模板和指标。普通观察不预先生成这些模板。各阶段保留 required 中的全部重要条件，原始证据按引用展开，不重复读取完整 context 和其精确阅读视图。

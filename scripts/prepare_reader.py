@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 
@@ -38,10 +39,20 @@ def main():
         actual = subprocess.check_output(git + ['rev-parse', 'HEAD'], text=True).strip()
         if actual != revision:
             raise ValueError('reader checkout does not match the lock')
-        # The reader needs collector sources only. Do not recurse back into core.
-        subprocess.run(git + ['submodule', 'update', '--init', 'core/market-collector'], check=True)
-        subprocess.run([sys.executable, '-B', str(checkout / 'roles/export_role.py'),
-                        'reader', str(destination)], check=True)
+        # Current market-roles owns shared collector/reader source directly.
+        # Export reader paths without recursing into the core dependency.
+        mapping = json.loads((checkout / 'roles/source-map.json').read_text())['analysis']
+        destination.mkdir(parents=True)
+        for target, source in mapping.items():
+            if not target.startswith('telegram_reader/'):
+                continue
+            relative = Path(target).relative_to('telegram_reader')
+            original = checkout / source
+            if '..' in relative.parts or original.is_symlink() or checkout not in original.resolve().parents:
+                raise ValueError('reader source escapes the pinned checkout')
+            output = destination / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original, output)
     print('Pinned reader ready: ' + str(destination))
 
 

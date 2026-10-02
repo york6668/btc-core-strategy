@@ -106,7 +106,7 @@ def _main_event_review_value(root, pinned, fact_version, path, value):
 def _history(db, cutoff):
     if not Path(db).exists():
         return []
-    with sqlite3.connect('file:' + str(Path(db).resolve()) + '?mode=ro', uri=True) as conn:
+    with market._connect(db, readonly=True) as conn:
         # Include the baseline hour itself: corrected measurements keep their original time.
         start = (instant(cutoff) - timedelta(hours=1)).isoformat().replace('+00:00', 'Z') if cutoff else '0000'
         return [json.loads(r[0]) for r in conn.execute('SELECT payload FROM evidence WHERE observed_hour>=? ORDER BY first_seen,evidence_id', (start,))]

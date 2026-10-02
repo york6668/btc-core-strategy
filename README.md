@@ -24,7 +24,7 @@ python3 scripts/run_tests.py
 
 本机已配置 GitHub SSH 时，使用 `python3 scripts/prepare_reader.py --ssh`，无需修改全局 Git 配置。
 
-首次准备依赖需要对 `market-roles` 和 `market-collector` 私有仓库的读取权限；只有准备阶段访问 Git，离线测试阶段禁止网络。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
+首次准备依赖需要对 `market-roles` 私有仓库的读取权限；只有准备阶段访问 Git，离线测试阶段禁止网络。共享采集源码已由该仓库直接维护，reader 导出不递归获取核心仓库。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
 
 与 `market-roles` 当前 reader 组合验证：
 
@@ -51,4 +51,8 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 revision 6 的市场结论、整体配置决定及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。全部回放材料由 scripts/build_synthetic_fixtures.py 和 scripts/build_reader_fixtures.py 在测试临时目录构造，源码导出不包含测试数据文件。
 
-GitHub Actions 使用仓库 Secret `MARKET_SOURCE_READ_TOKEN` 读取私有的 `market-roles` 和 `market-collector`（仅 Contents read）。缺少读取权限时 CI 明确失败，不跳过依赖或减少测试。凭据只在仓库设置中维护，不写入源码。
+## Docker 持续分析
+
+[数据服务与迁移](service/README.md)包含 Compose、MySQL 8.4、内容寻址证据、CLI/MCP、宿主适配、恢复及生命周期入口。[持续分析契约](skill/btc-core-strategy/references/continuous-analysis.md)规定业务对象接续、个人事实视图与自主验收。
+
+GitHub Actions 执行本仓库可独立重建的真实 Docker 数据层与恢复测试，不依赖跨仓 Secret。完整核心、reader 和 collector 组合验证由已取得源码的 `market-roles` 执行 `roles/validate_repository.py --with-data-service`，云端准备和新任务均须实际运行。两者的覆盖分别报告。

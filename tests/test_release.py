@@ -1,6 +1,7 @@
 """Version switching must not reset state, research or delivery recovery."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -86,6 +87,17 @@ class ReleaseTests(unittest.TestCase):
         release.enter(self.config, 'new')
         with self.assertRaisesRegex(ValueError, 'different version'):
             release.bind(self.config, 'new', 'research-request')
+
+    def test_native_adapter_bootstraps_enter_before_pinned_environment_exists(self):
+        node=Path(self.config['_path'])
+        node.write_text(json.dumps({**self.config,'native_python':sys.executable}))
+        environment=dict(os.environ)
+        environment.pop('BTC_NODE_CONFIG',None)
+        output=subprocess.check_output([sys.executable,str(ROOT/'service/host_python.py'),
+            str(ROOT/'scripts/release.py'),'--node-config',str(node),'enter','--run-id','adapter-entry'],
+            env=environment,text=True)
+        self.assertEqual(json.loads(output)['commit'],self.first)
+        self.assertEqual(self.state.read_bytes(),self.before)
 
     def test_explicit_test_reader_does_not_reconfigure_production_reader(self):
         dependency = self.base / 'test-reader'; dependency.mkdir()
