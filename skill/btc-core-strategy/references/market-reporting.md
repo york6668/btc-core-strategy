@@ -1,6 +1,6 @@
 > 报告的分析依据、触发复核和日本每日反馈以[报告复核契约](report-care.md)为当前规则。新报告包含maintenance；旧格式保持兼容。
 
-> 新报告使用[最终正文接口](mobile-report.md) AUTHORED_REPORT_V1，遵守其中研判与报告的职责边界，承接已经形成的综合结果并 VERBATIM 交付。用户对象为币安QQQ、VOO、BTC，指数继续作底层研究。下文 MARKET_CONCISE_V1 的段落与插值示例仅用于历史兼容。
+> 新报告使用[最终正文接口](mobile-report.md) AUTHORED_REPORT_V1，遵守其中研判与报告的职责边界，承接已经形成的综合结果并 VERBATIM 交付。用户对象为币安QQQ、VOO、BTC，指数继续作底层研究。下文 MARKET_CONCISE_V1 的段落与插值示例仅用于历史兼容；顶层 next_observation 和 maintenance 是内部维护字段，不要求新正文沿用旧布局的下一观察段或附上例行复核时间。
 
 # 独立行情汇报与交付
 
