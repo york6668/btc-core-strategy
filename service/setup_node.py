@@ -42,8 +42,7 @@ def prepare(node_path, data, docker, compose_project, source):
         if not target.is_symlink():
             target.symlink_to(Path('/run/btc/facts/current') / name)
     state_link = native_project / '.strategy'
-    if not state_link.is_symlink():
-        state_link.symlink_to(data / 'strategy', target_is_directory=True)
+    state_link.mkdir(exist_ok=True)
     container_node = dict(node, python='/usr/local/bin/python', frozen_market_python='/usr/local/bin/python')
     container_node.pop('docker_service', None)
     write(data / 'container-node.json', container_node)
@@ -70,6 +69,7 @@ def prepare(node_path, data, docker, compose_project, source):
                str(data / 'reader-source') + ':' + node['reader_code_dir'] + ':ro',
                str(data / 'reader') + ':' + node['reader_data_dir'] + ':ro',
                str(native_project) + ':' + str(project),
+               str(data / 'strategy') + ':' + str(project / '.strategy'),
                str(data / 'native-facts') + ':/run/btc/facts:ro']
     # Import runs on the native adapter through a localhost-only DB endpoint.
     # Containers receive source exports and fact generations, never broad home

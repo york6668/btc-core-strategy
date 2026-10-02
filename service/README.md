@@ -22,6 +22,8 @@ reader 使用独立 namespace 导入与对比。校验包括原字节/hash、路
 
 宿主解释器接入 `service/host_python.py`，node.native_python 保留原解释器，node.python 指向节点生成的启动器。适配层按实际 strategy_v4.py 路径选择原固定发布，所以恢复早于 Docker 的发布也进入同一服务；不改旧发布文件或用 current 替换其方法。其他 Python 工具仍使用原生解释器。
 
+容器将兼容目录直接挂载到原项目 `.strategy` 路径，容器内该路径不是符号链接；旧运行中的绝对路径和模板绑定因此保持一致。宿主可使用符号链接访问同一目录。模板保留原运行路径并校验原字节，不能像普通模型输入一样改写到新路径。
+
 reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一次 offset 持久化后才允许下次 getUpdates 确认。Keychain token 经 stdin 注入一次性容器，不落入镜像、环境文件或日志。collector 在其原节点暂停旧进程并持有原 writer locks，按实际 state_paths 获取 SQLite backup 与字节快照；核对队列及游标后按原周期启动容器，保留原传输和 UNKNOWN 语义。
 
 ## 故障恢复与回退

@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('btc_release', ROOT / 'scripts/release.py')
@@ -98,6 +100,29 @@ class ReleaseTests(unittest.TestCase):
             env=environment,text=True)
         self.assertEqual(json.loads(output)['commit'],self.first)
         self.assertEqual(self.state.read_bytes(),self.before)
+
+    def test_native_transport_preserves_template_binding_and_freezes_authored_answers(self):
+        module_spec=importlib.util.spec_from_file_location('btc_test_bridge',ROOT/'skill/btc-core-strategy/scripts/node_bridge.py')
+        bridge=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(bridge)
+        for name in ('资产配置.md','操作记录.md','纠正记录.md'):(self.project/name).write_text('SYNTHETIC UNKNOWN\n')
+        state=self.base/'compatibility';state.mkdir();(self.project/'.strategy').symlink_to(state)
+        template=self.project/'.strategy/template.json';template.write_text('{"binding":"original"}\n')
+        answers=self.base/'answers.json';answers.write_text('{"judgement":"synthetic"}\n')
+        config={**self.config,'docker_service':{'enabled':True,'binary':'docker','project':'synthetic',
+            'env_file':'synthetic.env','compose_file':'synthetic.yaml','fact_bridge_dir':str(self.base/'facts')}}
+        sent=[]
+        def capture(command,**kwargs):
+            sent.append(json.loads(kwargs['input']))
+            return SimpleNamespace(stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}','stderr':''}}))
+        with patch.dict(sys.modules,{'node_config':SimpleNamespace(load=lambda:config)}),patch('subprocess.run',side_effect=capture):
+            with self.assertRaises(SystemExit) as ended:
+                bridge.forward_if_enabled(['--template',str(template),'--answers',str(answers)],requested_release=self.source)
+            self.assertEqual(ended.exception.code,0)
+        params=sent[0]['params'];argv=params['argv']
+        self.assertEqual(argv[1],str(template))
+        self.assertIn(str(template),params['input_hashes'])
+        self.assertNotEqual(argv[3],str(answers))
+        self.assertEqual(Path(argv[3]).read_bytes(),answers.read_bytes())
 
     def test_explicit_test_reader_does_not_reconfigure_production_reader(self):
         dependency = self.base / 'test-reader'; dependency.mkdir()

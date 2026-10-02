@@ -29,6 +29,11 @@ def forward_if_enabled(argv, *, requested_release=None):
             if original.is_file():
                 data = original.read_bytes()
                 digest = hashlib.sha256(data).hexdigest()
+                if flag == '--template':
+                    # Run templates have an exact directory binding. Preserve
+                    # that logical path while checking its original bytes.
+                    inputs[str(Path(arguments[arguments.index(flag)+1]).absolute())]=digest
+                    continue
                 directory = Path(docker['fact_bridge_dir']).parent / 'native-inputs' / digest
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 target = directory / original.name
