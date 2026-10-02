@@ -90,6 +90,13 @@ class DomainRuntime(unittest.TestCase):
                     self.assertEqual(result['returncode'],0,result['stderr'])
                     self.assertEqual(execute(settings,request),result)
                     prepared=json.loads(result['stdout'])
+                    context=json.loads(Path(result['continuity']['public_context']).read_bytes())
+                    self.assertTrue(context['objects'])
+                    for entry in context['objects']:
+                        self.assertNotIn('payload',entry)
+                        raw=Path(entry['content_path']).read_bytes()
+                        self.assertEqual(fingerprint(raw),entry['digest'])
+                        self.assertIn('payload',json.loads(raw))
                     answers=sample.file(sample.authored(prepared))
                     observed_request={'method':'core.execute','operation_id':folder.name+'-observe',
                         'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),

@@ -154,14 +154,19 @@ def full_context(db, scope):
     while True:
         page = objects.list(scope=scope, limit=500, after=after)
         for row in page['objects']:
-            values.append(objects.get(row['kind'], row['object_id']))
+            value=objects.get(row['kind'],row['object_id'])
+            # Every run gets a bounded index, not another full copy of all
+            # unchanged analyses. Original typed state stays in immutable CAS.
+            values.append({name:value[name] for name in
+                ('kind','object_id','scope','product','version','digest','known_ms','observed_ms')})
+            values[-1]['content_path']=str(db.blobs.path(value['digest']))
         after = page['next']
         if not after:
             break
     requirements = db.rows('SELECT r.* FROM review_requirements r JOIN entities e USING(entity_key) '
                            'WHERE e.scope=%s AND r.resolved_ms IS NULL ORDER BY r.opened_ms', (scope,))
     return {'scope': scope, 'objects': values, 'requirements': requirements,
-            'meaning': 'Complete maintenance context; report visibility does not determine maintenance.'}
+            'meaning': 'Complete maintenance index. Read immutable content_path or object.get at the listed version before judging; report visibility does not determine maintenance.'}
 
 
 def recover(settings, operation):

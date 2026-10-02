@@ -8,6 +8,8 @@
 
 `run-prepare` 等返回的 `continuity.public_context` 包含全部有效公共对象及未决依赖复核。与本轮公开材料一起读取，按新增事实复核原对象，并主动发现对象之外的新问题。市场冻结后才读取 `continuity.personal_context`；其中 market_binding 绑定独立市场结果，个人材料不能反写市场判断。事实变化只复核相关配置，复用仍有效的市场结果。不存在 context 路径时查询服务，不将缺失理解成没有待办。
 
+接续清单按固定对象版本、digest 与 content_path 引用不可变原文，未变化分析不在每轮复制。须读取有效对象和待复核条件所需的 content_path，或以清单中的 version 调用 object.get，不能仅凭清单元数据作判断。
+
 宿主统一入口 `btc-core data` 从 stdin 接收 JSON；项目 BTC MCP 提供同名能力（点改为下划线）。例如 `{"method":"conditions.due","params":{"scope":"PUBLIC"}}`。写操作提供稳定 operation_id；重试复用相同 ID 和输入。读取分页返回 next 时继续读取，不能把第一页当作完整范围。
 
 查询 PERSONAL 的 object.get/list/history 或 conditions.due 同样提供已冻结的 market_binding；不能通过直接对象查询提前读取个人材料。

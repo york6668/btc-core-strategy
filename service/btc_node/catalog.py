@@ -226,6 +226,11 @@ class Catalog:
             elif hardlink and path.parent.name == 'raw' and path.stem == row['digest']:
                 self.db.blobs.materialize(row['digest'], path)
             else:
+                if path.is_file() and not path.is_symlink() and fingerprint(path.read_bytes())==row['digest']:
+                    if path.stat().st_mtime_ns!=row['source_mtime_ns']:
+                        os.utime(path,ns=(row['source_mtime_ns'],row['source_mtime_ns']))
+                    count+=1
+                    continue
                 with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
                     temporary = Path(handle.name)
                     handle.write(self.db.blobs.get(row['digest'])); handle.flush(); os.fsync(handle.fileno())
