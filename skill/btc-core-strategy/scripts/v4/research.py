@@ -907,7 +907,7 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
         require(proof['started_at'] >= phase['completed_at'], 'amendment predates the independent result')
         result = _public_result(root, req, proof['analysis'], additional)
         market_state.validate_zones(result['market_result']['outlook']['dispute_zones'], lambda ref: None,
-            phase['market_result']['outlook']['dispute_zones'])
+            phase['market_result']['outlook']['dispute_zones'], revision=req.get('workflow_revision', 5))
         updated = {k: v for k, v in phase.items() if k != 'independent_id'}
         updated.update(result, parent_independent_id=independent_id,
             initial_completed_at=phase.get('initial_completed_at', phase['completed_at']),

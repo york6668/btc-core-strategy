@@ -206,6 +206,49 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'different frozen market'):
             cycle.validate_candidate(bad)
 
+    def test_native_public_amendment_keeps_revision_six_zones_and_provenance(self):
+        req, saved, _ = self.c.study(authored=True, independent_output=json.dumps(self.public))
+        original = research._load(self.f.store, 'independent', saved['independent_id'])
+        amended = deepcopy(self.public)
+        stamp = self.f.draft['temporal_scope']['knowledge_cutoff']
+        zone = old.zone(stamp)
+        zone['area'].update(lower=None, upper=None)
+        side = {'formation': 'UNKNOWN', 'validation': 'UNKNOWN',
+                'evidence_window': {'start': stamp, 'end': stamp},
+                'identified_at': stamp, 'tested_at': None, 'horizon': 'Synthetic near term',
+                'basis': 'No verified boundary formation yet.', 'refs': [],
+                'next_check': 'Verify actual price response.'}
+        zone.update(role='MAIN_DISPUTE', evidence_kind='PRICE_RESPONSE',
+                    limitations='No volume-at-price or order-book evidence.',
+                    boundary_review={'revision': 2, 'lower': deepcopy(side), 'upper': deepcopy(side),
+                                     'prior_zone_assessment': 'New synthetic candidate; no historical backfill.'})
+        amended['outlook']['dispute_zones'] = [zone]
+        path = Path(original['rollout_path'])
+        def append_turn(identity, value, offset):
+            with path.open('a') as stream:
+                stream.write(json.dumps({'type': 'turn_context', 'payload': {
+                    'turn_id': identity, 'model': 'gpt-6-astra', 'effort': 'max'}}) + '\n')
+                stream.write(json.dumps({'type': 'event_msg', 'payload': {
+                    'type': 'task_complete', 'turn_id': identity,
+                    'started_at': original['completed_at'] + offset,
+                    'completed_at': original['completed_at'] + offset + 10,
+                    'last_agent_message': json.dumps(value)}}) + '\n')
+        append_turn('PUBLIC_AMENDMENT', amended, 20)
+        revised = research.amend_market(self.f.store, original['independent_id'], path,
+                                       turn_id='PUBLIC_AMENDMENT')
+        research._verify_market_amendment(revised)
+        self.assertEqual(revised['market_result'], amended)
+        self.assertEqual(revised['parent_independent_id'], original['independent_id'])
+        self.assertEqual(revised['turn_id'], original['turn_id'])
+        self.assertEqual(research._load(self.f.store, 'independent', original['independent_id']), original)
+        personal = research.read_input(self.f.store, req['request_id'], 'portfolio',
+                                       independent_id=revised['independent_id'])['payload']
+        self.assertEqual(personal['market_result'], amended)
+        # Revision-aware validation still rejects disappearing active zones.
+        append_turn('DROPPED_ZONE', self.public, 40)
+        with self.assertRaisesRegex(Invalid, 'disappeared without retirement'):
+            research.amend_market(self.f.store, revised['independent_id'], path, turn_id='DROPPED_ZONE')
+
     def test_delayed_publication_does_not_renew_an_expired_allocation(self):
         self.c.study(authored=True, independent_output=json.dumps(self.public))
         with mock.patch('v4.cycle.now', return_value='2030-03-04T13:00:00Z'):
