@@ -71,6 +71,8 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 | `robustness`、`portfolio_analysis` | 收敛失败、等待成本、不利价格路径及各模块承受能力 |
 | `recommendations`、独立报告的`maintenance` | 组合评估后的建议、适用条件与有效期；报告复核依据、触发条件、未解决项和最迟复核时间 |
 
+[美债机会成本与风险补偿](core-strategy.md#美债机会成本与风险补偿)沿用上述承载：原始报价、利率和公共成本资料进入 EvidenceBundle；选择的基准、情景、期限、公式、计算结果及不确定性保留在因素与前瞻正文并引用原始输入，不把派生年化或假设终值登记为 PUBLIC_RAW/verified_facts。补偿与等待风险进入 robustness，采纳后的实质吸引力变化进入 conclusion.business_meaning；回报门槛不写成 recommendations 的正式目标价。没有定量依据仍可保存具体受限判断，不新增必填利率、固定期限、评分或自动交易字段。
+
 `outlook.semantic`继续使用status、baseline、alternatives与next_evidence；情景继续使用direction、horizon、mechanism、formation_conditions和invalidation_conditions。`horizon`表示情景的投资分析窗口，仍按现有unit/minimum/maximum格式，不用它伪造尚未知的因素兑现期。只有有依据的事件时滞才在现有narrative说明，不要求预测兑现日期，最迟报告复核绑定maintenance.recheck_at；三者不互相替代。同一情景中的短期与中期差异在正文及采纳后的业务含义中说明，不能仅因期限不同而伪装成相互排斥的alternatives。
 
 复用原有开放的mechanism/conditions概念列表和business_meaning映射，不建立固定的时间优势标签表。周期、机制或采纳后的时间优势改变时更新相应语义；同义改写保持原稳定概念及业务陈述，时钟和纯行情更新不借此制造新含义。增量复用仍通过section_provenance保留实际原版本和评估时间；缺少旧分析时由本轮真实评估形成，不能伪称REUSED或补造历史。原解释未按期兑现时，在现有前瞻、反证与适用性说明中解释本次取舍，并保留不可变旧版本。

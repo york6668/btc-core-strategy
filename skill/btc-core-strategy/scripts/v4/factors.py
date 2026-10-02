@@ -8,6 +8,14 @@ from . import evidence
 from .common import digest, exact, read, require, text
 
 
+OPPORTUNITY_COST_REVIEW = (
+    '按核心策略的美债机会成本与风险补偿方法，比较BTC、QQQ、VOO从现价出发的有据情景回报、兑现时间与可比美债收益；期限、基准和溢价由模型按证据选择，不固定档位或从所需回报倒造预测价。'
+    '用现有Python工具核算可比年化或总回报，保留输入、公式、假设和原始引用；派生结果留在分析，不能冒充PUBLIC_RAW，资料不足说明具体量化限制。'
+    '公共持有人成本仅研究对应群体的供需压力，不替代未来价值或现价起点；个人成本只在市场冻结后适配。'
+    '核验现价、利率、兑现进展及下行情景如何改变风险补偿，未破位也判断新增风险；普通数值更新不自动发起深评或报告。'
+)
+
+
 DISCOVERY_REVIEW = (
     '每轮同时核验原深评依据和主动发现原报告遗漏、低估或过时的重要因素。'
     '查验上次有效核验后的公开新增信息及下一复核前的重要事件；首次基线和深评发布前覆盖报告讨论的投资周期。'
@@ -20,6 +28,7 @@ DISCOVERY_REVIEW = (
     '研究范围来自完整核心报告，逐项验证三类收益、美股定投/减仓/回补、加密本金保护和配置建议；'
     '美股事件与原始证据用本EvidenceBundle的PUBLIC_RAW引用，经factor_checks/research_findings维护，不套BTC行情引用或触价条件。'
     '未在手机摘要展示的重要条件也须核验，不能只沿用上一条短稿。'
+    + OPPORTUNITY_COST_REVIEW
 )
 
 PUBLICATION_REVIEW = (

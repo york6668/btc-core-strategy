@@ -9,12 +9,13 @@ from pathlib import Path
 
 from .common import digest, exact, instant, read, require, text
 from .equity_products import INSTRUCTIONS as PRODUCT_INSTRUCTIONS
+from .factors import OPPORTUNITY_COST_REVIEW
 
 CORE_MARKETS = {'SPX', 'NDX', 'BTC'}
 MARKET_FIELDS = ('market_review', 'extra_findings', 'research_findings',
                  'factor_checks', 'applicability_review', 'market_assessment', 'dispute_zones')
 INSTRUCTIONS = (
-    '市场判断独立于账户、仓位、成本、目标比例和个人建议；不得默认原有多空方向延续。'
+    '市场判断独立于个人账户、个人仓位与成本、目标比例和个人建议；公共持有人成本按群体与统计口径作为市场证据，不得默认原有多空方向延续。'
     '跨市场、同向交易是识别渠道的示例，模型自主选择并扩展方法；在内部完成支持与冲突证据的取舍，不机械计票。'
     '逐市场判断方向、适用周期、结构变化、周期共振和趋势反转及确认程度；未知不写中性。'
     '按 method_references.report_boundary 的职责边界，summary 给已完成取舍的综合方向、周期与主导理由，反证说明其实际影响，不用冲突并列或“尚未证伪”替代结论，也不提高事实确认程度。'
@@ -25,6 +26,7 @@ INSTRUCTIONS = (
     '新建或修正区域填写role与boundary_review revision 2，分别记录每侧证据窗口、首次识别时间、适用周期、依据、验证状态及下一条件；一侧不足独立保留未知。新证据不倒写，不将案例数字固定为长期边界。'
     '重要突破迹象无需等待突破确认或中期反转才报告；放量、突破和反转不自动互相推出。'
     '原判断逐轮核验：支持、削弱、否定或未知；区域退出或被替代必须说明原因。'
+    + OPPORTUNITY_COST_REVIEW
     + PRODUCT_INSTRUCTIONS
 )
 

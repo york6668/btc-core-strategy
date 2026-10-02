@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .common import digest, exact, instant, now, read, require, text
 from . import market_state
+from .factors import OPPORTUNITY_COST_REVIEW
 
 ISSUE_KEY = 'BTC_CYCLE'
 SECTIONS = ('domain', 'outlook', 'robustness', 'portfolio_analysis',
@@ -24,7 +25,7 @@ CORE_REPORT_REVIEW = (
     'report_boundary 统一研判与报告职责：先在内部完成因子取舍及反证影响判断，正文明确呈现综合方向、周期、依据和安排，不把冲突交给用户裁决。'
     '报告已采用的来源按发布节奏核验是否有新原件；包内缺件不等于客观不可得，可取得先补入同一研究，失败说明实际尝试及影响，不以旧行情缺口充当最终结论。'
     '用户报告对象为币安QQQ、VOO与BTC；SPX/NDX继续作为底层研究。具体产品版本与报价依公开核验，缺产品价不抹去市场结论。方向、周期、结构变化、依据和确认程度自然表达且对象明确；未知不写中性。'
-    '区分小时承接、波段形态与中期趋势，历史结构锚未迁移不等于风险或形态未变。市场依据不得包含持仓、成本、偏好或操作。'
+    '区分小时承接、波段形态与中期趋势，历史结构锚未迁移不等于风险或形态未变。市场依据不得包含个人持仓、个人成本、偏好或操作；公共持有人成本须核验群体、口径和日期。'
     '个人应对以当前已确认美股组合和加密现货组合为单位；成分权重可调整，独立BTC/黄金是额外机会，保护另评，成员研究不替代核心市场结论。'
     'historical_anchor 仅保留带日期的历史版本出处；历史市场数据从公开原始来源读取；相同证据与期限下持仓差异只改变个人应对。Sol 映射不得改写市场论点。'
 )
@@ -39,6 +40,7 @@ ANALYSIS_FOCUS_REVIEW = (
     '内部完整评估币安QQQ/VOO与BTC的方向、周期、结构、依据、确认程度及价格风险，完成综合判断后再适配当前组合；这些分析项不是正文必展示清单。'
     '价格判断与个人数量分开，数量未知不撤销有依据的价格判断，不为金额校验编造额度。'
     '结构位、观察价、候选价与有效建议分开；未知不等于中性，宏观利空而上涨不自动等于看跌。'
+    + OPPORTUNITY_COST_REVIEW
 )
 MAPPING_REVIEW = (
     '审阅实际 candidate、补充证据及事实版本，核对七个 section 与独立正文一致，市场判断与个人应对归属清楚。'
@@ -93,6 +95,8 @@ def method_references(stage, project=None):
     result['market_state'] = str(references / 'market-state.md')
     result['closed_loop'] = str(references / 'closed-loop.md')
     result['report_boundary'] = str(references / 'mobile-report.md') + '#研判与报告的职责边界'
+    if stage in ('research', 'mapping', 'observe'):
+        result['opportunity_cost'] = str(references / 'core-strategy.md') + '#美债机会成本与风险补偿'
     if project is not None and stage in ('research', 'observe'):
         from node_config import factor_guide
         result['factor_discovery'] = str(factor_guide())
