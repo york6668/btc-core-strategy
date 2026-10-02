@@ -24,6 +24,18 @@ INSTRUCTIONS = (
     '只有表达变化则修稿；送达、触价、建议均非成交，资产事实只由用户确认更新。'
 )
 
+# Report authors consume assessed results. Research instructions belong to the
+# preceding stages and must not re-enter the report through result_instructions.
+REPORT_INSTRUCTIONS = (
+    '成稿承接 market_result、allocation_decision 和 applicability 中已经形成的结果。'
+    '市场写明确方向、适用周期及主导依据；配置写最终安排、范围与必要执行限制。'
+    '按结果的实际含义取舍表达，不逐项转述内部字段、来源核验、未知清单或维护记录。'
+    '数量受限与动作未决分别说明实际影响；缺少正式配置决定时不得把旧安排写成重新验证有效。'
+    '重要风险、建议有效性、恢复参与条件及事实纠错忠实保留，不提高确认程度或补造交易价。'
+    '成稿不重新研究或改写结果；发现影响判断的分析缺口，返回对应研究，表达问题在冻结前修正。'
+    '研究和维护材料继续完整保存；来源绑定与逐字交付不改变正文，也不代表实际成交。'
+)
+
 
 def strings(value, name, nonempty=False):
     require(isinstance(value, list) and (value or not nonempty), name + ' must be a list')

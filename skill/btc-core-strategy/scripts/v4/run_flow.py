@@ -145,14 +145,14 @@ def report_brief(ctx):
         basis['report_narrative_ref'] = '/current_strategy/conclusion/narrative'
     brief['applicability_instructions'] = cycle.APPLICABILITY_REVIEW
     if ctx.get('market_revision', 0) >= 6:
-        from .closed_loop import report_inputs, INSTRUCTIONS
+        from .closed_loop import report_inputs, REPORT_INSTRUCTIONS
         for key in ('current_strategy', 'observation', 'collector_observations'):
             brief.pop(key, None)
         basis = brief.get('cycle_baseline') or {}
         brief['cycle_baseline'] = {k: basis.get(k) for k in
             ('status', 'market_status', 'portfolio_status', 'result_id', 'report_hash', 'recheck_at')}
         brief.update(report_inputs(ctx))
-        brief['result_instructions'] = INSTRUCTIONS
+        brief['result_instructions'] = REPORT_INSTRUCTIONS
     return brief
 
 
