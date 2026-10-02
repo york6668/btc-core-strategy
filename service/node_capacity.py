@@ -38,9 +38,17 @@ def native_logs(entries):
 
 def allocated(paths):
     seen=set();total=0
+    def unreadable(error):
+        raise error
     for raw in paths:
         root=Path(raw)
-        for path in ([root] if root.is_file() else root.rglob('*') if root.is_dir() else []):
+        try:root.lstat()
+        except FileNotFoundError:continue
+        # rglob suppresses some traversal errors. An unattended launchd job
+        # must report denied Documents access rather than count it as zero.
+        files=([root] if root.is_file() else
+               (Path(directory)/name for directory,_,names in os.walk(root,onerror=unreadable) for name in names))
+        for path in files:
             if path.is_symlink() or not path.is_file():continue
             stat=path.stat();key=(stat.st_dev,stat.st_ino)
             if key not in seen:seen.add(key);total+=stat.st_blocks*512

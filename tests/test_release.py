@@ -118,6 +118,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(Path(str(owned)+'.2').read_text(),'previous run\n')
             self.assertEqual(Path(str(owned)+'.1').read_text(),'next run\n')
         self.assertEqual(other.read_text(),'keep\n')
+        with patch('os.scandir',side_effect=PermissionError('generated denied directory')):
+            with self.assertRaises(PermissionError):capacity.allocated([self.base])
 
     def test_native_transport_preserves_template_binding_and_freezes_authored_answers(self):
         module_spec=importlib.util.spec_from_file_location('btc_test_bridge',ROOT/'skill/btc-core-strategy/scripts/node_bridge.py')
