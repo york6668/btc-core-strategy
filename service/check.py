@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 
@@ -78,7 +79,15 @@ def run(docker):
     finally:
         stopped = subprocess.run(command+['down','--volumes','--remove-orphans'], timeout=90)
         if stopped.returncode == 0:
-            shutil.rmtree(directory)
+            # Desktop file sharing can release bind-mount handles just after
+            # Compose returns. Retry this test-owned directory only.
+            for attempt in range(4):
+                try:
+                    shutil.rmtree(directory);break
+                except PermissionError:
+                    if attempt==3:
+                        print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
+                    else:time.sleep(0.25)
         else:
             print('Temporary test node retained for cleanup: '+str(directory),file=sys.stderr)
     return result

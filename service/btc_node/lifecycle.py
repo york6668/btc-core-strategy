@@ -260,6 +260,22 @@ def _maintain(db, *, apply, now):
     return result
 
 
+def prune_backups(root, *, now_ms, keep_days):
+    backups=[]
+    for path in Path(root).iterdir():
+        manifest=path/'manifest.json'
+        if path.is_symlink() or not path.is_dir() or not manifest.is_file():continue
+        value=json.loads(manifest.read_bytes())
+        if value.get('format')!='BTC_MYSQL_BACKUP_V1':continue
+        created=int(value.get('created_ms',manifest.stat().st_mtime_ns//1000000))
+        backups.append((created,path))
+    removed=[]
+    for created,path in sorted(backups)[:-2]:
+        if created < now_ms-keep_days*DAY:
+            shutil.rmtree(path);removed.append(path.name)
+    return removed
+
+
 def daily(db):
     """Create a recoverable snapshot before retention; backup age is separate."""
     from .backup import create
@@ -282,10 +298,9 @@ def daily(db):
         if not (destination / 'manifest.json').is_file():
             raise ValueError('daily backup is incomplete; retention deferred')
         keep_days = int(db.settings.get('backup_retention_days', 7))
-        backups = sorted(p for p in root.iterdir() if p.is_dir() and re.fullmatch(r'\d{4}-\d{2}-\d{2}', p.name) and (p/'manifest.json').is_file())
-        for old in backups[:-2]:
-            if (datetime.fromisoformat(day) - datetime.fromisoformat(old.name)).days > keep_days:
-                shutil.rmtree(old)
+        # Named migration/recovery backups obey the same lifetime as daily
+        # backups; a non-date directory name must not retain raw data forever.
+        prune_backups(root,now_ms=millis(),keep_days=keep_days)
     result=maintain(db, apply=db.settings.get('maintenance_enabled', False))
     if db.settings.get('maintenance_enabled'):
         with db.writer(),db.transaction(): db.metadata('maintenance.daily',{'day':day,'result':result},write=True)

@@ -13,7 +13,7 @@ READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.du
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
          'acceptance.window', 'acceptance.status'}
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest',
-          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect'}
+          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair'}
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
 
 

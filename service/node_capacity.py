@@ -1,15 +1,56 @@
-"""Native, read-only measurement of this node's actual Docker storage usage."""
+"""Measure this node's storage and rotate its explicitly configured native logs."""
 import argparse
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 from zoneinfo import ZoneInfo
 
 
+def native_logs(entries):
+    results=[]
+    for entry in entries:
+        path=Path(entry['path'])
+        if not path.is_absolute() or path.is_symlink():
+            raise ValueError('native logs must name explicit regular absolute paths')
+        limit=int(entry.get('max_bytes',10*1024*1024)); keep=int(entry.get('keep_files',3))
+        if limit<1 or not 1<=keep<=30:raise ValueError('invalid native log retention')
+        label=entry['launchd_label']
+        state=subprocess.run(['launchctl','print','gui/'+str(os.getuid())+'/'+label],capture_output=True,text=True)
+        # launchd opens these files for each invocation. Rotate only while its
+        # owner is idle; an active writer must retain the inode it opened.
+        idle=state.returncode==0 and any(line.strip()=='state = not running' for line in state.stdout.splitlines())
+        rotated=False
+        if path.exists() and path.stat().st_size>=limit and idle:
+            Path(str(path)+'.'+str(keep)).unlink(missing_ok=True)
+            for index in range(keep-1,0,-1):
+                old=Path(str(path)+'.'+str(index))
+                if old.exists():old.replace(Path(str(path)+'.'+str(index+1)))
+            permissions=path.stat().st_mode & 0o777
+            path.replace(Path(str(path)+'.1'));path.touch(mode=permissions)
+            rotated=True
+        paths=[path]+[Path(str(path)+'.'+str(i)) for i in range(1,keep+1)]
+        results.append({'path':str(path),'rotated':rotated,'owner_idle':idle,
+                        'allocated_bytes':sum(p.stat().st_blocks*512 for p in paths if p.is_file())})
+    return results
+
+
+def allocated(paths):
+    seen=set();total=0
+    for raw in paths:
+        root=Path(raw)
+        for path in ([root] if root.is_file() else root.rglob('*') if root.is_dir() else []):
+            if path.is_symlink() or not path.is_file():continue
+            stat=path.stat();key=(stat.st_dev,stat.st_ino)
+            if key not in seen:seen.add(key);total+=stat.st_blocks*512
+    return total
+
+
 def capture(node_path):
     node=json.loads(Path(node_path).read_text());docker=node['docker_service']
     if not docker.get('enabled'):raise ValueError('measure the activated node configuration')
+    native=native_logs(node.get('native_logs',[]))
     command=[docker['binary'],'compose','-p',docker['project'],'--env-file',docker['env_file'],'-f',docker['compose_file']]
     for path in docker.get('override_files',[]):command+=['-f',path]
     mysql=subprocess.check_output(command+['ps','-q','mysql'],text=True,timeout=30).strip()
@@ -26,8 +67,10 @@ def capture(node_path):
     value={'day':datetime.now(ZoneInfo('Asia/Tokyo')).date().isoformat(),
         'measured_at':datetime.now().astimezone().isoformat(),'compose_project':docker['project'],
         'mysql_allocated_bytes':size,'retained_log_stream_bytes':retained,
+        'native_logs':native,'native_log_allocated_bytes':sum(r['allocated_bytes'] for r in native),
+        'node_extra_allocated_bytes':allocated(node.get('capacity_extra_paths',[])),
         'log_physical_limit_per_container_bytes':30*1024*1024,
-        'meaning':'MySQL du allocated blocks; retained log stream excludes driver framing. File/CAS/backup allocation is measured by storage.status.'}
+        'meaning':'MySQL du allocated blocks; retained log stream excludes driver framing. Native logs and explicit node extras are separate; File/CAS/backup allocation is measured by storage.status.'}
     saved=subprocess.run(command+['exec','-T','core','python','-m','btc_node','request'],
         input=json.dumps({'method':'host.capacity','params':value}),text=True,capture_output=True,timeout=60)
     if saved.returncode or not json.loads(saved.stdout).get('ok'):raise RuntimeError('capacity record failed')

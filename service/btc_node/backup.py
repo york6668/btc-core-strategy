@@ -46,7 +46,7 @@ def create(db, destination):
                     # Originals are immutable. Hardlinks preserve backup bytes
                     # even after live GC unlinks its own directory entry.
                     db.blobs.materialize(digest,target)
-            manifest={'format':'BTC_MYSQL_BACKUP_V1','tables':counts,
+            manifest={'format':'BTC_MYSQL_BACKUP_V1','created_ms':millis(),'tables':counts,
                       'database_sha256':fingerprint((stage/'database.jsonl.gz').read_bytes())}
             (stage/'manifest.json').write_bytes(encode(manifest))
         for path in (stage/'manifest.json',stage/'database.jsonl.gz'):

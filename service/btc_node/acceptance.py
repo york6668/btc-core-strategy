@@ -118,6 +118,26 @@ def defect(db, *, reason, affected_days, criteria):
     return status(db)
 
 
+def repair(db, *, defect_index, release, reason, evidence_refs):
+    """A verified critical repair starts a new full window, retaining history."""
+    state=db.metadata('acceptance')
+    if not state or not isinstance(defect_index,int) or not 0<=defect_index<len(state['defects']):
+        raise ValueError('repair must reference a recorded defect')
+    item=state['defects'][defect_index]
+    if item.get('repair'):
+        raise Conflict('defect already repaired; do not move the observation window again')
+    if not reason.strip() or not release.strip():raise ValueError('describe the actual verified repair and release')
+    proof=evidence(db,evidence_refs)
+    state.setdefault('prior_windows',[]).append({'first_full_day':state['first_full_day'],
+        'required_days':state['required_days'],'release':state['release'],'replaced_at':stamp(),
+        'defect_index':defect_index})
+    item['repair']={'release':release,'reason':reason,'evidence':proof,'verified_at':stamp()}
+    state['first_full_day']=(utc().astimezone(JST).date()+timedelta(days=1)).isoformat()
+    state['release']=release
+    db.metadata('acceptance',state,write=True)
+    return status(db)
+
+
 def status(db):
     state = db.metadata('acceptance')
     if not state: return {'status': 'NOT_STARTED'}
@@ -131,7 +151,9 @@ def status(db):
         for name, check in review['checks'].items():
             if check['status'] == 'FAIL': failed.append({'day':day,'criterion':name})
             elif check['status'] == 'REPLAY_ONLY': replay.setdefault(day,[]).append(name)
-    return {'status': 'NEEDS_REPAIR' if failed else 'FOLLOWING' if missing else 'NATURAL_WINDOW_REVIEWED',
+    open_defects=[i for i,item in enumerate(state.get('defects',[])) if not item.get('repair')]
+    return {'status': 'NEEDS_REPAIR' if failed or open_defects else 'FOLLOWING' if missing else 'NATURAL_WINDOW_REVIEWED',
             'required_days': required, 'missing_or_invalid': missing, 'failed': failed,
             'replay_only': replay, 'release': state['release'],
+            'open_defects':open_defects,'prior_windows':state.get('prior_windows',[]),
             'overall_completion': 'Still requires separate verified source, node, cloud publication and fresh cloud task acceptance.'}

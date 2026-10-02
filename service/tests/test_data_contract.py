@@ -383,6 +383,52 @@ class NodeContract(unittest.TestCase):
         maintain(self.db,apply=True,now=self.now)
         maintain(self.db,apply=True,now=self.now+timedelta(days=3))
         self.assertTrue(self.db.blobs.path(proof).exists())
+        with self.db.transaction():
+            acceptance.defect(self.db,reason='generated missing consumption',affected_days=[],criteria=['cli_mcp_runtime'])
+        self.assertEqual(acceptance.status(self.db)['status'],'NEEDS_REPAIR')
+        old=self.db.metadata('acceptance')['first_full_day']
+        with self.db.transaction():
+            repaired=acceptance.repair(self.db,defect_index=0,release='generated-fixed',
+                reason='replayed and verified the consumer',evidence_refs=[{'type':'BLOB','digest':proof}])
+        self.assertEqual(repaired['status'],'FOLLOWING')
+        self.assertEqual(repaired['prior_windows'][0]['first_full_day'],old)
+        self.assertEqual(repaired['required_days'][0],(datetime.now(acceptance.JST).date()+timedelta(days=1)).isoformat())
+        self.assertEqual(repaired['open_defects'],[])
+        with self.assertRaises(Conflict):
+            acceptance.repair(self.db,defect_index=0,release='later',reason='no moving target',
+                evidence_refs=[{'type':'BLOB','digest':proof}])
+
+    def test_reader_wal_reopen_checkpoints_exact_cursor_before_next_poll(self):
+        with tempfile.TemporaryDirectory(prefix='btc-reader-checkpoint-') as directory:
+            path=Path(directory)/'cursor.sqlite3'
+            connection=sqlite3.connect(path)
+            connection.execute('PRAGMA journal_mode=WAL')
+            connection.execute('CREATE TABLE cursor (id INTEGER PRIMARY KEY, next_offset INTEGER)')
+            connection.execute('INSERT INTO cursor VALUES(1,43)');connection.commit();connection.close()
+            self.assertFalse(Path(str(path)+'-shm').exists())
+            settings={**self.settings,'reader_data':directory}
+            self.assertTrue(dispatch(settings,{'method':'reader.checkpoint'})['checkpointed'])
+            stored=self.db.rows("SELECT digest FROM legacy_rows WHERE table_name='cursor'")
+            self.assertEqual(self.db.value(stored[0]['digest'])['next_offset'],43)
+            connection=sqlite3.connect(path)
+            connection.execute('UPDATE cursor SET next_offset=47');connection.commit();connection.close()
+            dispatch(settings,{'method':'reader.checkpoint'})
+            self.db.connection.commit()
+            stored=self.db.rows("SELECT digest FROM legacy_rows WHERE table_name='cursor'")
+            self.assertEqual(len(stored),1)
+            self.assertEqual(self.db.value(stored[0]['digest'])['next_offset'],47)
+            self.assertFalse(dispatch(settings,{'method':'reader.checkpoint'})['databases'][0]['changed'])
+
+    def test_backup_retention_covers_named_migration_copies_and_keeps_two(self):
+        from btc_node.lifecycle import prune_backups,DAY
+        with tempfile.TemporaryDirectory(prefix='btc-backup-retention-') as directory:
+            root=Path(directory);now=millis(self.now)
+            for name,age in [('pre-cutover',12),('recovery-check',10),('daily-old',9),('daily-new',1)]:
+                path=root/name;path.mkdir()
+                (path/'manifest.json').write_bytes(encode({'format':'BTC_MYSQL_BACKUP_V1','created_ms':now-age*DAY}))
+            (root/'.backup-incomplete').mkdir()
+            self.assertEqual(set(prune_backups(root,now_ms=now,keep_days=7)),{'pre-cutover','recovery-check'})
+            self.assertEqual({p.name for p in root.iterdir()},{'daily-old','daily-new','.backup-incomplete'})
 
     def test_existing_observation_sql_uses_mysql_cas_and_preserves_interface(self):
         payload = '{ "datasets": {}, "original": true }'

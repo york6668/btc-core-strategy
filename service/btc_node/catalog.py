@@ -44,7 +44,9 @@ def retention(relative):
 
 
 def sqlite_signature(source):
-    return 'rowid-v2:' + ':'.join(str((p.stat().st_mtime_ns, p.stat().st_size)) if p.exists() else '-'
+    # A read-only WAL reopen can create an empty -wal without new data.
+    # Treat it like an absent WAL so unchanged checkpoints remain idempotent.
+    return 'rowid-v2:' + ':'.join(str((p.stat().st_mtime_ns, p.stat().st_size)) if p.exists() and (p==source or p.stat().st_size) else '-'
                     for p in (source, Path(str(source) + '-wal')))
 
 

@@ -67,7 +67,9 @@ def prepare(node_path, data, docker, compose_project, source):
     volumes = [str(data) + ':' + str(data),
                node['release_root'] + ':' + node['release_root'] + ':ro',
                str(data / 'reader-source') + ':' + node['reader_code_dir'] + ':ro',
-               str(data / 'reader') + ':' + node['reader_data_dir'] + ':ro',
+               # SQLite mode=ro still needs a writable directory for WAL's
+               # shared-memory coordination when the previous reader closed.
+               str(data / 'reader') + ':' + node['reader_data_dir'],
                str(native_project) + ':' + str(project),
                str(data / 'strategy') + ':' + str(project / '.strategy'),
                str(data / 'native-facts') + ':/run/btc/facts:ro']

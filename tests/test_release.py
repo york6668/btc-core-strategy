@@ -101,6 +101,24 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(json.loads(output)['commit'],self.first)
         self.assertEqual(self.state.read_bytes(),self.before)
 
+    def test_native_log_rotation_preserves_live_writer_and_other_project(self):
+        module_spec=importlib.util.spec_from_file_location('btc_test_capacity',ROOT/'service/node_capacity.py')
+        capacity=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(capacity)
+        owned=self.base/'reader.log';owned.write_text('previous run\n')
+        other=self.base/'other-project.log';other.write_text('keep\n')
+        entry={'path':str(owned),'launchd_label':'test-reader','max_bytes':2,'keep_files':2}
+        with patch('subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='state = running\n')):
+            self.assertFalse(capacity.native_logs([entry])[0]['rotated'])
+        self.assertEqual(owned.read_text(),'previous run\n')
+        with patch('subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='state = not running\n')):
+            self.assertTrue(capacity.native_logs([entry])[0]['rotated'])
+            self.assertEqual(owned.read_text(),'')
+            self.assertEqual(Path(str(owned)+'.1').read_text(),'previous run\n')
+            owned.write_text('next run\n');capacity.native_logs([entry])
+            self.assertEqual(Path(str(owned)+'.2').read_text(),'previous run\n')
+            self.assertEqual(Path(str(owned)+'.1').read_text(),'next run\n')
+        self.assertEqual(other.read_text(),'keep\n')
+
     def test_native_transport_preserves_template_binding_and_freezes_authored_answers(self):
         module_spec=importlib.util.spec_from_file_location('btc_test_bridge',ROOT/'skill/btc-core-strategy/scripts/node_bridge.py')
         bridge=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(bridge)

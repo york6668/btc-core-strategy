@@ -26,6 +26,8 @@ reader 使用独立 namespace 导入与对比。校验包括原字节/hash、路
 
 reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一次 offset 持久化后才允许下次 getUpdates 确认。Keychain token 经 stdin 注入一次性容器，不落入镜像、环境文件或日志。collector 在其原节点暂停旧进程并持有原 writer locks，按实际 state_paths 获取 SQLite backup 与字节快照；核对队列及游标后按原周期启动容器，保留原传输和 UNKNOWN 语义。
 
+reader 的 SQLite 兼容挂载允许共享内存协调文件写入，catalog 连接仍使用 `mode=ro`；WAL 模式数据库在 reader 退出后可能需要重新创建 `-shm`，不能将整个目录挂成只读。
+
 ## 故障恢复与回退
 
 命令先保存 operation_id/输入摘要，再执行原 CLI，最后归档实际结果。相同 ID 与相同输入返回原结果；并发旧版本拒绝；DB 不可用不会退回宿主写入。服务返回恢复 ID 时先 `core.recover`，核对持久 journal 与实际文件，不能重发报告或换 ID 重跑不确定动作。
@@ -34,8 +36,12 @@ reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一�
 
 维护首次启用前验证实际恢复。maintenance_enabled 默认 false；启用后每日先备份再清理，备份默认七天且至少保留两份。引用保护、回收缓冲和生命周期均由 lifecycle 执行；Compose 限制日志轮转。storage.status 区分逻辑字节、去重字节、实际文件占用、MySQL 表分配量和宿主 Docker 占用；删除行不等于 InnoDB 卷缩小。
 
+宿主每天运行 `service/node_capacity.py --node <现有 node.json>` 保存 Docker 实际用量。node.native_logs 逐项指定项目日志的 path、launchd_label、max_bytes 和 keep_files；仅在对应任务空闲时轮转，运行中留待下次。node.capacity_extra_paths 明确列出迁移缓冲等额外占用，不能扫描或清理 Codex 全局历史及其他项目。
+
 ## 持续验证
 
 `python3 -B service/check.py --docker <实际 Docker CLI>` 创建临时 MySQL/core 节点，临时生成输入，实际执行 CLI/MCP、原分析 prepare/observe、并发和版本冲突、来源修订、期限复核、事实分离、生命周期、备份/空库恢复、中断恢复、数据库停机及容器重启；逐表内容与 CAS 在恢复前后逐项一致。结束只清理该临时节点。缺 Docker/MySQL 不跳过或伪装通过。
 
 完整核心测试继续使用 `scripts/run_tests.py`；跨角色验收在 market-roles 执行 `roles/validate_repository.py --with-data-service`，同时从白名单重建 collector/analysis。云端准备显式要求 Docker/Compose/MySQL 可运行，不能仅安装 Python 包后声称部署完成。自然七日验收使用原分析任务，不增设第二个分析写入方。acceptance 的每项结论必须绑定实际输入、状态变化、消费结果与可读取证据；日期届满不会自动通过。
+
+关键缺陷以 `acceptance.defect` 保留失败和受影响窗口，实际修复复验后调用 `acceptance.repair` 绑定缺陷序号、发布及证据。它从次日重开七个完整自然日，原检查与旧窗口历史保留；未解决缺陷始终阻止自然验收通过。
