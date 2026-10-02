@@ -160,6 +160,11 @@ def export_sqlite(db, destination):
     try:
         target.execute('PRAGMA foreign_keys=OFF')
         target.execute('BEGIN IMMEDIATE')
+        identities={}
+        for table in FIELDS:
+            primary=[r[1] for r in sorted(target.execute('PRAGMA table_info('+table+')'),key=lambda r:r[5]) if r[5]]
+            saved={tuple(r[1:]):r[0] for r in target.execute('SELECT rowid,'+','.join(primary)+' FROM '+table)} if primary else {}
+            identities[table]=(primary,saved,max(saved.values(),default=0)+1)
         for table in reversed(list(FIELDS)):
             target.execute('DELETE FROM ' + table)
         counts = {}
@@ -169,9 +174,12 @@ def export_sqlite(db, destination):
                 if field not in actual:
                     target.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + field + ' TEXT')
             rows = db.rows('SELECT * FROM mo_' + table)
+            primary,saved,next_rowid=identities[table]
             for row in rows:
                 values = [db.blobs.get(row[field][6:]).decode('utf-8') if field in CONTENT and row[field] is not None else row[field] for field in fields]
-                target.execute('INSERT INTO ' + table + '(' + ','.join(fields) + ') VALUES(' + ','.join('?' for _ in fields) + ')', values)
+                rowid=saved.get(tuple(row[f] for f in primary)) if primary else None
+                if rowid is None:rowid=next_rowid;next_rowid+=1
+                target.execute('INSERT INTO ' + table + '(rowid,' + ','.join(fields) + ') VALUES(' + ','.join('?' for _ in range(len(fields)+1)) + ')', [rowid,*values])
             counts[table] = len(rows)
         target.commit()
         if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':

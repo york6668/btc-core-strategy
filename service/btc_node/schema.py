@@ -115,6 +115,12 @@ DDL = (
         digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
         PRIMARY KEY(database_key,table_name,row_key,digest),
         FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS legacy_row_identity (
+        database_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        table_name VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+        row_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        implicit_rowid BIGINT NULL, rowid_alias VARCHAR(16) NULL, source_order BIGINT NOT NULL,
+        PRIMARY KEY(database_key,table_name,row_key))""",
     """CREATE TABLE IF NOT EXISTS node_metadata (
         name VARCHAR(191) COLLATE utf8mb4_bin PRIMARY KEY,
         digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

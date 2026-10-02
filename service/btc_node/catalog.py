@@ -44,8 +44,27 @@ def retention(relative):
 
 
 def sqlite_signature(source):
-    return ':'.join(str((p.stat().st_mtime_ns, p.stat().st_size)) if p.exists() else '-'
+    return 'rowid-v2:' + ':'.join(str((p.stat().st_mtime_ns, p.stat().st_size)) if p.exists() else '-'
                     for p in (source, Path(str(source) + '-wal')))
+
+
+def sqlite_rows(connection, table):
+    quoted='"'+table.replace('"','""')+'"'
+    columns=list(connection.execute('PRAGMA table_info('+quoted+')'))
+    primary=[r['name'] for r in sorted(columns,key=lambda r:r['pk']) if r['pk']]
+    names={r['name'].lower() for r in columns}
+    selected=','.join('"'+r['name'].replace('"','""')+'"' for r in columns)
+    alias=next((name for name in ('_rowid_','rowid','oid') if name not in names),None)
+    if alias:
+        try:cursor=connection.execute('SELECT '+alias+','+selected+' FROM '+quoted)
+        except sqlite3.OperationalError:alias=None
+    if not alias:cursor=connection.execute('SELECT '+selected+' FROM '+quoted)
+    for index,row in enumerate(cursor):
+        values=list(row)
+        implicit=values.pop(0) if alias else None
+        value=dict(zip([r['name'] for r in columns],values))
+        row_key=identity(*[{'$binary_content':fingerprint(value[p])} if isinstance(value[p],bytes) else value[p] for p in primary]) if primary else identity(implicit if alias else index)
+        yield row_key,value,implicit,alias,index
 
 
 class Catalog:
@@ -147,7 +166,7 @@ class Catalog:
         return {'namespace': namespace, 'changed': changed, 'removed': sorted(missing), 'sqlite': databases}
 
     def remove_sqlite(self, database_key):
-        for table in ('legacy_row_blobs','legacy_rows','legacy_databases'):
+        for table in ('legacy_row_identity','legacy_row_blobs','legacy_rows','legacy_databases'):
             self.db.execute('DELETE FROM '+table+' WHERE database_key=%s',(database_key,))
 
     def sync_sqlite(self, namespace, root, relative):
@@ -172,15 +191,12 @@ class Catalog:
             tables = {row['name'] for row in schema if row['type'] == 'table'}
             old_tables = {r['table_name'] for r in self.db.rows('SELECT DISTINCT table_name FROM legacy_rows WHERE database_key=%s',(database_key,))}
             for removed in old_tables-tables:
-                for target in ('legacy_rows','legacy_row_blobs'):
+                for target in ('legacy_rows','legacy_row_blobs','legacy_row_identity'):
                     self.db.execute('DELETE FROM '+target+' WHERE database_key=%s AND table_name=%s',(database_key,removed))
             for table in sorted(tables):
-                quoted = '"' + table.replace('"', '""') + '"'
-                columns = list(connection.execute('PRAGMA table_info(' + quoted + ')'))
-                primary = [row['name'] for row in sorted(columns, key=lambda r: r['pk']) if row['pk']]
                 saved = {r['row_key']: r['digest'] for r in self.db.rows('SELECT row_key,digest FROM legacy_rows WHERE database_key=%s AND table_name=%s', (database_key, table))}
                 seen = set()
-                for index, row in enumerate(connection.execute('SELECT * FROM ' + quoted)):
+                for row_key,row,implicit,alias,index in sqlite_rows(connection,table):
                     value, binaries = {}, set()
                     for column in row.keys():
                         item = row[column]
@@ -188,7 +204,8 @@ class Catalog:
                             blob = self.db.put_blob(item); binaries.add(blob)
                             item = {'$binary_content': blob}
                         value[column] = item
-                    row_key = identity(*[value[p] for p in primary]) if primary else identity(index)
+                    self.db.execute('REPLACE INTO legacy_row_identity(database_key,table_name,row_key,implicit_rowid,rowid_alias,source_order) '
+                                    'VALUES(%s,%s,%s,%s,%s,%s)',(database_key,table,row_key,implicit,alias,index))
                     digest = fingerprint(encode(value))
                     seen.add(row_key); count += 1
                     if saved.get(row_key) == digest:
@@ -200,7 +217,7 @@ class Catalog:
                     for blob in binaries:
                         self.db.execute('INSERT INTO legacy_row_blobs(database_key,table_name,row_key,digest) VALUES(%s,%s,%s,%s)', (database_key, table, row_key, blob))
                 for row_key in set(saved) - seen:
-                    for target in ('legacy_rows', 'legacy_row_blobs'):
+                    for target in ('legacy_rows', 'legacy_row_blobs','legacy_row_identity'):
                         self.db.execute('DELETE FROM ' + target + ' WHERE database_key=%s AND table_name=%s AND row_key=%s', (database_key, table, row_key))
             return {'path': relative, 'changed': True, 'rows': count, 'updated_rows': updated}
         finally:
@@ -262,17 +279,22 @@ class Catalog:
                 connection.execute('CREATE TABLE "'+temporary_table+'" (id INTEGER PRIMARY KEY AUTOINCREMENT)')
                 connection.execute('DROP TABLE "'+temporary_table+'"')
             sequence_rows = []
-            for row in self.db.rows('SELECT table_name,digest FROM legacy_rows WHERE database_key=%s ORDER BY table_name,row_key', (record['database_key'],)):
+            def insert_row(table,value):
+                columns=','.join('"'+key.replace('"','""')+'"' for key in value)
+                items=[self.db.blobs.get(v['$binary_content']) if isinstance(v,dict) and set(v)=={'$binary_content'} else v for v in value.values()]
+                connection.execute('INSERT INTO "'+table.replace('"','""')+'" ('+columns+') VALUES('+','.join('?' for _ in items)+')',items)
+            for row in self.db.rows('SELECT l.table_name,l.digest,i.implicit_rowid,i.rowid_alias FROM legacy_rows l '
+                    'LEFT JOIN legacy_row_identity i USING(database_key,table_name,row_key) '
+                    'WHERE l.database_key=%s ORDER BY l.table_name,i.source_order,l.row_key', (record['database_key'],)):
                 value = self.db.value(row['digest'])
+                if row['rowid_alias'] is not None:value[row['rowid_alias']]=row['implicit_rowid']
                 if row['table_name'] == 'sqlite_sequence':
                     sequence_rows.append(value)
                     continue
-                columns = ','.join('"' + key.replace('"', '""') + '"' for key in value)
-                items = [self.db.blobs.get(v['$binary_content']) if isinstance(v, dict) and set(v) == {'$binary_content'} else v for v in value.values()]
-                connection.execute('INSERT INTO "' + row['table_name'].replace('"', '""') + '" (' + columns + ') VALUES(' + ','.join('?' for _ in items) + ')', items)
+                insert_row(row['table_name'],value)
             if sequence_rows:
                 connection.execute('DELETE FROM sqlite_sequence')
-                connection.executemany('INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)', [(v['name'],v['seq']) for v in sequence_rows])
+                for value in sequence_rows:insert_row('sqlite_sequence',value)
             for item in schema['schema']:
                 if item['type'] != 'table':
                     connection.execute(item['sql'])
@@ -320,16 +342,15 @@ class Catalog:
                 if fingerprint(encode({'schema': schema, 'user_version': version})) != record['schema_digest']:
                     mismatches.append(record['path'] + ':schema')
                 for table in [r['name'] for r in schema if r['type'] == 'table']:
-                    quoted = '"' + table.replace('"', '""') + '"'
-                    columns = list(connection.execute('PRAGMA table_info(' + quoted + ')'))
-                    primary = [r['name'] for r in sorted(columns, key=lambda r: r['pk']) if r['pk']]
                     stored = {r['row_key']:r['digest'] for r in self.db.rows('SELECT row_key,digest FROM legacy_rows WHERE database_key=%s AND table_name=%s', (record['database_key'],table))}
+                    identities={r['row_key']:r for r in self.db.rows('SELECT row_key,implicit_rowid,rowid_alias,source_order FROM legacy_row_identity WHERE database_key=%s AND table_name=%s',(record['database_key'],table))}
                     seen = set()
-                    for index, row in enumerate(connection.execute('SELECT * FROM ' + quoted)):
+                    for row_key,row,implicit,alias,index in sqlite_rows(connection,table):
                         value = {k: {'$binary_content': fingerprint(v)} if isinstance(v, bytes) else v for k,v in dict(row).items()}
-                        row_key = identity(*[value[p] for p in primary]) if primary else identity(index)
                         seen.add(row_key)
-                        if stored.get(row_key) != fingerprint(encode(value)):
+                        position=identities.get(row_key)
+                        if (stored.get(row_key) != fingerprint(encode(value)) or not position or
+                                (position['implicit_rowid'],position['rowid_alias'],position['source_order'])!=(implicit,alias,index)):
                             mismatches.append(record['path'] + ':' + table + ':' + row_key)
                     if seen != set(stored):
                         mismatches.append(record['path'] + ':' + table + ':row-set')

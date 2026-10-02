@@ -238,6 +238,8 @@ class NodeContract(unittest.TestCase):
                 connection.execute('INSERT INTO reader(cursor,payload) VALUES(?,?)', (987654,b'original\x00bytes'))
                 connection.execute('INSERT INTO reader(cursor,payload) VALUES(?,?)', (999999,b'deleted'))
                 connection.execute('DELETE FROM reader WHERE id=2')
+                connection.execute('CREATE TABLE history(payload BLOB)')
+                connection.executemany('INSERT INTO history(rowid,payload) VALUES(?,?)',[(3,b'duplicate'),(19,b'duplicate')])
             catalog = Catalog(self.db)
             with self.db.transaction():
                 first = catalog.sync(self.id, source)
@@ -251,6 +253,7 @@ class NodeContract(unittest.TestCase):
             with sqlite3.connect(restored/'reader.sqlite3') as connection:
                 self.assertEqual(connection.execute('SELECT cursor,payload FROM reader').fetchone(), (987654,b'original\x00bytes'))
                 self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 3)
+                self.assertEqual(connection.execute('SELECT rowid,payload FROM history').fetchall(),[(3,b'duplicate'),(19,b'duplicate')])
                 connection.execute('INSERT INTO reader(cursor) VALUES(1)')
                 self.assertEqual(connection.execute('SELECT max(id) FROM reader').fetchone()[0], 3)
             with sqlite3.connect(source/'reader.sqlite3') as connection:
@@ -335,10 +338,12 @@ class NodeContract(unittest.TestCase):
             path=Path(directory)/'market.sqlite3'
             with sqlite3.connect(path) as target:
                 for table,fields in FIELDS.items():
-                    target.execute('CREATE TABLE '+table+' ('+','.join(f+' TEXT' for f in fields)+')')
+                    target.execute('CREATE TABLE '+table+' ('+','.join(f+' TEXT'+(' PRIMARY KEY' if i==0 else '') for i,f in enumerate(fields))+')')
+                target.execute('INSERT INTO evidence(rowid,evidence_id,payload) VALUES(27,?,?)',(self.id,'older view'))
             export_sqlite(self.db,path)
             with sqlite3.connect(path) as target:
                 self.assertEqual(target.execute('SELECT payload FROM evidence WHERE evidence_id=?',(self.id,)).fetchone()[0],'{"delivery":"UNKNOWN"}')
+                self.assertEqual(target.execute('SELECT rowid FROM evidence WHERE evidence_id=?',(self.id,)).fetchone()[0],27)
 
     def test_backup_restores_latest_unknown_and_blocks_stale_overwrite(self):
         with self.db.transaction():
