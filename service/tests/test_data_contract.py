@@ -239,7 +239,12 @@ class NodeContract(unittest.TestCase):
             def save():
                 source.write_bytes(encode(package))
                 return ingest(self.db,package,source)
-            self.assertEqual(sum(r['inserted'] for r in save()['counts']),70)
+            node=Path(folder)/'container-node.json'
+            node.write_text(json.dumps({'reader_code_dir':str(Path(os.environ['BTC_COLLECTOR_CONTRACT_PATH']).parent)}))
+            # The daemon does not inherit the child CLI's BTC_NODE_CONFIG or
+            # test-only contract override. Its persisted node owns the reader.
+            with patch.dict(self.db.settings, {'container_node_config':str(node)}), patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(sum(r['inserted'] for r in save()['counts']),70)
             product=next(r['product'] for r in self.prices.products(limit=500)['products']
                          if r['identity']['product_type']=='COLLECTOR_SERIES:'+SELLER)
             query={'start':self.at(24*80),'end':self.at(),'limit':100}

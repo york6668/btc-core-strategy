@@ -3,6 +3,7 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -15,10 +16,12 @@ from .series import Series
 SELLER = 'seller_exhaustion_daily'
 
 
-def seller_rows(dataset, asset, known):
+def seller_rows(dataset, asset, known, reader_directory=None):
     """Validate with the deployed producer contract, not a second formula."""
     location = os.environ.get('BTC_COLLECTOR_CONTRACT_PATH')
-    if location:
+    if reader_directory is not None:
+        directory = Path(reader_directory)
+    elif location:
         directory = Path(location).parent
     else:
         import node_config
@@ -69,7 +72,11 @@ def ingest(db, package, source, *, only=None):
             prepared = None
             if name == SELLER:
                 try:
-                    prepared = seller_rows(dataset, asset, known)
+                    # Projection runs in the service parent, outside the pinned
+                    # CLI subprocess environment. Use its owned node settings.
+                    node_path = db.settings.get('container_node_config')
+                    reader_directory = json.loads(Path(node_path).read_text())['reader_code_dir'] if node_path else None
+                    prepared = seller_rows(dataset, asset, known, reader_directory)
                 except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
                     gaps.append({'asset':asset,'series':name,'reason':str(exc)})
                     continue
