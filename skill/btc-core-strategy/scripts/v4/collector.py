@@ -1,5 +1,6 @@
 """Frozen multi-asset auxiliary measurements; no collector conclusion authority."""
 from copy import deepcopy
+from datetime import datetime, timezone
 import importlib.util
 import os
 from pathlib import Path
@@ -139,6 +140,19 @@ def context(bundle, directory):
             rows = ds.get('rows') or []
             brief.update(row_count=len(rows), latest=deepcopy(rows[-1]) if rows else None,
                          raw_ref={'source_id': source['id'], 'pointer': pointer, 'value_hash': digest(ds)})
+            if name == 'seller_exhaustion_daily':
+                measured = (ds.get('values') or {}).get('as_of_ms')
+                last = next((r for r in rows if r.get('observed_ms') == measured), None)
+                def utc_ms(value):
+                    return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
+                brief['temporal_coverage'] = {
+                    'data_date_utc': utc_ms(last['period_start_ms'])[:10] if last else None,
+                    'period_start_utc': utc_ms(last['period_start_ms']) if last else None,
+                    'period_end_exclusive_utc': utc_ms(last['period_end_ms']) if last else None,
+                    'observed_at_utc': utc_ms(measured) if last else None,
+                    'first_received_at': (row.get('transport') or {}).get('received_at'),
+                    'publication_time_unknown': ds.get('publication_time_unknown', True),
+                    'meaning': 'UTC measurement bucket, not publication time or proof of event coverage; compare the actual event and independently verify source timing.'}
             if name == 'macro':
                 brief['latest'] = None  # Whole macro series remain at raw_ref.
             out['datasets'][name] = brief

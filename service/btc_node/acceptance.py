@@ -140,7 +140,7 @@ def repair(db, *, defect_index, release, reason, evidence_refs):
 
 def status(db):
     state = db.metadata('acceptance')
-    if not state: return {'status': 'NOT_STARTED'}
+    if not state: return {'status': 'NOT_STARTED', 'scope': 'LOCAL_NATURAL_ACCEPTANCE'}
     first = datetime.strptime(state['first_full_day'], '%Y-%m-%d').date()
     required = [(first+timedelta(days=i)).isoformat() for i in range(state['required_days'])]
     missing, failed, replay = [], [], {}
@@ -153,7 +153,8 @@ def status(db):
             elif check['status'] == 'REPLAY_ONLY': replay.setdefault(day,[]).append(name)
     open_defects=[i for i,item in enumerate(state.get('defects',[])) if not item.get('repair')]
     return {'status': 'NEEDS_REPAIR' if failed or open_defects else 'FOLLOWING' if missing else 'NATURAL_WINDOW_REVIEWED',
+            'scope': 'LOCAL_NATURAL_ACCEPTANCE',
             'required_days': required, 'missing_or_invalid': missing, 'failed': failed,
             'replay_only': replay, 'release': state['release'],
             'open_defects':open_defects,'prior_windows':state.get('prior_windows',[]),
-            'overall_completion': 'Still requires separate verified source, node, cloud publication and fresh cloud task acceptance.'}
+            'overall_completion': 'This result covers local natural acceptance only. Source publication, node migration and cloud deployment have separate evidence and status.'}

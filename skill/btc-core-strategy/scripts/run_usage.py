@@ -163,10 +163,59 @@ def summarize(rows):
     return result
 
 
+class UsageSourceUnavailable(ValueError):
+    """This adapter cannot measure usage; market analysis remains independent."""
+
+
+def usage_database(explicit=None, configured=None):
+    """Respect an explicit source; discover only one schema-compatible candidate.
+
+    Codex's internal filename is not an API. Never choose by suffix or mtime.
+    All inspection is read-only, including a missing or incompatible source.
+    """
+    required = {'id', 'rollout_path', 'created_at', 'updated_at', 'model',
+                'reasoning_effort', 'thread_source', 'name', 'source'}
+    def inspect(path):
+        if not path.is_file():
+            raise UsageSourceUnavailable('usage database is unavailable: ' + str(path))
+        try:
+            with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as conn:
+                columns = {row[1] for row in conn.execute('PRAGMA table_info(threads)')}
+                missing = required - columns
+                if missing:
+                    raise UsageSourceUnavailable('usage database schema lacks: ' + ', '.join(sorted(missing)))
+                edges = {row[1] for row in conn.execute('PRAGMA table_info(thread_spawn_edges)')}
+                if edges and not {'parent_thread_id', 'child_thread_id'} <= edges:
+                    raise UsageSourceUnavailable('usage database has incompatible thread_spawn_edges')
+        except sqlite3.Error as exc:
+            raise UsageSourceUnavailable('usage database cannot be read: ' + type(exc).__name__) from exc
+        return path.resolve()
+    if explicit:
+        return inspect(Path(explicit).expanduser())
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return inspect(path)
+        root = path.parent
+    else:
+        import os
+        root = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+    candidates = []
+    for path in root.glob('state_*.sqlite'):
+        try:
+            candidates.append(inspect(path))
+        except UsageSourceUnavailable:
+            continue
+    if len(candidates) != 1:
+        raise UsageSourceUnavailable('usage source needs an explicit compatible database; found ' + str(len(candidates)))
+    return candidates[0]
+
+
 def audit(db, since, until):
     start, end = timestamp(since), timestamp(until)
     if end <= start: raise ValueError('until must follow since')
-    uri = Path(db).resolve().as_uri() + '?mode=ro'
+    db = usage_database(explicit=db)
+    uri = db.as_uri() + '?mode=ro'
     with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
         threads = {v['id']:dict(v) for v in conn.execute('SELECT * FROM threads')}
@@ -214,6 +263,7 @@ def audit(db, since, until):
     errors = Counter()
     for row in costs: errors.update(row['error_counts'])
     return {'schema':'BTC_RUN_USAGE_AUDIT_V1','since':since,'until':until,
+        'source':{'status':'AVAILABLE','adapter':'codex_internal_sqlite','path':str(db)},
         'measurement':'Distinct model response usage records and outer model tool calls. Cached input is included in input; no quota conversion.',
         'stratification':'Completed run totals include descendants; any descendant classifies the run as research. Conservative tool-trace flags, not a quality score.',
         'summary':summarize(rows),'groups':{key:summarize(value) for key,value in groups.items()},'runs':rows,'excluded':excluded,
@@ -309,7 +359,7 @@ def daily_status(path, at=None):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--db',default=str(__import__('node_config').path('codex_state_db', __import__('node_config').project() / '.codex/state_5.sqlite')));p.add_argument('--since');p.add_argument('--until')
+    p.add_argument('--db',help='Explicit read-only Codex usage database; no filename/version assumption');p.add_argument('--since');p.add_argument('--until')
     p.add_argument('--output');p.add_argument('--baseline')
     p.add_argument('--status',action='store_true',help='Read only: preceding JST day and pending acceptance, requires --defect')
     p.add_argument('--defect',help='Update the existing local defect with usage evidence; never closes it.')
@@ -318,7 +368,18 @@ def main():
         if not a.defect:p.error('--status requires --defect')
         print(json.dumps(daily_status(a.defect),ensure_ascii=False));return
     if not all((a.since,a.until,a.output)):p.error('audit requires --since, --until and --output')
-    value=audit(a.db,a.since,a.until)
+    try:
+        configured = __import__('node_config').load().get('codex_state_db')
+        database = usage_database(a.db, configured)
+        value=audit(database,a.since,a.until)
+    except (UsageSourceUnavailable, sqlite3.Error, OSError) as exc:
+        value={'schema':'BTC_RUN_USAGE_AUDIT_V1','since':a.since,'until':a.until,
+               'source':{'status':'UNAVAILABLE','adapter':'codex_internal_sqlite','reason':str(exc)},
+               'summary':None,'target_check':{'met':None},'market_analysis_blocked':False}
+        dest=Path(a.output);dest.parent.mkdir(parents=True,exist_ok=True)
+        dest.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n')
+        print(json.dumps(value,ensure_ascii=False))
+        return 2
     value['target_check']=absolute_target(value)
     if a.baseline:value['comparison']=compare(value,json.loads(Path(a.baseline).read_text()))
     dest=Path(a.output);dest.parent.mkdir(parents=True,exist_ok=True)
@@ -326,4 +387,4 @@ def main():
     defect = record_defect_check(a.defect,value,dest) if a.defect else None
     print(json.dumps({'output':str(dest.resolve()),'summary':value['summary'],'groups':value['groups'],'target_check':value['target_check'],'comparison':value.get('comparison'),'excluded':len(value['excluded']),'defect':defect},ensure_ascii=False))
 
-if __name__=='__main__':main()
+if __name__=='__main__':raise SystemExit(main())

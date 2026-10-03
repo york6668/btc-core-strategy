@@ -72,6 +72,24 @@ def complete(db_path, kind, binding, proof_identity, completed_at, outcome='SUCC
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_frozen_validation_uses_owned_runtime_only_for_exact_compatibility(self):
+        from v4 import market_runtime as runtime
+        from v4.common import Invalid
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); frozen=root/'market.json'; frozen.write_text('{}')
+            owned=root/'python'; owned.write_text('retained runtime')
+            mismatch=runtime.market_observation.ObservationError('window measurement mismatch')
+            with mock.patch.object(runtime, 'BUNDLED_PYTHON', owned), \
+                 mock.patch.object(runtime.market_observation, 'validate_evidence', side_effect=mismatch), \
+                 mock.patch.object(runtime.subprocess, 'run', return_value=mock.Mock(returncode=0,stdout='3.12.14\n')), \
+                 mock.patch.object(runtime.node_config, 'load', return_value={'frozen_market_python_version':'3.12.14'}):
+                self.assertEqual(runtime.validate_file(frozen)['runtime'],str(owned))
+                with mock.patch.object(runtime.node_config, 'load', return_value={'frozen_market_python_version':'3.12.0'}):
+                    with self.assertRaisesRegex(Invalid,'node-pinned version'):runtime.validate_file(frozen)
+                owned.unlink()
+                with self.assertRaisesRegex(Invalid,'node-owned'):runtime.validate_file(frozen)
+                self.assertEqual(frozen.read_text(),'{}')
+
     def test_closed_windows_flow_amount_and_ratio_are_distinct(self):
         e = evidence()
         m.validate_evidence(e)

@@ -4,6 +4,40 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import run_usage
 
 class UsageTests(unittest.TestCase):
+    def test_readonly_source_discovery_checks_schema_and_never_guesses_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve(); missing=root/'state_old.sqlite'
+            with self.assertRaises(run_usage.UsageSourceUnavailable):
+                run_usage.usage_database(explicit=missing)
+            self.assertFalse(missing.exists())
+            for name in ('state_11.sqlite', 'state_12.sqlite'):
+                with sqlite3.connect(root/name) as con:
+                    con.execute('create table threads(id,rollout_path,created_at,updated_at,model,reasoning_effort,thread_source,name,source)')
+                if name == 'state_11.sqlite':
+                    self.assertEqual(run_usage.usage_database(configured=missing),root/name)
+            with self.assertRaisesRegex(run_usage.UsageSourceUnavailable, 'found 2'):
+                run_usage.usage_database(configured=missing)
+            chosen=root/'state_11.sqlite'; before=chosen.read_bytes()
+            self.assertEqual(run_usage.usage_database(explicit=chosen),chosen)
+            self.assertEqual(chosen.read_bytes(),before)
+            bad=root/'bad.sqlite'
+            with sqlite3.connect(bad) as con:con.execute('create table threads(id)')
+            with self.assertRaisesRegex(run_usage.UsageSourceUnavailable, 'schema lacks'):
+                run_usage.usage_database(explicit=bad)
+
+    def test_missing_usage_source_reports_unknown_and_leaves_acceptance_pending(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); defect=root/'defect.json'; defect.write_text('{"status":"OPEN"}')
+            result=subprocess.run([sys.executable, str(Path(run_usage.__file__)), '--db',str(root/'absent.sqlite'),
+                '--since','2030-03-01T00:00:00Z','--until','2030-03-02T00:00:00Z',
+                '--output',str(root/'usage.json'),'--defect',str(defect)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,2,result.stderr)
+            value=json.loads(result.stdout)
+            self.assertEqual(value['source']['status'],'UNAVAILABLE')
+            self.assertIsNone(value['summary']);self.assertIsNone(value['target_check']['met'])
+            self.assertFalse(value['market_analysis_blocked'])
+            self.assertEqual(json.loads(defect.read_text()),{'status':'OPEN'})
     def test_elapsed_time_and_error_quantiles_keep_missing_values_unknown(self):
         summary=run_usage.summarize([{'elapsed_seconds':n,'repeated_errors':0} for n in (10,20,30,None)])
         self.assertEqual(summary['elapsed_seconds'],{'known_runs':3,'median':20,'p95':30,'sum':60})

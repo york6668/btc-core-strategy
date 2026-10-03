@@ -44,6 +44,7 @@ def prepare(node_path, data, docker, compose_project, source):
     state_link = native_project / '.strategy'
     state_link.mkdir(exist_ok=True)
     container_node = dict(node, python='/usr/local/bin/python', frozen_market_python='/usr/local/bin/python')
+    container_node.pop('frozen_market_python_version', None)
     container_node.pop('docker_service', None)
     write(data / 'container-node.json', container_node)
     settings = {'mysql': {'host': 'mysql', 'user': 'btc', 'database': 'btc', 'password_file': '/run/secrets/mysql_password'},

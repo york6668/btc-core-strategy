@@ -244,7 +244,7 @@ class NodeContract(unittest.TestCase):
             # The daemon does not inherit the child CLI's BTC_NODE_CONFIG or
             # test-only contract override. Its persisted node owns the reader.
             with patch.dict(self.db.settings, {'container_node_config':str(node)}), patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(sum(r['inserted'] for r in save()['counts']),70)
+                self.assertEqual(sum(r['inserted'] for r in save()['counts']),40)
             product=next(r['product'] for r in self.prices.products(limit=500)['products']
                          if r['identity']['product_type']=='COLLECTOR_SERIES:'+SELLER)
             query={'start':self.at(24*80),'end':self.at(),'limit':100}
@@ -278,7 +278,14 @@ class NodeContract(unittest.TestCase):
             dataset['calculated_at_ms']=millis(self.at(3))
             package['assets']['BTC']['transport']['received_at']=millis(self.at(3))/1000
             package['assets']['BTC']['bundle_id']=self.id+'-refresh'
-            self.assertEqual(sum(r['unchanged'] for r in save()['counts']),70)
+            self.assertEqual(sum(r['unchanged'] for r in save()['counts']),40)
+            # Moving the attachment start must not retract a previously valid
+            # boundary value; raw warmup inputs remain in the frozen package.
+            boundary = original[0]['item_key']
+            dataset['rows'] = sec.derive(dataset['rows'][1:])
+            self.assertEqual(sum(r['inserted'] for r in save()['counts']), 0)
+            kept = self.prices.query(product,SELLER,as_of=self.at(),**query)['observations']
+            self.assertIsNotNone(next(r['payload']['value'] for r in kept if r['item_key'] == boundary))
             dataset['rows'][-1]['inputs']['profit']['value']=None
             dataset['rows']=sec.derive(dataset['rows'])
             self.assertEqual(sum(r['inserted'] for r in save()['counts']),1)
@@ -471,6 +478,8 @@ class NodeContract(unittest.TestCase):
             self.db.metadata('acceptance',{'first_full_day':(self.now-timedelta(days=10)).date().isoformat(),
                 'release':'generated-test','required_days':7,'days':{},'defects':[]},write=True)
         state=acceptance.status(self.db)
+        self.assertEqual(state['scope'], 'LOCAL_NATURAL_ACCEPTANCE')
+        self.assertNotIn('Still requires', state['overall_completion'])
         self.assertEqual(state['status'],'FOLLOWING')
         self.assertEqual(len(state['missing_or_invalid']),7)
         with self.db.transaction():

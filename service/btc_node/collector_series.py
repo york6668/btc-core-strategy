@@ -42,7 +42,14 @@ def seller_rows(dataset, asset, known, reader_directory=None):
              'source_identity': 'derived:'+identity(dataset['method'], sources),
              'derivation': {'method': dataset['method'], 'inputs': sources}}
     rows = []
+    first = min((row['period_start_ms'] for row in dataset.get('rows', [])), default=0)
     for row in dataset.get('rows', []):
+        # The attachment carries 30 leading days as calculation inputs. Their
+        # missing preceding prices are an export boundary, not a source null
+        # revision. Retain them in the original blob, never retract a value.
+        if row['period_start_ms'] < first + 30 * module.DAY:
+            rows.append(None)
+            continue
         payload = deepcopy(row)
         for raw in payload['inputs'].values():
             raw.pop('retrieved_at_ms', None)
@@ -100,6 +107,8 @@ def ingest(db, package, source, *, only=None):
                 # one retrieval record, not copied into every unchanged bar.
                 payload = {k:v for k,v in row.items() if k not in {'retrieved_at_ms','last_event_retrieved_ms'}}
                 if prepared is not None:
+                    if prepared[index] is None:
+                        continue
                     ident, interval, payload = prepared[index]
                 product = 'collector:'+identity(ident)
                 groups[(product,interval)].append((ident, {'item_key':str(observed),

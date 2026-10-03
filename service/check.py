@@ -16,7 +16,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(docker, reader):
+def run(docker, reader, reader_image=None):
     reader = Path(reader).resolve()
     if not (reader / 'seller_exhaustion.py').is_file():
         raise ValueError('supply --reader with the actual compatible role export')
@@ -26,6 +26,26 @@ def run(docker, reader):
                '-f', str(ROOT/'service/compose.yaml'), '--profile', 'analysis']
     result = 1
     try:
+        if reader_image:
+            # Run the published role entrypoint, not a mocked exec call. The
+            # source bind is read-only while its nested SQLite data is writable.
+            (reader/'data').mkdir(exist_ok=True)
+            reader_data=directory/'reader';reader_data.mkdir()
+            launch=[docker,'run','--rm','--read-only','--tmpfs','/tmp',
+                    '-v',str(reader)+':/app/telegram_reader:ro',
+                    '-v',str(reader_data)+':/app/telegram_reader/data',
+                    '-e','BTC_READER_DATA_DIR=/app/telegram_reader/data']
+            probe=('import sqlite3; from pathlib import Path; '
+                   'p=Path("/app/telegram_reader/data/probe.sqlite"); '
+                   'c=sqlite3.connect(p); assert c.execute("PRAGMA journal_mode=WAL").fetchone()[0]=="wal"; '
+                   'c.execute("CREATE TABLE probe(value)"); c.commit(); c.close(); '
+                   '\ntry: Path("/app/telegram_reader/prohibited").write_text("x")'
+                   '\nexcept OSError: pass'
+                   '\nelse: raise AssertionError("source must be read-only")')
+            subprocess.run(launch+['--entrypoint','python',reader_image,'-c',probe],check=True)
+            response=subprocess.check_output(launch+[reader_image,'reader','collector-observations','--asset','all'],text=True)
+            if not isinstance(json.loads(response),list):
+                raise AssertionError('real reader CLI must return the observation list')
         for name in ('mysql', 'mysql-root'):
             (directory/name).write_text(secrets.token_urlsafe(40)+'\n'); (directory/name).chmod(0o600)
         settings = {'mysql': {'host':'mysql','user':'btc','database':'btc','password_file':'/run/secrets/mysql_password'},
@@ -78,7 +98,8 @@ def run(docker, reader):
             raise AssertionError('object state changed after outage recovery')
         if fingerprint_state() != original_state:
             raise AssertionError('business content changed after database outage recovery')
-        print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True}))
+        print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True,
+              'reader_cli_readonly_source_writable_data':True if reader_image else 'NOT_RUN'}))
         result = 0
     finally:
         stopped = subprocess.run(command+['down','--volumes','--remove-orphans'], timeout=90)
@@ -101,7 +122,8 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--docker',default=shutil.which('docker'))
     parser.add_argument('--reader', default=str(ROOT/'telegram_reader'))
+    parser.add_argument('--reader-image', help='Built analysis-role image for the actual reader entrypoint contract')
     args=parser.parse_args()
     if not args.docker:
         parser.error('Docker client and daemon are required; this validation cannot be skipped')
-    raise SystemExit(run(args.docker, args.reader))
+    raise SystemExit(run(args.docker, args.reader, args.reader_image))

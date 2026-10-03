@@ -72,6 +72,12 @@ class V2PipelineTests(unittest.TestCase):
         self.assertEqual(raw['method'], sec.METHOD)
         self.assertEqual(raw['official_equivalence'], 'unverified')
         self.assertTrue(raw['publication_time_unknown'])
+        coverage = ds['temporal_coverage']
+        from datetime import datetime, timezone
+        last = raw['rows'][-1]
+        self.assertEqual(coverage['data_date_utc'], datetime.fromtimestamp(last['period_start_ms']/1000, timezone.utc).date().isoformat())
+        self.assertEqual(coverage['period_end_exclusive_utc'], datetime.fromtimestamp(last['period_end_ms']/1000, timezone.utc).isoformat())
+        self.assertTrue(coverage['publication_time_unknown'])
         with self.assertRaisesRegex(Invalid, 'untrusted lead'):
             evidence.resolve(package, run['evidence'], ds['raw_ref'], verified=True)
         self.assertIn(sec.NAME, json.dumps(read(f.adapter.d / 'portfolio-context.json')))
@@ -95,6 +101,8 @@ class V2PipelineTests(unittest.TestCase):
         self.assertIsNotNone(raw['rows'][-1]['supply_in_profit'])
         self.assertIn('source_partial', raw['quality']['reasons'])
         self.assertFalse(raw['analysis_eligible'])
+        self.assertEqual(ds['temporal_coverage']['observed_at_utc'],
+                         __import__('datetime').datetime.fromtimestamp(raw['values']['as_of_ms']/1000, __import__('datetime').timezone.utc).isoformat())
 
     def test_full_v2_domains_reach_market_portfolio_and_report_without_decision_change(self):
         f = self.fixture
