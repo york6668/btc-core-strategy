@@ -172,7 +172,7 @@ def full_context(db, scope):
         if not after:
             break
     requirements = db.rows('SELECT r.* FROM review_requirements r JOIN entities e USING(entity_key) '
-                           'WHERE e.scope=%s AND r.resolved_ms IS NULL ORDER BY r.opened_ms', (scope,))
+                           "WHERE e.scope=%s AND e.kind<>'REVIEW' AND r.resolved_ms IS NULL ORDER BY r.opened_ms", (scope,))
     return {'scope': scope, 'objects': values, 'requirements': requirements,
             'meaning': 'Complete maintenance index. Read immutable content_path or object.get at the listed version before judging; report visibility does not determine maintenance.'}
 

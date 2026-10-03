@@ -153,6 +153,71 @@ class NodeContract(unittest.TestCase):
                 invoke(self.db,method,params)
             self.assertIsNotNone(invoke(self.db,method,{**params,'market_binding':binding}))
 
+    def test_historical_review_does_not_spawn_work_but_keeps_live_consumer_corrections(self):
+        from btc_node.codec import identity
+        from btc_node.execution import full_context
+        hypothesis = self.spec('HYPOTHESIS', valid_until=self.at(1))
+        self.objects.put(hypothesis, expected_version=0)
+        review = self.spec('REVIEW', active=True, review_at=self.at(2), payload={
+            'subject': {'kind':'HYPOTHESIS','object_id':hypothesis['object_id'],'version':1},
+            'outcome':'EVIDENCE_LIMITED','explanation':'Original window still needs evidence.'},
+            dependencies=[{'type':'ENTITY','kind':'HYPOTHESIS','object_id':hypothesis['object_id']}])
+        self.objects.put(review, expected_version=0)
+        historical = self.objects.get('REVIEW', review['object_id'])
+        self.assertFalse(historical['active'])
+        self.assertIsNone(historical['review_at'])
+        plan = self.spec('PLAN', dependencies=[{'type':'ENTITY','kind':'REVIEW','object_id':review['object_id']}])
+        self.objects.put(plan, expected_version=0)
+
+        # A legacy active flag and its erroneous obligation remain readable,
+        # without becoming fresh work in either API or normal-run context.
+        self.db.execute('UPDATE entities SET active=1 WHERE entity_key=%s',(historical['entity_key'],))
+        stale = identity(self.id, 'historical-review-obligation')
+        self.db.execute('INSERT INTO review_requirements(requirement_key,entity_key,cause_key,cause_version,reason,opened_ms) '
+                        'VALUES(%s,%s,%s,%s,%s,%s)', (stale,historical['entity_key'],
+                        self.objects.get('HYPOTHESIS',hypothesis['object_id'])['entity_key'],1,'legacy',millis()))
+        changed = deepcopy(hypothesis); changed.update(known_at=self.at(1), observed_at=self.at(1))
+        changed['payload']['counterevidence']=['corrected source']
+        self.objects.put(changed, expected_version=1)
+        due = {item['object_id'] for item in self.objects.due(scope='PUBLIC',limit=500)['objects']}
+        self.assertIn(hypothesis['object_id'],due)
+        self.assertIn(plan['object_id'],due)
+        self.assertNotIn(review['object_id'],due)
+        context=full_context(self.db,'PUBLIC')
+        self.assertNotIn(review['object_id'],[item['object_id'] for item in context['objects']])
+        self.assertNotIn(stale,[item['requirement_key'] for item in context['requirements']])
+        self.assertEqual(self.objects.get('REVIEW',review['object_id'])['digest'],historical['digest'])
+        self.assertIsNotNone(self.db.one('SELECT * FROM review_requirements WHERE requirement_key=%s',(stale,)))
+        self.assertIn(review['object_id'],[item['object_id'] for item in
+                      self.objects.list(scope='PUBLIC',kind='REVIEW',active=None,limit=500)['objects']])
+
+    def test_unresolved_review_cannot_clear_subject_dependency(self):
+        hypothesis=self.spec('HYPOTHESIS')
+        self.objects.put(hypothesis,expected_version=0)
+        plan=self.spec('PLAN',dependencies=[{'type':'ENTITY','kind':'HYPOTHESIS','object_id':hypothesis['object_id']}])
+        self.objects.put(plan,expected_version=0)
+        hypothesis['payload']['counterevidence']=['new evidence']
+        self.objects.put(hypothesis,expected_version=1)
+        owner=self.objects.get('PLAN',plan['object_id'])
+        requirement=self.db.one('SELECT requirement_key FROM review_requirements WHERE entity_key=%s',
+                                (owner['entity_key'],))['requirement_key']
+        review=self.spec('REVIEW',known_at=datetime.now(timezone.utc).isoformat(),payload={
+            'subject':{'kind':'PLAN','object_id':plan['object_id'],'version':1},
+            'outcome':'PENDING','explanation':'Waiting for corroboration.','requirements':[requirement]},
+            dependencies=[{'type':'ENTITY','kind':'PLAN','object_id':plan['object_id']}])
+        for version,outcome in enumerate(('PENDING','EVIDENCE_LIMITED')):
+            review['payload']['outcome']=outcome
+            self.objects.put(review,expected_version=version)
+            with self.assertRaisesRegex(ValueError,'cannot discharge'):
+                self.objects.resolve(requirement,review['object_id'])
+            self.assertIsNone(self.db.one('SELECT resolved_ms FROM review_requirements WHERE requirement_key=%s',
+                                         (requirement,))['resolved_ms'])
+        review['payload'].update(outcome='REVISE',explanation='Actual new evidence invalidates the old condition.')
+        self.objects.put(review,expected_version=2)
+        self.objects.resolve(requirement,review['object_id'])
+        self.assertIsNotNone(self.db.one('SELECT resolved_ms FROM review_requirements WHERE requirement_key=%s',
+                                        (requirement,))['resolved_ms'])
+
     def test_original_forward_window_requires_evidenced_outcome_and_collector_keeps_receipt_clock(self):
         hypothesis = self.spec('HYPOTHESIS', valid_until=self.at(2))
         self.objects.put(hypothesis, expected_version=0)

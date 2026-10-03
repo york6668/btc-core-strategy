@@ -45,8 +45,11 @@ def window(db, *, day):
                      'ORDER BY v.recorded_ms', (lo, hi))
     unresolved = db.rows('SELECT r.*,e.kind,e.object_id,e.scope FROM review_requirements r JOIN entities e USING(entity_key) '
                         'WHERE r.opened_ms<%s AND (r.resolved_ms IS NULL OR r.resolved_ms>=%s)', (hi, hi))
+    historical_reviews = [row for row in unresolved if row['kind'] == 'REVIEW']
+    unresolved = [row for row in unresolved if row['kind'] != 'REVIEW']
     return {'day': day, 'timezone': 'Asia/Tokyo', 'start': stamp(begin), 'end_exclusive': stamp(end),
             'operations': operations, 'changes': changes, 'unresolved_at_end': unresolved,
+            'historical_review_requirements': historical_reviews,
             'capacity': next((r for r in (db.metadata('capacity.daily') or []) if r['day'] == day), None),
             'pending_now': db.rows("SELECT operation_id,status FROM operations WHERE status<>'COMMITTED'"),
             'meaning': 'Read inputs, state changes and actual consumed results. Counts alone are not acceptance.'}

@@ -42,6 +42,10 @@ class Entities:
                 **revision, **state}
 
     def put(self, spec, *, expected_version, trusted_projection=False):
+        # A review records what was checked at a particular version. Its subject
+        # owns any remaining work; the record must not become another live plan.
+        if spec['kind'] == 'REVIEW':
+            spec = {**spec, 'active': False, 'review_at': None, 'valid_until': None}
         kind, object_id = spec['kind'], spec['object_id']
         entity_key = key(kind, object_id)
         scope = spec['scope']
@@ -160,12 +164,18 @@ class Entities:
             target, target_type = pending.pop()
             rows = self.db.rows('SELECT e.entity_key,e.object_id,e.kind FROM dependencies d JOIN entities e '
                                 'ON e.entity_key=d.source_key AND e.current_version=d.source_version '
-                                'WHERE d.target_key=%s AND d.target_type=%s AND e.active=1', (target, target_type))
+                                "WHERE d.target_key=%s AND d.target_type=%s AND (e.active=1 OR e.kind='REVIEW')",
+                                (target, target_type))
             for row in rows:
                 source = row['entity_key']
                 if source in visited:
                     continue
                 visited.add(source)
+                if row['kind'] == 'REVIEW':
+                    # Keep a correction's path to active consumers of this
+                    # historical result, without asking to re-review the record.
+                    pending.append((source, 'ENTITY'))
+                    continue
                 requirement = identity(source, cause, cause_version)
                 self.db.execute('INSERT IGNORE INTO review_requirements(requirement_key,entity_key,cause_key,'
                                 'cause_version,reason,opened_ms) VALUES(%s,%s,%s,%s,%s,%s)',
@@ -178,6 +188,10 @@ class Entities:
         if scope not in {'PUBLIC', 'PERSONAL'} or not 1 <= limit <= 500:
             raise ValueError('scope and bounded limit required')
         clauses, args = ['scope=%s'], [scope]
+        if active is True and kind is None:
+            # Old releases wrote active REVIEW rows. Preserve those versions,
+            # but do not let their legacy flag pollute the maintenance index.
+            clauses.append("kind<>'REVIEW'")
         for column, value in (('kind', kind), ('product', product), ('active', active)):
             if value is not None:
                 clauses.append(column + '=%s'); args.append(value)
@@ -202,7 +216,7 @@ class Entities:
         now_ms = millis(at)
         rows = self.db.rows('SELECT e.*,EXISTS(SELECT 1 FROM review_requirements r '
                             'WHERE r.entity_key=e.entity_key AND r.resolved_ms IS NULL) AS dependency_changed '
-                            'FROM entities e WHERE e.scope=%s AND e.active=1 AND '
+                            "FROM entities e WHERE e.scope=%s AND e.active=1 AND e.kind<>'REVIEW' AND "
                             '(e.review_at_ms<=%s OR e.valid_until_ms<=%s OR EXISTS '
                             '(SELECT 1 FROM review_requirements r WHERE r.entity_key=e.entity_key '
                             'AND r.resolved_ms IS NULL)) AND e.entity_key>%s ORDER BY e.entity_key LIMIT %s',
@@ -217,6 +231,10 @@ class Entities:
         review = self.get('REVIEW', resolution_ref)
         if not obligation or not review or requirement not in review['payload'].get('requirements', []):
             raise ValueError('stored review must explicitly address this requirement')
+        if (not review['payload'].get('outcome') or
+                review['payload']['outcome'] in {'PENDING', 'EVIDENCE_LIMITED'} or
+                not str(review['payload'].get('explanation', '')).strip() or not review['dependencies']):
+            raise ValueError('an unresolved or unevidenced review cannot discharge the subject requirement')
         subject = review['payload'].get('subject', {})
         if key(subject.get('kind'), subject.get('object_id')) != obligation['entity_key']:
             raise ValueError('review concerns a different object')
