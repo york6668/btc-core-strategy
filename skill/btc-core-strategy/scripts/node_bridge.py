@@ -9,6 +9,23 @@ import subprocess
 import sys
 import uuid
 
+# Paths keep the native caller's meaning when the command crosses into Docker.
+PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--answers',
+                '--template', '--market', '--additional', '--evidence', '--base',
+                '--references', '--collector-observations', '--collector-snapshot',
+                '--retained-source-bindings', '--file')
+
+
+def absolute_paths(argv, directory):
+    result = list(argv)
+    for index, flag in enumerate(result[:-1]):
+        if flag in PATH_OPTIONS:
+            path = Path(result[index + 1]).expanduser()
+            # Template bindings use logical paths; resolving a symlink changes
+            # that identity even when it points to the same immutable bytes.
+            result[index + 1] = os.path.abspath(path if path.is_absolute() else Path(directory) / path)
+    return result
+
 
 def forward_if_enabled(argv, *, requested_release=None):
     if os.environ.get('BTC_IN_CONTAINER') == '1':
@@ -21,9 +38,10 @@ def forward_if_enabled(argv, *, requested_release=None):
     sync_facts(Path(config['project_dir']), Path(docker['fact_bridge_dir']))
     release = Path(requested_release).resolve() if requested_release else Path(__file__).resolve().parents[3]
     operation = os.environ.get('BTC_OPERATION_ID') or 'core-' + uuid.uuid4().hex
-    arguments = list(argv)
+    arguments = absolute_paths(argv, Path.cwd())
     inputs = {}
-    for flag in ('--input', '--answers', '--template', '--market'):
+    for flag in ('--input', '--answers', '--template', '--market', '--collector-observations',
+                 '--collector-snapshot', '--retained-source-bindings'):
         if flag in arguments:
             original = Path(arguments[arguments.index(flag) + 1]).resolve()
             if original.is_file():

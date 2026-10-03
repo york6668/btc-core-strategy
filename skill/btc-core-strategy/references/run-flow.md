@@ -18,6 +18,14 @@ Docker 节点返回 `continuity.public_context` 与冻结后的 `continuity.pers
 
 `--answers` 可用 `{source_id,pointer}` 引用本轮冻结原始值，程序计算 value_hash；已提供的错误 hash 会报错，不静默修正。长篇已写内容可用 `{"$value_ref":{"file":"绝对路径","pointer":"/真实字段","value_hash":"sha256:实际值摘要"}}` 精确承接。文件限本轮目录、既有 research 或 versions，内容变化即拒绝；数组仍整体替换，程序不补观点或认可旧结论。
 
+用同一固定版本的 `run-value-ref --run <run.json> --file <已核对材料> --pointer <真实字段>` 取得完整 `$value_ref`，不手写哈希；核心编码包含末尾换行。生成引用不证明内容已审核。`market_review`、`recommendation_checks` 与 `extra_findings.refs` 使用本轮 `vocabulary.json` 中的 `market_refs` 字符串 ID；`factor_checks` 等原始证据引用才使用 source_id/pointer 对象，不能混填。
+
+Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务时，相对路径以该节点项目目录解释。阶段返回的物理路径可直接接续，不依赖容器工作目录。
+
+部分 `run-prepare` 失败不重新采集：有 `preparation.json` 时显式加 `--resume-preparation`，身份、固定输入与原状态仍一致才复用 market.json、collector.json 及完整证据包。原状态已变化或旧目录没有该记录时，用新目录和 `--market <原market.json> --collector-snapshot <原collector.json>` 接续；`--collector-observations` 只接受 reader 导出数组。损坏或未完成的证据包保持原样，不删除、不覆盖。
+
+历史 `retained evidence source collision` 返回原包 evidence_id、完整来源 source_hash、raw_hash 与获知时间。仅确认是相同市场数据的不同获取记录后，显式传 `--retained-source-bindings <JSON文件>`，内容为 `{"冲突source_id":{"evidence_id":"原包ID","source_hash":"原来源对象摘要"}}`。选择保留该原绑定，其他获取记录以独立来源身份进入新包，原字节与时间均保留；真实行情、来源契约变化和错误引用继续拒绝。没有明确选择不自动重绑，旧包、研究、运行及 UNKNOWN 投递不变。
+
 披露前使用 `research-reveal ... --check-only` 核验实际候选及原始引用，再向同一 Astra 披露。正式写入前可用 `run-advance --stage main ... --check-only`；现有 `validate` 与提交共用校验，集中返回可独立确定的错误。预检不写策略或候选，也不证明研究批准；真实提交在锁内重新检查当前状态。参数、绑定和交付错误分别从原阶段修复，不因机械失败重新取证或重开已完成研究。
 
 按阶段展开方法：各阶段先理解 method_references.report_boundary 指向的职责边界，同一会话已读且未变时复用；观察读 market-observation 与价值因子指引，独立研究读 core-strategy 和 recommendation-maintenance，映射读 v4 周期契约。报告判断读 report-care，决定 REPORT 后再展开 mobile-report 的正文接口与交付规则，实际交付时读 market-reporting。各阶段的 method_references 保留这些入口；read_set 为模型提供正文、阶段材料及精确复用引用，路径可达不代表已阅读或通过实质审阅。

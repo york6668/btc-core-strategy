@@ -6,10 +6,24 @@ import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from v4 import material_reads
-from v4.common import create, read, pointer, Invalid
+from v4.common import create, read, pointer, Invalid, digest
 
 
 class ReadingTests(unittest.TestCase):
+    def test_value_reference_uses_core_encoding_and_changed_content_still_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); path = root / 'context.json'
+            value = {'text':'中文', 'fraction':0.015747413950151383}
+            create(path, {'baseline': value})
+            ref = material_reads.value_reference(path, '/baseline', [root])
+            self.assertEqual(ref['$value_ref']['value_hash'], digest(value))
+            self.assertEqual(material_reads.resolve_answers(ref, [root], {'sources':[]}, root), value)
+            path.write_text('{"baseline":{"changed":true}}')
+            with self.assertRaisesRegex(Invalid, 'authored value reference changed'):
+                material_reads.resolve_answers(ref, [root], {'sources':[]}, root)
+            with self.assertRaisesRegex(Invalid, 'escapes allowed material'):
+                material_reads.value_reference(path, '/baseline', [root / 'other'])
+
     def expand(self, value):
         if isinstance(value, dict):
             if '$read_ref' in value:

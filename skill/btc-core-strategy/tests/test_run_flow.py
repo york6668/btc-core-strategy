@@ -12,6 +12,51 @@ from v4.common import Invalid, create, read, digest, facts
 
 
 class RunFlowTests(unittest.TestCase):
+    def test_partial_prepare_explicitly_resumes_original_snapshot_without_collection(self):
+        from v4 import collector
+        snapshot = {'schema':collector.SCHEMA,'role':'auxiliary_observation',
+                    'captured_at':'2030-03-01T13:00:00Z','independent_verified_sources':0,
+                    'requires_independent_verification':True,'requires_current_source_check':True,
+                    'assets':{asset:{'status':'UNAVAILABLE','reasons':['SYNTHETIC']} for asset in collector.ASSETS}}
+        before = run_flow.anchors(self.f.store, self.f.project)
+        with mock.patch('v4.collector.capture', return_value=snapshot), \
+             mock.patch('v4.evidence.compact_root', side_effect=Invalid('retained evidence source collision')):
+            with self.assertRaisesRegex(Invalid, 'source collision'):
+                self.prep()
+        frozen = {name:(self.d/name).read_bytes() for name in ('market.json','collector.json')}
+        with mock.patch('v4.collector.capture', side_effect=AssertionError('must not capture again')), \
+             mock.patch('market_observation.collect', side_effect=AssertionError('must not recollect')):
+            with self.assertRaisesRegex(Invalid, '--resume-preparation'):
+                self.prep()
+            result = run_flow.prepare(self.f.store,self.f.project,'SYNTHETIC_RUN',self.d,
+                self.raw_file,agent_id='SYNTHETIC_MAIN',resume_preparation=True)
+        self.assertEqual(before, run_flow.anchors(self.f.store,self.f.project))
+        self.assertEqual(frozen, {name:(self.d/name).read_bytes() for name in frozen})
+        self.assertTrue(Path(result['run']).is_file())
+        with self.assertRaisesRegex(Invalid, 'different execution'):
+            run_flow.prepare(self.f.store,self.f.project,'OTHER_RUN',self.d,
+                self.raw_file,agent_id='SYNTHETIC_MAIN',resume_preparation=True)
+
+    def test_legacy_partial_directory_requires_new_directory_and_explicit_frozen_inputs(self):
+        from v4 import collector
+        create(self.d/'market.json',self.f.raw)
+        with self.assertRaisesRegex(Invalid, '--resume-preparation'):
+            self.prep()
+        with self.assertRaisesRegex(Invalid, 'legacy incomplete preparation'):
+            run_flow.prepare(self.f.store,self.f.project,'SYNTHETIC_RUN',self.d,
+                self.raw_file,agent_id='SYNTHETIC_MAIN',resume_preparation=True)
+        snapshot = {'schema':collector.SCHEMA,'role':'auxiliary_observation',
+                    'captured_at':'2030-03-01T13:00:00Z','independent_verified_sources':0,
+                    'requires_independent_verification':True,'requires_current_source_check':True,
+                    'assets':{asset:{'status':'UNAVAILABLE'} for asset in collector.ASSETS}}
+        create(self.d/'collector.json', snapshot)
+        original=(self.d/'collector.json').read_bytes()
+        with mock.patch('v4.collector.capture', side_effect=AssertionError('no reader or new capture')):
+            result=run_flow.prepare(self.f.store,self.f.project,'SYNTHETIC_RUN',self.f.base/'continued',
+                self.d/'market.json',agent_id='SYNTHETIC_MAIN',collector_snapshot=self.d/'collector.json')
+        self.assertEqual((Path(result['run']).parent/'collector.json').read_bytes(), original)
+        self.assertEqual((self.d/'collector.json').read_bytes(),original)
+
     def setUp(self):
         self.f = base.MainTests('test_sol_publishes_complete_strategy_without_astra_or_report')
         self.f.setUp(); self.addCleanup(self.f.doCleanups)

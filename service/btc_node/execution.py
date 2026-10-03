@@ -37,15 +37,18 @@ def execute(settings, request):
     argv = params['argv']
     if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
         raise ValueError('argument vector required')
+    def project_path(value):
+        path = Path(value).expanduser()
+        return (path if path.is_absolute() else project / path).resolve()
     for option, required in (('--project', project), ('--root', project / '.strategy/v4')):
-        if argv.count(option) != 1 or Path(argv[argv.index(option) + 1]).resolve() != required.resolve():
+        if argv.count(option) != 1 or project_path(argv[argv.index(option) + 1]) != required.resolve():
             raise ValueError('command belongs to another project')
     operation = request.get('operation_id')
     if not isinstance(operation, str) or not 0 < len(operation) <= 191:
         raise ValueError('stable operation_id required')
     request_digest = fingerprint(encode(params))
     for path, expected in params.get('input_hashes', {}).items():
-        if fingerprint(Path(path).read_bytes()) != expected:
+        if fingerprint(project_path(path).read_bytes()) != expected:
             raise Conflict('frozen command input hash mismatch')
     journal = Path(settings['journal']) / (fingerprint(operation.encode()) + '.json')
     db = Database(settings)
@@ -84,7 +87,7 @@ def execute(settings, request):
                                BTC_SERVICE_CONFIG=settings['_path'], BTC_RELEASE=str(release), BTC_PROJECT=str(project),
                                BTC_PYTHON=sys.executable, PYTHONPATH='/opt/btc')
             command = [sys.executable, str(release / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *argv]
-            process = subprocess.run(command, env=environment, capture_output=True, text=True)
+            process = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True)
             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr}
             atomic(journal, {**journal_state, 'status': 'EXECUTED', 'result': result})
             with db.transaction():
@@ -129,6 +132,8 @@ def project_state(db, settings, release, argv=()):
         directory = Path(argv[argv.index('--directory') + 1])
     elif '--run' in argv:
         directory = Path(argv[argv.index('--run') + 1]).parent
+    if directory and not directory.is_absolute():
+        directory = project / directory
     if directory and (directory / 'run.json').is_file():
         public = full_context(db, 'PUBLIC')
         public_path = directory / 'continuous-public.json'

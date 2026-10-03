@@ -26,10 +26,17 @@ def main(argv=None):
     p.add_argument('--market', help='frozen raw package for offline replay or same-study refresh')
     p.add_argument('--additional', help='additional model-selected frozen public evidence')
     p.add_argument('--collector-observations', help='frozen local multi-asset export; otherwise read the project reader without syncing')
+    p.add_argument('--collector-snapshot', help='validated original collector.json, distinct from a reader export array')
+    p.add_argument('--resume-preparation', action='store_true', help='reuse a partial preparation and its frozen inputs without recollection')
+    p.add_argument('--retained-source-bindings', help='explicit original evidence_id/source_hash choices for legacy retrieval collisions')
     p.add_argument('--deep', action='store_true', help='force refresh of daily/weekly raw evidence; does not run Astra')
     p = sub.add_parser('run-material')
     p.add_argument('--run', required=True)
     p.add_argument('--stage', choices=('report','report-body','main'), default='report')
+    p = sub.add_parser('run-value-ref')
+    p.add_argument('--run', required=True)
+    p.add_argument('--file', required=True)
+    p.add_argument('--pointer', required=True)
     p = sub.add_parser('run-advance')
     p.add_argument('--run', required=True)
     p.add_argument('--stage', choices=('market','observe','main','report'), required=True)
@@ -144,7 +151,14 @@ def main(argv=None):
             from v4 import run_flow
             from v4 import market_state
             result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations,
-                                      workflow_revision=6 if market_state.enabled(args.root) else None)
+                                      workflow_revision=6 if market_state.enabled(args.root) else None,
+                                      resume_preparation=args.resume_preparation, collector_snapshot=args.collector_snapshot,
+                                      retained_source_bindings=args.retained_source_bindings)
+        elif args.command == 'run-value-ref':
+            from v4 import run_flow, material_reads
+            run = run_flow.read_run(args.run, args.root, args.project)
+            result = material_reads.value_reference(args.file, args.pointer,
+                [run['directory'], Path(run['root']) / 'research', Path(run['root']) / 'versions'])
         elif args.command == 'run-material':
             from v4 import run_flow
             run = run_flow.read_run(args.run, args.root, args.project)

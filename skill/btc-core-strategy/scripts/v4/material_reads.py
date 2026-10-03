@@ -134,6 +134,15 @@ def compose(template, answers):
     return merge(template, answers)
 
 
+def value_reference(path, location, roots):
+    """Compute the existing canonical hash; return no material or judgement."""
+    path = Path(path).resolve()
+    require(any(path == Path(root).resolve() or Path(root).resolve() in path.parents for root in roots),
+            'authored value reference escapes allowed material')
+    value = pointer(read(path), location)
+    return {'$value_ref': {'file': str(path), 'pointer': location, 'value_hash': digest(value)}}
+
+
 def resolve_answers(value, roots, package, evidence_dir):
     """Resolve explicit authored references, without generating any judgement.
 

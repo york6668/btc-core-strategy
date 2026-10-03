@@ -144,7 +144,62 @@ def freeze(spec, raw_files, directory, parent=None):
     return bundle
 
 
-def compact_root(base_directory, raw_market_file, refs, directory, cutoff, additional=None, retained_directories=(), collector_file=None):
+def retained_owners(folders, cutoff, bindings=None):
+    """An explicit choice may disambiguate legacy retrievals, never changed data."""
+    import market_observation as market
+    bindings = {} if bindings is None else bindings
+    require(isinstance(bindings, dict), 'retained source bindings must be an object')
+    variants = {}
+    for folder in folders:
+        package = validate(read(Path(folder) / 'evidence.json'), folder)
+        require(instant(package['cutoff']) <= instant(cutoff), 'retained evidence exceeds cutoff')
+        for source in package['sources']:
+            variants.setdefault(source['id'], {}).setdefault(digest(source), []).append((source, package, folder))
+    owners, aliases, used = {}, set(), set()
+    for sid, records in variants.items():
+        if len(records) == 1:
+            owners[sid] = next(iter(records.values()))[0]
+            continue
+        candidates = [{'evidence_id': p['evidence_id'], 'source_hash': digest(s),
+                       'raw_hash': s['raw_hash'], 'retrieved_at': s['retrieved_at']}
+                      for entries in records.values() for s, p, _ in entries]
+        require(sid in bindings, 'retained evidence source collision: ' + json.dumps(
+            {'source_id': sid, 'candidates': candidates,
+             'next_action': 'REVIEW_RETAINED_SOURCE_BINDINGS_FOR_NEW_PREPARATION'}, sort_keys=True))
+        binding = bindings[sid]
+        exact(binding, 'evidence_id source_hash', 'retained source binding')
+        chosen = next((entry for entry in records.get(binding['source_hash'], [])
+                       if entry[1]['evidence_id'] == binding['evidence_id']), None)
+        require(chosen is not None,
+                'retained source binding does not match original evidence')
+        original, _, old_folder = chosen
+        require(sid.startswith('market_'), 'retained source collision is not a market retrieval')
+        old_raw = read(Path(old_folder) / 'raw' / (original['raw_hash'][7:] + '.json'))
+        market.validate_evidence(old_raw)
+        for entries in records.values():
+            source, package, folder = entries[0]
+            raw = read(Path(folder) / 'raw' / (source['raw_hash'][7:] + '.json'))
+            market.validate_evidence(raw)
+            require({k:v for k,v in old_raw.items() if k not in ('retrieval_id','retrievals')} ==
+                    {k:v for k,v in raw.items() if k not in ('retrieval_id','retrievals')} and
+                    {k:v for k,v in original.items() if k not in ('raw_hash','retrieved_at')} ==
+                    {k:v for k,v in source.items() if k not in ('raw_hash','retrieved_at')},
+                    'retained source binding cannot reconcile changed market data or origin')
+            if source == original:
+                continue
+            suffix = (source['raw_hash'][7:23] if source['raw_hash'] != original['raw_hash']
+                      else digest(source)[7:23])
+            alias = sid + '_' + suffix
+            require(alias not in variants and alias not in owners, 'retained source alias collision')
+            owners[alias] = (dict(source, id=alias), package, folder)
+            aliases.add(alias)
+        owners[sid] = chosen
+        used.add(sid)
+    require(set(bindings) == used, 'retained source binding has no retained collision')
+    return owners, aliases
+
+
+def compact_root(base_directory, raw_market_file, refs, directory, cutoff, additional=None, retained_directories=(), collector_file=None, retained_source_bindings=None):
     """New independent study: copy only referenced historical sources and current raw.
 
     This deliberately has no parent. Same-study supplementation still uses freeze
@@ -155,15 +210,7 @@ def compact_root(base_directory, raw_market_file, refs, directory, cutoff, addit
     import market_observation as market
     base = validate(read(Path(base_directory) / 'evidence.json'), base_directory)
     require(isinstance(refs, list), 'historical reference closure must be a list')
-    owners = {}
-    for folder in (base_directory, *retained_directories):
-        package = validate(read(Path(folder) / 'evidence.json'), folder)
-        require(instant(package['cutoff']) <= instant(cutoff), 'retained evidence exceeds cutoff')
-        for source in package['sources']:
-            old = owners.get(source['id'])
-            require(old is None or old[0] == source, 'retained evidence source collision')
-            owners[source['id']] = (source, package, folder)
-    retained = set()
+    owners, retained = retained_owners((base_directory, *retained_directories), cutoff, retained_source_bindings)
     if collector_file is None and base.get('collector'):
         retained.add(base['collector']['source_id'])
     for ref in refs:

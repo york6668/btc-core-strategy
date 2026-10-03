@@ -177,11 +177,16 @@ def anchors(root, project):
         'report_review': _latest(root, 'report-review-current.json')}
 
 
-def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None):
+def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None, resume_preparation=False, collector_snapshot=None, retained_source_bindings=None):
     text(run_ref, 'actual run reference')
     text(agent_id, 'actual main agent id')
     root, project, directory = Path(root).resolve(), Path(project).resolve(), Path(directory).resolve()
     require(root == (project / '.strategy/v4').resolve(), 'run store must belong to the supplied project')
+    require(not (collector_file and collector_snapshot), 'reader export and frozen collector snapshot are different inputs')
+    choices = read(retained_source_bindings) if retained_source_bindings else None
+    compatibility = ({'retained_source_bindings': choices} if choices is not None else {})
+    if collector_snapshot:
+        compatibility['collector_snapshot_hash'] = digest(Path(collector_snapshot).read_bytes())
     with locked(directory):
         path = directory / 'run.json'
         if path.exists():
@@ -194,14 +199,35 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
             require(run['deep'] == deep, 'collection scope changed; prepare a new directory')
             require(run.get('collector_input') == (str(Path(collector_file).resolve()) if collector_file else None), 'collector input changed')
             require(not collector_file or digest(Path(collector_file).read_bytes()) == run.get('collector_input_hash'), 'collector input changed')
+            require(run.get('preparation_compatibility', {}) == compatibility, 'preparation compatibility inputs changed')
             return result_paths(run, 'prepared')
+        marker = directory / 'preparation.json'
+        partial = any((directory / name).exists() for name in ('market.json','collector.json','evidence'))
+        require(not partial or resume_preparation,
+                'incomplete preparation exists; use --resume-preparation to reuse frozen inputs, not another collection')
+        require(not resume_preparation or marker.is_file(),
+                'legacy incomplete preparation: use a new directory with --market and --collector-snapshot pointing to original frozen files')
         recovery = storage.recover(root)
         before = anchors(root, project)
         pinned = storage.current(root)
         core = pinned.get('assessment') or {}
         require(core.get('revision', 1) >= 3, 'run adapter needs the existing main workflow; use legacy migration explicitly')
+        preparation = {'schema':'BTC_PREPARATION_V1','run_ref':run_ref,'agent_id':agent_id,
+                       'anchors':before,'deep':deep,'workflow_revision':workflow_revision,
+                       'market_input_hash':digest(Path(market_file).read_bytes()) if market_file else None,
+                       'collector_input_hash':digest(Path(collector_file).read_bytes()) if collector_file else None,
+                       'collector_snapshot_hash':compatibility.get('collector_snapshot_hash'),
+                       'compatibility':compatibility,
+                       'additional_hash':digest(read(Path(additional) / 'evidence.json')) if additional else None}
+        if marker.exists():
+            require(resume_preparation, 'incomplete preparation exists; use --resume-preparation')
+            require(read(marker) == preparation, 'preparation identity or context changed; use a new directory with original frozen inputs')
+        else:
+            save(marker, preparation)
         # An explicitly supplied market file is for offline replay or same-study refresh.
-        if market_file:
+        if resume_preparation and (directory / 'market.json').is_file():
+            raw = read(directory / 'market.json')
+        elif market_file:
             raw = read(market_file)
         elif cycle.enabled(root):
             observed = _latest(root, 'sensing-current.json')
@@ -213,7 +239,12 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         # Frozen source hashes bind bytes, including original serialization.
         raw_path = save(directory / 'market.json', Path(market_file).read_bytes() if market_file else raw)
         from . import collector
-        snapshot = collector.capture(project, collector_file)
+        if resume_preparation and (directory / 'collector.json').is_file():
+            snapshot = collector.validate(read(directory / 'collector.json'))
+        elif collector_snapshot:
+            snapshot = collector.validate(read(collector_snapshot))
+        else:
+            snapshot = collector.capture(project, collector_file)
         collector_path = save(directory / 'collector.json', snapshot) if snapshot else None
         retained = refs_in(core)
         # Already-known conclusions remain part of this run's information set.
@@ -248,9 +279,21 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                 retained.extend(r for r in shown_refs if r['source_id'] in public_ids)
                 retained_directories.append(shown_dir)
                 cutoff = max(cutoff, shown_bundle['cutoff'], key=instant)
-        package = evidence.compact_root(root / 'evidence' / core['evidence_id'][7:], raw_path, retained,
+        require(not evidence_dir.exists() or (evidence_dir / 'evidence.json').is_file(),
+                'incomplete evidence freeze; preserve it and use a new directory with original frozen inputs')
+        if (evidence_dir / 'evidence.json').is_file():
+            package = evidence.validate(read(evidence_dir / 'evidence.json'), evidence_dir)
+            require(any(s['raw_hash'] == digest(Path(raw_path).read_bytes()) for s in package['sources']),
+                    'prepared raw market differs from the frozen evidence')
+            if collector_path:
+                require((package.get('collector') or {}).get('snapshot_id') == digest(snapshot),
+                        'prepared collector differs from the frozen evidence')
+            save(directory / 'preparation-compatibility.json', compatibility)
+        else:
+            package = evidence.compact_root(root / 'evidence' / core['evidence_id'][7:], raw_path, retained,
                                         evidence_dir, cutoff, additional=additional, retained_directories=retained_directories,
-                                        collector_file=collector_path)
+                                        collector_file=collector_path, retained_source_bindings=choices)
+            save(directory / 'preparation-compatibility.json', compatibility)
         ctx = sensing.context(root, project / '.strategy/market_observation.sqlite3', project, raw,
                               evidence_dir=evidence_dir, workflow_revision=workflow_revision)
         # Preparation is not a publication, an observation completion, or a report completion.
@@ -339,6 +382,8 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         if collector_path:
             run.update(collector=collector_path, collector_input=str(Path(collector_file).resolve()) if collector_file else None,
                        collector_input_hash=digest(Path(collector_file).read_bytes()) if collector_file else None)
+        if compatibility:
+            run['preparation_compatibility'] = compatibility
         if ctx.get('revision', 1) >= 6:
             run['workflow_revision'] = 6
         save(path, run)

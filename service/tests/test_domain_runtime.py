@@ -83,13 +83,22 @@ class DomainRuntime(unittest.TestCase):
                     finally:db.close()
                     argv=['--project',str(project),'--root',str(sample.f.store),'run-prepare',
                           '--run-ref','SYNTHETIC_CONTAINER_RUN','--agent','SYNTHETIC_MAIN',
-                          '--directory',str(sample.d),'--market',str(sample.raw_file)]
+                          '--directory',os.path.relpath(sample.d,project),'--market',str(sample.raw_file)]
                     request={'method':'core.execute','operation_id':folder.name+'-prepare',
                              'params':{'release':str(release),'argv':argv}}
                     result=execute(settings,request)
                     self.assertEqual(result['returncode'],0,result['stderr'])
                     self.assertEqual(execute(settings,request),result)
                     prepared=json.loads(result['stdout'])
+                    reference_request={'method':'core.execute','operation_id':folder.name+'-value-ref',
+                        'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),
+                            'run-value-ref','--run',os.path.relpath(prepared['run'],project),
+                            '--file',str(sample.d/'context.json'),'--pointer','/factor_context/evidence']}}
+                    reference_result=execute(settings,reference_request)
+                    self.assertEqual(reference_result['returncode'],0,reference_result['stderr'])
+                    from v4.common import digest
+                    expected=digest(json.loads((sample.d/'context.json').read_text())['factor_context']['evidence'])
+                    self.assertEqual(json.loads(reference_result['stdout'])['$value_ref']['value_hash'],expected)
                     context=json.loads(Path(result['continuity']['public_context']).read_bytes())
                     self.assertTrue(context['objects'])
                     for entry in context['objects']:
@@ -100,7 +109,7 @@ class DomainRuntime(unittest.TestCase):
                     answers=sample.file(sample.authored(prepared))
                     observed_request={'method':'core.execute','operation_id':folder.name+'-observe',
                         'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),
-                            'run-advance','--run',prepared['run'],'--stage','observe','--input',str(answers)]}}
+                            'run-advance','--run',os.path.relpath(prepared['run'],project),'--stage','observe','--input',str(answers)]}}
                     observed=execute(settings,observed_request)
                     self.assertEqual(observed['returncode'],0,observed['stderr'])
                     before=(sample.f.store/'sensing-current.json').read_bytes()

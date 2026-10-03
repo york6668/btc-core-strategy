@@ -202,6 +202,47 @@ class DynamicFactorEvidenceTests(unittest.TestCase):
             evidence.resolve(bundle, target, self.ref, verified=True)
         self.assertEqual(bundle['verified_facts'], [])
 
+    def test_legacy_retained_retrieval_collision_requires_exact_explicit_binding(self):
+        import market_observation as market
+        first_dir=self.base/'legacy-first'
+        first=evidence.compact_root(self.directory,self.raw_market,[],first_dir,self.cutoff)
+        old=next(s for s in first['sources'] if s['id'].startswith('market_'))
+        raw=read(self.raw_market);newer=deepcopy(raw)
+        for item in newer['retrievals'].values():
+            item['retrieved_at']=market.iso(market.timestamp(item['retrieved_at'])+30)
+        newer['retrieval_id']=market.digest({'evidence_id':newer['evidence_id'],'retrievals':newer['retrievals']})
+        path=self.base/'legacy-newer.json';create(path,newer)
+        second_dir=self.base/'legacy-second'
+        second=evidence.compact_root(self.directory,path,[],second_dir,self.cutoff)
+        ref={'source_id':old['id'],'pointer':'/datasets/binance_spot_1h','value_hash':digest(raw['datasets']['binance_spot_1h'])}
+        original={p:p.read_bytes() for folder in (first_dir,second_dir) for p in folder.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(Invalid,'retained evidence source collision'):
+            evidence.compact_root(first_dir,path,[ref],self.base/'unreviewed',self.cutoff,retained_directories=(second_dir,))
+        bindings={old['id']:{'evidence_id':first['evidence_id'],'source_hash':digest(old)}}
+        destination=self.base/'reviewed'
+        merged=evidence.compact_root(first_dir,path,[ref],destination,self.cutoff,
+            retained_directories=(second_dir,),retained_source_bindings=bindings)
+        self.assertEqual(evidence.resolve(merged,destination,ref),raw['datasets']['binance_spot_1h'])
+        self.assertIn(old,merged['sources'])
+        fresh=next(s for s in merged['sources'] if s['raw_hash']==second['sources'][0]['raw_hash'])
+        self.assertNotEqual(fresh['id'],old['id'])
+        self.assertEqual(fresh['retrieved_at'],second['sources'][0]['retrieved_at'])
+        wrong={old['id']:{'evidence_id':first['evidence_id'],'source_hash':digest('wrong')}}
+        with self.assertRaisesRegex(Invalid,'does not match original'):
+            evidence.compact_root(first_dir,path,[ref],self.base/'wrong-choice',self.cutoff,
+                retained_directories=(second_dir,),retained_source_bindings=wrong)
+        self.assertEqual(original,{p:p.read_bytes() for p in original})
+        with self.assertRaisesRegex(Invalid,'value reference mismatch'):
+            evidence.compact_root(first_dir,path,[dict(ref,value_hash=digest('wrong'))],
+                self.base/'changed-reference',self.cutoff,retained_directories=(second_dir,),retained_source_bindings=bindings)
+        changed=deepcopy(second);changed['sources'][0]['url'] += '?different-source-contract=1'
+        files={s['id']:str(second_dir/'raw'/(s['raw_hash'][7:]+'.json')) for s in second['sources']}
+        changed_dir=self.base/'changed-origin'
+        evidence.freeze(changed,files,changed_dir)
+        with self.assertRaisesRegex(Invalid,'cannot reconcile changed market data or origin'):
+            evidence.compact_root(first_dir,path,[ref],self.base/'reject-origin',self.cutoff,
+                retained_directories=(changed_dir,),retained_source_bindings=bindings)
+
     def test_additional_future_knowledge_or_tampered_raw_is_rejected(self):
         _, additional = self.freeze('future', 'later_revision', self.raw, cutoff='2026-09-03T13:00:00Z')
         with self.assertRaisesRegex(Invalid, 'additional evidence exceeds new cutoff'):
