@@ -244,6 +244,20 @@ class PublicationTests(unittest.TestCase):
         personal = research.read_input(self.f.store, req['request_id'], 'portfolio',
                                        independent_id=revised['independent_id'])['payload']
         self.assertEqual(personal['market_result'], amended)
+        self.f.draft['outlook'] = deepcopy(amended['outlook'])
+        loop.allocation(self.f.draft)['market_result_hash'] = loop.public_hash(self.f.draft)
+        candidate = cycle.candidate(self.f.draft)
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:10:00Z'):
+            preview = research.reveal(self.f.store, req['request_id'], revised['independent_id'],
+                                      candidate, check_only=True)
+            self.assertTrue(preview['valid'])
+            disclosed = research.reveal(self.f.store, req['request_id'], revised['independent_id'], candidate)
+        self.assertEqual(disclosed['candidate'], candidate)
+        self.assertEqual(disclosed['candidate_hash'], preview['candidate_hash'])
+        invalid = deepcopy(amended['outlook']['dispute_zones'])
+        invalid[0].pop('evidence_kind')
+        with self.assertRaisesRegex(Invalid, 'price area evidence kind required'):
+            market_state.validate_zones(invalid, lambda ref: None, revision=6)
         # Revision-aware validation still rejects disappearing active zones.
         append_turn('DROPPED_ZONE', self.public, 40)
         with self.assertRaisesRegex(Invalid, 'disappeared without retirement'):

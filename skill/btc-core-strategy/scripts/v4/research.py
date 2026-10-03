@@ -613,7 +613,8 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
                     prior = market_state.effective(root, pinned['assessment'], pinned['decision_id'])['dispute_zones']
                     market_state.validate_zones(candidate['assessment']['outlook']['dispute_zones'],
                         lambda ref: evidence.resolve(package, directory, ref, verified=True), prior,
-                        candidate['assessment']['temporal_scope']['knowledge_cutoff'])
+                        candidate['assessment']['temporal_scope']['knowledge_cutoff'],
+                        revision=req.get('workflow_revision', 5))
                 except Invalid as exc:
                     errors.append({'check': 'dispute_zones', 'error': str(exc)})
             require(not errors, 'candidate preflight failed: ' + json.dumps(errors, ensure_ascii=False))
