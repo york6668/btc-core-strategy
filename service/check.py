@@ -16,7 +16,10 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(docker):
+def run(docker, reader):
+    reader = Path(reader).resolve()
+    if not (reader / 'seller_exhaustion.py').is_file():
+        raise ValueError('supply --reader with the actual compatible role export')
     directory = Path(tempfile.mkdtemp(prefix='btc-data-contract-'))
     project = 'btc-test-' + uuid.uuid4().hex[:12]
     command = [docker, 'compose', '-p', project, '--env-file', str(directory/'compose.env'),
@@ -35,11 +38,12 @@ def run(docker):
         subprocess.run(command+['up','-d','--build','--wait','mysql','core'], check=True, timeout=600)
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
         subprocess.run([docker,'cp',str(ROOT/'service/tests'),container+':/tmp/tests'],check=True)
+        subprocess.run([docker,'cp',str(reader),container+':/tmp/reader'],check=True)
         subprocess.run(command+['exec','-T','core','mkdir','-p','/tmp/source/scripts'],check=True)
         for relative in ('skill','project-methods','scripts/build_synthetic_fixtures.py'):
             subprocess.run([docker,'cp',str(ROOT/relative),container+':/tmp/source/'+relative],check=True)
         subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc',
-                       '-e','BTC_TEST_SOURCE=/tmp/source',
+                       '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
                        'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True)
         def fingerprint_state():
             code = ('import json,hashlib; from btc_node.database import Database; '
@@ -96,7 +100,8 @@ def run(docker):
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--docker',default=shutil.which('docker'))
+    parser.add_argument('--reader', default=str(ROOT/'telegram_reader'))
     args=parser.parse_args()
     if not args.docker:
         parser.error('Docker client and daemon are required; this validation cannot be skipped')
-    raise SystemExit(run(args.docker))
+    raise SystemExit(run(args.docker, args.reader))

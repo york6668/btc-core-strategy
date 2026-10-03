@@ -14,6 +14,14 @@ from v4 import market_state, run_flow, sensing, reporting, mobile_report, cycle,
 from v4.common import Invalid, read, replace, digest
 
 
+class FindingReferenceTests(unittest.TestCase):
+    def test_extra_findings_reject_wrong_reference_shape_with_field_path(self):
+        for refs in ([{'source_id':'raw','pointer':'/value'}], 'price:current', [], [None]):
+            with self.subTest(refs=refs), self.assertRaisesRegex(Invalid, r'extra_findings\[0\].refs: expected'):
+                sensing.validate_extra_findings([{'summary':'Generated finding','refs':refs,'material':False}], {'price:current'})
+        sensing.validate_extra_findings([{'summary':'Generated finding','refs':['price:current'],'material':False}], {'price:current'})
+
+
 def assessment(stamp, refs=()):
     markets=[]
     for name in ('SPX','NDX','BTC'):

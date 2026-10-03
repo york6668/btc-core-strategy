@@ -9,6 +9,19 @@ class Series:
     def __init__(self, database):
         self.db = database
 
+    def preserve_original(self, source_digest, provenance):
+        original = provenance.get('original_digest')
+        if original:
+            self.db.execute('INSERT IGNORE INTO series_originals(source_digest,original_digest) VALUES(%s,%s)',
+                            (source_digest, original))
+
+    def backfill_originals(self):
+        sources = self.db.rows('SELECT s.source_digest FROM '
+            '(SELECT source_digest FROM observations UNION SELECT source_digest FROM series_retrievals) s '
+            'LEFT JOIN series_originals r USING(source_digest) WHERE r.source_digest IS NULL')
+        for row in sources:
+            self.preserve_original(row['source_digest'], self.db.value(row['source_digest']))
+
     def instrument(self, product, identity_spec):
         required = {'market', 'symbol', 'product_type', 'quote_unit', 'source_identity'}
         if not isinstance(product, str) or not 0 < len(product) <= 191:
@@ -30,6 +43,7 @@ class Series:
         if not isinstance(interval_ms, int) or interval_ms < 0:
             raise ValueError('invalid observation interval')
         source_digest = self.db.put_blob(encode(provenance))
+        self.preserve_original(source_digest, provenance)
         # Re-verification is recorded once per retrieval. A new fetch time or
         # surrounding package does not revise every unchanged historical bar.
         def semantics(value):

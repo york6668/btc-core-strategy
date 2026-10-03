@@ -165,7 +165,7 @@ def enter(config, run_id, context=None):
                 bound = read(record_path(root, 'contexts', context))
                 if bound['context'] != context:
                     raise ValueError('recovery context mismatch')
-                release = version_dir(root, bound['commit'])
+                release = version_dir(root, effective_commit(bound))
                 check_release(release)
             else:
                 release = current(root)
@@ -191,11 +191,55 @@ def bind(config, run_id, context):
             raise ValueError('context binding requires an active pinned run')
         path = record_path(root, 'contexts', context)
         value = {'context': context, 'commit': run['commit'], 'origin_run': run_id}
-        if path.exists() and read(path)['commit'] != run['commit']:
+        if path.exists() and effective_commit(read(path)) != run['commit']:
             raise ValueError('existing recovery context belongs to a different version')
         if not path.exists():
             write(path, value)
         return read(path)
+
+
+def effective_commit(bound):
+    repairs = bound.get('repairs') or []
+    return repairs[-1]['commit'] if repairs else bound['commit']
+
+
+def repair_context(config, context, expected_commit, revision, reason):
+    """Explicit research-only compatibility repair; never rebind an active run."""
+    with locked(config) as root:
+        path = record_path(root, 'contexts', context)
+        bound = read(path)
+        if bound['context'] != context or not reason.strip():
+            raise ValueError('exact research context and repair reason required')
+        request_id = context.removeprefix('sha256:')
+        if len(request_id) != 64 or any(c not in '0123456789abcdef' for c in request_id):
+            raise ValueError('only a stored research request can use compatibility repair')
+        request_path = Path(config['project_dir']) / '.strategy/v4/research/requests' / (request_id + '.json')
+        if not request_path.is_file():
+            raise ValueError('only a stored research request can use compatibility repair; delivery recovery is unchanged')
+        request = read(request_path)
+        payload = {k:v for k,v in request.items() if k != 'request_id'}
+        encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)+'\n').encode()
+        if (request.get('schema') != 'BTC_RESEARCH_REQUEST_V4' or request.get('request_id') != context
+                or hashlib.sha256(encoded).hexdigest() != request_id):
+            raise ValueError('research request identity changed')
+        metadata = check_release(version_dir(root, revision))
+        if request.get('workflow_revision', 4) not in metadata.get('content_contract', {}).get('read_revisions', [1,2,3,4,5]):
+            raise ValueError('repair release cannot read this research content revision')
+        repairs = bound.get('repairs') or []
+        if repairs and repairs[-1]['from_commit'] == expected_commit and repairs[-1]['commit'] == revision:
+            return bound
+        if effective_commit(bound) != expected_commit or revision == expected_commit:
+            raise ValueError('research recovery version changed or repair target is unchanged')
+        active = [read(p) for p in (root / 'runs').glob('*.json')]
+        if any(run.get('status') == 'ACTIVE' and (run.get('resume_context') == context
+               or run.get('run_id') == bound.get('origin_run')) for run in active):
+            raise ValueError('finish the active recovery run before recording its repair')
+        repairs.append({'from_commit':expected_commit, 'commit':revision,
+                        'request_hash':hashlib.sha256(request_path.read_bytes()).hexdigest(),
+                        'reason':reason, 'recorded_at':datetime.now(timezone.utc).isoformat()})
+        bound['repairs'] = repairs
+        write(path, bound)
+        return bound
 
 
 def finish(config, run_id):
@@ -231,6 +275,9 @@ def main():
     p = sub.add_parser('enter'); p.add_argument('--run-id', required=True); p.add_argument('--resume-context')
     p = sub.add_parser('bind-context'); p.add_argument('--run-id', required=True); p.add_argument('--context', required=True)
     p = sub.add_parser('finish'); p.add_argument('--run-id', required=True)
+    p = sub.add_parser('repair-context', help='explicitly repair a stored research recovery version')
+    p.add_argument('--context', required=True); p.add_argument('--from-commit', required=True)
+    p.add_argument('--to-commit', required=True); p.add_argument('--reason', required=True)
     sub.add_parser('status')
     sub.add_parser('data', help='Read one service JSON request from stdin')
     sub.add_parser('mcp', help='Project data tools over stdio')
@@ -248,6 +295,8 @@ def main():
         result = bind(config, args.run_id, args.context)
     elif args.command == 'finish':
         result = finish(config, args.run_id)
+    elif args.command == 'repair-context':
+        result = repair_context(config, args.context, args.from_commit, args.to_commit, args.reason)
     else:
         with locked(config) as root:
             result = {'current': str(current(root)), 'pending': read(root / 'pending.json') if (root / 'pending.json').exists() else None,

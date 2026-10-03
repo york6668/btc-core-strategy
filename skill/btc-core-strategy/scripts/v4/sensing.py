@@ -344,6 +344,19 @@ def measure(ctx, raw):
     return result
 
 
+def validate_extra_findings(findings, known):
+    require(isinstance(findings, list), 'extra_findings: expected list')
+    for index, item in enumerate(findings):
+        field = 'extra_findings[' + str(index) + ']'
+        exact(item, 'summary refs material', field)
+        text(item['summary'], field + '.summary')
+        refs = item['refs']
+        require(isinstance(refs, list) and refs and all(isinstance(ref, str) for ref in refs),
+                field + '.refs: expected nonempty list of market_refs string IDs from vocabulary.json')
+        require(set(refs) <= known, field + '.refs: unknown current market_refs ID')
+        require(type(item['material']) is bool, field + '.material: expected boolean')
+
+
 def validate_public(root, ctx, raw, authored, evidence_dir):
     """The same public preflight runs before freeze and before observation commit."""
     from . import evidence, factors, market_state, cycle, research
@@ -368,11 +381,7 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
         validation['baselines']['DEEP'] = {'completed_at': completed.get('completed_at') or completed.get('created_at')}
     market.validate_review(raw, candidate, validation, model_market=True)
     known = market.reference_ids(raw)
-    require(isinstance(authored['extra_findings'], list), 'extra discoveries must remain available')
-    for item in authored['extra_findings']:
-        exact(item, 'summary refs material', 'extra market discovery')
-        text(item['summary'], 'extra discovery')
-        require(type(item['material']) is bool and item['refs'] and set(item['refs']) <= known, 'extra discovery needs evidence and significance')
+    validate_extra_findings(authored['extra_findings'], known)
     research.findings(root, authored['research_findings'], known, bundle, evidence_dir)
 
 
@@ -442,11 +451,7 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             require(isinstance(check['findings'], list) and check['findings'] and set(check['findings']) <= {'NO_MATERIAL_CHANGE', 'SUPPORT_WEAKENED', 'COUNTEREVIDENCE', 'AMOUNT_BASIS_CHANGED', 'GAP', 'OTHER_MATERIAL'}, 'invalid recommendation finding')
             require(isinstance(check['refs'], list) and check['refs'] and set(check['refs']) <= known_refs, 'recommendation finding needs current evidence refs')
             text(check['explanation'], 'sensing explanation')
-        require(isinstance(review['extra_findings'], list), 'extra discoveries must remain available')
-        for finding in review['extra_findings']:
-            exact(finding, 'summary refs material', 'extra market discovery')
-            text(finding['summary'], 'extra discovery')
-            require(type(finding['material']) is bool and finding['refs'] and set(finding['refs']) <= known_refs, 'extra discovery needs evidence and significance')
+        validate_extra_findings(review['extra_findings'], known_refs)
         triggers = []
         if ctx.get('revision', 1) >= 6 and review['allocation_review']['outcome'] == 'REVISE':
             triggers.append('ALLOCATION_REVIEW_REQUIRED')

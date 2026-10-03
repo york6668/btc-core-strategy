@@ -144,7 +144,8 @@
     "skill/btc-core-strategy/tests/test_workflow_research.py",
     "tasks/hourly.md",
     "test_support/reader.lock.json",
-    "tests/test_release.py"
+    "tests/test_release.py",
+    "skill/btc-core-strategy/references/seller-exhaustion.md"
   ],
   "content_contract": {
     "read_revisions": [

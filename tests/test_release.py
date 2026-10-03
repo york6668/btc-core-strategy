@@ -1,5 +1,6 @@
 """Version switching must not reset state, research or delivery recovery."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -89,6 +90,42 @@ class ReleaseTests(unittest.TestCase):
         release.enter(self.config, 'new')
         with self.assertRaisesRegex(ValueError, 'different version'):
             release.bind(self.config, 'new', 'research-request')
+
+    def test_explicit_research_repair_preserves_origin_and_existing_runs(self):
+        request = {'schema':'BTC_RESEARCH_REQUEST_V4','workflow_revision':6,'issue_id':'synthetic'}
+        raw = (json.dumps(request,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n').encode()
+        context = 'sha256:'+hashlib.sha256(raw).hexdigest()
+        request['request_id'] = context
+        path = self.project/'.strategy/v4/research/requests'/(context[7:]+'.json')
+        release.write(path,request); before = path.read_bytes()
+        release.enter(self.config,'origin'); release.bind(self.config,'origin',context)
+        release.finish(self.config,'origin')
+        release.enter(self.config,'old-recovery',context)
+        manifest={'files':['scripts/run_tests.py'],'content_contract':{'read_revisions':[1,2,3,4,5,6]}}
+        (self.source/'export-manifest.json').write_text(json.dumps(manifest))
+        target=self.commit('compatible repair');release.install(self.config,self.source,activate_after=False)
+        with self.assertRaisesRegex(ValueError,'active recovery'):
+            release.repair_context(self.config,context,self.first,target,'fix revision forwarding')
+        release.finish(self.config,'old-recovery')
+        repaired=release.repair_context(self.config,context,self.first,target,'fix revision forwarding')
+        self.assertEqual(repaired['commit'],self.first)
+        self.assertEqual(release.repair_context(self.config,context,self.first,target,'same retry'),repaired)
+        self.assertEqual(release.enter(self.config,'old-recovery',context)['commit'],self.first)
+        resumed=release.enter(self.config,'new-recovery',context)
+        self.assertEqual(resumed['commit'],target)
+        self.assertEqual(release.bind(self.config,'new-recovery',context),repaired)
+        with self.assertRaisesRegex(ValueError,'version changed'):
+            release.repair_context(self.config,context,'f'*40,target,'stale repair')
+        with self.assertRaisesRegex(ValueError,'cannot read'):
+            release.repair_context(self.config,context,target,self.first,'incompatible target')
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(self.state.read_bytes(),self.before)
+
+    def test_repair_rejects_delivery_context_and_incompatible_content(self):
+        context='sha256:'+'d'*64
+        release.enter(self.config,'run');release.bind(self.config,'run',context)
+        with self.assertRaisesRegex(ValueError,'stored research'):
+            release.repair_context(self.config,context,self.first,self.first,'not a research request')
 
     def test_native_adapter_bootstraps_enter_before_pinned_environment_exists(self):
         node=Path(self.config['_path'])

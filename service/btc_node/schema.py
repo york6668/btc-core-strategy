@@ -129,4 +129,9 @@ DDL = (
         name VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
         digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
         PRIMARY KEY(name,digest), FOREIGN KEY(digest) REFERENCES blobs(digest))""",
+    """CREATE TABLE IF NOT EXISTS series_originals (
+        source_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        original_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        FOREIGN KEY(source_digest) REFERENCES blobs(digest),
+        FOREIGN KEY(original_digest) REFERENCES blobs(digest))""",
 )

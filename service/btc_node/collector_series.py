@@ -1,14 +1,53 @@
 """Keep collector observations auxiliary, with explicit identity and local knowledge time."""
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timezone
+import importlib.util
+import os
 from pathlib import Path
+import sys
 from urllib.parse import urlsplit
 
-from .codec import identity, millis, stamp
+from .codec import encode, fingerprint, identity, millis, stamp
 from .series import Series
 
 
-def ingest(db, package, source):
+SELLER = 'seller_exhaustion_daily'
+
+
+def seller_rows(dataset, asset, known):
+    """Validate with the deployed producer contract, not a second formula."""
+    location = os.environ.get('BTC_COLLECTOR_CONTRACT_PATH')
+    if location:
+        directory = Path(location).parent
+    else:
+        import node_config
+        directory = node_config.path('reader_code_dir', node_config.project() / 'telegram_reader')
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
+    spec = importlib.util.spec_from_file_location('btc_series_seller', directory / 'seller_exhaustion.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    reasons = module.problems(module.from_projection(dataset), known)
+    allowed = {'collecting', 'source_partial', 'source_collecting', 'source_stale', 'source_unavailable'}
+    if asset != 'BTC' or set(reasons) - allowed:
+        raise ValueError('invalid seller contract: ' + ','.join(reasons or ['asset']))
+    sources = {kind: {'endpoint_url': module.BASE + path, 'unit': unit, 'access_scope': 'public'}
+               for kind, (path, _, unit) in module.INPUTS.items()}
+    ident = {'market': module.BASE.split('/')[2], 'symbol': 'BTC',
+             'product_type': 'COLLECTOR_SERIES:' + SELLER, 'quote_unit': dataset['unit'],
+             'source_identity': 'derived:'+identity(dataset['method'], sources),
+             'derivation': {'method': dataset['method'], 'inputs': sources}}
+    rows = []
+    for row in dataset.get('rows', []):
+        payload = deepcopy(row)
+        for raw in payload['inputs'].values():
+            raw.pop('retrieved_at_ms', None)
+        rows.append((ident, module.DAY, payload))
+    return rows
+
+
+def ingest(db, package, source, *, only=None):
     series = Series(db)
     original = db.put_blob(Path(source).read_bytes())
     counts, gaps = [], []
@@ -19,24 +58,32 @@ def ingest(db, package, source):
             continue
         known = int(received * 1000) if isinstance(received,(float,int)) else millis(received)
         for name, dataset in value.get('datasets', {}).items():
+            if only is not None and name not in only:
+                continue
             rows = dataset.get('rows') or []
             if not rows: continue
             if not dataset.get('instrument') or not dataset.get('unit'):
                 gaps.append({'asset':asset,'series':name,'reason':'original product/unit contract missing'})
                 continue
             groups = defaultdict(list)
-            for row in rows:
+            prepared = None
+            if name == SELLER:
+                try:
+                    prepared = seller_rows(dataset, asset, known)
+                except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
+                    gaps.append({'asset':asset,'series':name,'reason':str(exc)})
+                    continue
+            for index, row in enumerate(rows):
                 observed = row.get('observed_ms')
                 endpoint = (row.get('provenance') or {}).get('endpoint_url')
-                if not isinstance(observed,int) or observed > known or not endpoint:
+                if not isinstance(observed,int) or observed > known or not endpoint and prepared is None:
                     gaps.append({'asset':asset,'series':name,'reason':'row event time/source missing or later than receipt'})
                     continue
                 # Product kind is deliberately source-series specific when the
                 # transport provides no exchange product-class assertion.
-                ident = {'market':urlsplit(endpoint).netloc,'symbol':dataset['instrument'],
+                ident = {'market':urlsplit(endpoint or '').netloc,'symbol':dataset['instrument'],
                          'product_type':'COLLECTOR_SERIES:'+name,'quote_unit':dataset['unit'],
                          'source_identity':endpoint}
-                product = 'collector:'+identity(ident)
                 interval = 0
                 if isinstance(row.get('open_time'),int) and isinstance(row.get('close_time'),int):
                     interval = row['close_time']-row['open_time']+1
@@ -45,6 +92,9 @@ def ingest(db, package, source):
                 # Retrieval clocks are preserved by the original package and
                 # one retrieval record, not copied into every unchanged bar.
                 payload = {k:v for k,v in row.items() if k not in {'retrieved_at_ms','last_event_retrieved_ms'}}
+                if prepared is not None:
+                    ident, interval, payload = prepared[index]
+                product = 'collector:'+identity(ident)
                 groups[(product,interval)].append((ident, {'item_key':str(observed),
                     'observed_at':stamp(datetime.fromtimestamp(observed/1000,timezone.utc)),
                     'known_at':stamp(datetime.fromtimestamp(known/1000,timezone.utc)),'payload':payload}))
@@ -55,6 +105,15 @@ def ingest(db, package, source):
                     'trust':'UNTRUSTED_LEAD','independent_verification':False,'asset':asset,
                     'relation':dataset.get('relation','UNKNOWN'),'quality':dataset.get('quality'),
                     'analysis_eligible':False,'field_units':dataset.get('field_units',{})}
+                if name == SELLER:
+                    # Full original clocks, quality and the exact frozen raw_ref
+                    # belong to this retrieval, not every numerical revision.
+                    provenance['retrieval'].update(quality=provenance.pop('quality'),
+                        status=dataset.get('status'), calculated_at_ms=dataset.get('calculated_at_ms'),
+                        raw_ref={'source_id':'collector_'+original[:20],
+                                 'pointer':'/assets/'+asset+'/datasets/'+name,
+                                 'value_hash':'sha256:'+fingerprint(encode(dataset))})
+                    provenance.update(method=dataset['method'], official_equivalence='unverified')
                 for start in range(0,len(items),10000):
                     counts.append(series.ingest(product,name,[r for _,r in items[start:start+10000]],provenance,
                                                 interval_ms=max(0,interval)))

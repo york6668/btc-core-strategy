@@ -59,7 +59,7 @@ services:
     profiles: [analysis]
     command: [maintenance-loop]
   reader:
-    image: btc-reader:${BTC_IMAGE_TAG:-local}
+    image: btc-reader:${BTC_READER_IMAGE_TAG:-${BTC_IMAGE_TAG:-local}}
     profiles: [reader]
     init: true
     restart: "no"
@@ -73,7 +73,7 @@ services:
     # Credentials are passed by the native bridge via stdin for one sync.
     network_mode: bridge
   collector:
-    image: btc-collector:${BTC_IMAGE_TAG:-local}
+    image: btc-collector:${BTC_COLLECTOR_IMAGE_TAG:-${BTC_IMAGE_TAG:-local}}
     profiles: [collector]
     init: true
     restart: unless-stopped

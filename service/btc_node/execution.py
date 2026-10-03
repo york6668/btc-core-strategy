@@ -122,6 +122,8 @@ def project_state(db, settings, release, argv=()):
     projection = Projection(db, Path(release).name)
     project = Path(settings['project'])
     result = projection.refresh(project, project / '.strategy/v4')
+    result['formal_market_binding'] = result.get('market_binding')
+    result['market_binding'] = None
     directory = None
     if '--directory' in argv:
         directory = Path(argv[argv.index('--directory') + 1])
@@ -143,6 +145,7 @@ def project_state(db, settings, release, argv=()):
             entity = projection.put('DECISION', frozen['result_hash'], frozen, frozen_path, known, active=False)
             personal = full_context(db, 'PERSONAL')
             personal['market_binding'] = {k: entity[k] for k in ('object_id', 'version', 'digest')}
+            result['market_binding'] = personal['market_binding']
             personal_path = directory / 'continuous-personal.json'
             atomic(personal_path, personal)
             result['personal_context'] = str(personal_path)

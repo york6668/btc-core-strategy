@@ -42,6 +42,6 @@ reader 的 SQLite 兼容挂载允许共享内存协调文件写入，catalog 连
 
 `python3 -B service/check.py --docker <实际 Docker CLI>` 创建临时 MySQL/core 节点，临时生成输入，实际执行 CLI/MCP、原分析 prepare/observe、并发和版本冲突、来源修订、期限复核、事实分离、生命周期、备份/空库恢复、中断恢复、数据库停机及容器重启；逐表内容与 CAS 在恢复前后逐项一致。结束只清理该临时节点。缺 Docker/MySQL 不跳过或伪装通过。
 
-完整核心测试继续使用 `scripts/run_tests.py`；跨角色验收在 market-roles 执行 `roles/validate_repository.py --with-data-service`，同时从白名单重建 collector/analysis。云端准备显式要求 Docker/Compose/MySQL 可运行，不能仅安装 Python 包后声称部署完成。自然七日验收使用原分析任务，不增设第二个分析写入方。acceptance 的每项结论必须绑定实际输入、状态变化、消费结果与可读取证据；日期届满不会自动通过。
+完整核心测试继续使用 `scripts/run_tests.py`；核心仓库单独检查数据服务时使用 `service/check.py --reader <完整reader导出>`，在 market-roles 执行 `roles/validate_repository.py --with-data-service` 则自动使用白名单重建的 collector/analysis 与 reader。卖竭投影复用该 reader 的公式、来源和日期校验；缺失模块保留投影缺口并可重试，不猜测来源。云端准备显式要求 Docker/Compose/MySQL 可运行，不能仅安装 Python 包后声称部署完成。自然七日验收使用原分析任务，不增设第二个分析写入方。acceptance 的每项结论必须绑定实际输入、状态变化、消费结果与可读取证据；日期届满不会自动通过。
 
 关键缺陷以 `acceptance.defect` 保留失败和受影响窗口，实际修复复验后调用 `acceptance.repair` 绑定缺陷序号、发布及证据。它从次日重开七个完整自然日，原检查与旧窗口历史保留；未解决缺陷始终阻止自然验收通过。

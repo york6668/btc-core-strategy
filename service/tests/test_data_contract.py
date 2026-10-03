@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -26,6 +27,7 @@ from btc_node.series import Series
 from btc_node.catalog import Catalog
 from btc_node.market_store import Connection
 from btc_node import backup
+from unittest.mock import patch
 
 
 class NodeContract(unittest.TestCase):
@@ -212,6 +214,95 @@ class NodeContract(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(submit, [revised, another]))
         self.assertCountEqual(results, [2, 'CONFLICT'])
+
+    def test_seller_projection_retrievals_revisions_raw_refs_and_daily_retention(self):
+        from btc_node.collector_series import ingest, SELLER
+        sys.path.insert(0,str(Path(os.environ['BTC_COLLECTOR_CONTRACT_PATH']).parent))
+        import seller_exhaustion as sec
+        known = millis(self.at(5))
+        last = (known // sec.DAY - 1) * sec.DAY
+        rows=[]
+        for i in range(70):
+            day=last-(69-i)*sec.DAY
+            values={'price':50000*math.exp(.02*math.sin(i/3)), 'profit':12000000+i*100, 'supply':20000000}
+            rows.append({'observed_ms':day+sec.DAY-1,'period_start_ms':day,'period_end_ms':day+sec.DAY,
+                'inputs':{kind:{'value':values[kind],'source_as_of_ms':day,'retrieved_at_ms':known,
+                    'provenance':{'endpoint_url':sec.BASE+endpoint,'access_scope':'public','unit':unit}}
+                    for kind,(endpoint,_,unit) in sec.INPUTS.items()}})
+        item=sec.measurements(None,known)[SELLER]
+        item.update(rows=sec.derive(rows),status='ok')
+        dataset=sec.project(item,known)['datasets'][SELLER]
+        package={'assets':{'BTC':{'transport':{'received_at':known/1000},'bundle_id':self.id,
+                                 'datasets':{SELLER:dataset}}}}
+        with tempfile.TemporaryDirectory() as folder:
+            source=Path(folder)/'collector.json'
+            def save():
+                source.write_bytes(encode(package))
+                return ingest(self.db,package,source)
+            self.assertEqual(sum(r['inserted'] for r in save()['counts']),70)
+            product=next(r['product'] for r in self.prices.products(limit=500)['products']
+                         if r['identity']['product_type']=='COLLECTOR_SERIES:'+SELLER)
+            query={'start':self.at(24*80),'end':self.at(),'limit':100}
+            original=self.prices.query(product,SELLER,as_of=self.at(4),**query)['observations']
+            self.assertEqual(original[-1]['known_ms'],known)
+            self.assertEqual(original[-1]['interval_ms'],sec.DAY)
+            self.assertFalse(original[-1]['provenance']['analysis_eligible'])
+            ref=original[-1]['provenance']['retrieval']['raw_ref']
+            self.assertEqual(ref['value_hash'],'sha256:'+__import__('hashlib').sha256(encode(dataset)).hexdigest())
+            self.assertEqual(self.db.value(original[-1]['provenance']['original_digest']),package)
+            # Upgrade an already-projected frozen file, without rewriting it
+            # or reprojecting unrelated datasets; absent old fields stay absent.
+            from btc_node.history import project_history
+            from types import SimpleNamespace
+            sys.path.insert(0,str(Path(os.environ['BTC_TEST_SOURCE'])/'skill/btc-core-strategy/scripts'))
+            root=Path(folder)/'strategy';(root/'v4'/self.id).mkdir(parents=True)
+            frozen=root/'v4'/self.id/'collector.json'
+            frozen.write_bytes(source.read_bytes()); original_bytes=frozen.read_bytes()
+            Catalog(self.db).sync('strategy',root)
+            document=self.db.one('SELECT document_key,digest FROM documents WHERE namespace=%s AND path=%s',
+                                 ('strategy','v4/'+self.id+'/collector.json'))
+            self.db.execute('REPLACE INTO projection_sources(document_key,digest,projected_ms,outcome) VALUES(%s,%s,%s,%s)',
+                            (document['document_key'],document['digest'],known,'COLLECTOR'))
+            project_history(SimpleNamespace(db=self.db),root/'v4')
+            self.assertEqual(self.db.one('SELECT outcome FROM projection_sources WHERE document_key=%s',
+                                        (document['document_key'],))['outcome'],'COLLECTOR_V2')
+            self.assertEqual(project_history(SimpleNamespace(db=self.db),root/'v4')['sources'],{})
+            self.assertEqual(frozen.read_bytes(),original_bytes)
+            for row in dataset['rows']:
+                for raw in row['inputs'].values():raw['retrieved_at_ms']=millis(self.at(3))
+            dataset['calculated_at_ms']=millis(self.at(3))
+            package['assets']['BTC']['transport']['received_at']=millis(self.at(3))/1000
+            package['assets']['BTC']['bundle_id']=self.id+'-refresh'
+            self.assertEqual(sum(r['unchanged'] for r in save()['counts']),70)
+            dataset['rows'][-1]['inputs']['profit']['value']=None
+            dataset['rows']=sec.derive(dataset['rows'])
+            self.assertEqual(sum(r['inserted'] for r in save()['counts']),1)
+            current=self.prices.query(product,SELLER,as_of=self.at(),**query)['observations']
+            self.assertIsNone(current[-1]['payload']['value'])
+            self.assertIsNotNone(self.prices.query(product,SELLER,as_of=self.at(4),**query)['observations'][-1]['payload']['value'])
+            self.assertEqual(sum(r['inserted'] for r in save()['counts']),0)
+            bad=dataset['rows'][-1]['inputs']['supply']['provenance']
+            bad['endpoint_url']='https://unexpected.test/supply'
+            self.assertIn('source_identity_mismatch',save()['gaps'][0]['reason'])
+            with self.db.transaction():pass
+            maintain(self.db,apply=True,now=self.now+timedelta(days=500))
+            maintain(self.db,apply=True,now=self.now+timedelta(days=503))
+            self.assertTrue(self.prices.query(product,SELLER,as_of=self.at(),**query)['observations'])
+            self.assertTrue(self.db.value(original[-1]['provenance']['original_digest']))
+
+    def test_frozen_run_binding_is_returned_and_formal_binding_stays_separate(self):
+        from btc_node.execution import project_state
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder);(path/'run.json').write_text('{}')
+            frozen={'result_hash':self.id,'created_at':self.at(1),'outlook':{'generated':True}}
+            (path/'market-result.json').write_bytes(encode(frozen))
+            formal={'object_id':'old-formal','version':1,'digest':'old'}
+            with patch('btc_node.execution.Projection.refresh',return_value={'market_binding':formal}):
+                result=project_state(self.db,{'project':folder},os.environ['BTC_TEST_SOURCE'],['--run',str(path/'run.json')])
+            personal=json.loads((path/'continuous-personal.json').read_bytes())
+            self.assertEqual(result['market_binding'],personal['market_binding'])
+            self.assertEqual(result['market_binding']['object_id'],self.id)
+            self.assertEqual(result['formal_market_binding'],formal)
 
     def test_recycle_preserves_essential_evidence_and_deduplicates(self):
         with self.db.transaction():

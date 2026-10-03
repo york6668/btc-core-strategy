@@ -9,8 +9,9 @@ def project_history(projection, root):
     from v4 import market_state, sensing
     from v4.common import digest
     db = projection.db
-    rows = db.rows("SELECT d.* FROM documents d LEFT JOIN projection_sources p USING(document_key) "
-        "WHERE d.namespace='strategy' AND d.kind='FILE' AND (p.digest IS NULL OR p.digest<>d.digest) AND "
+    rows = db.rows("SELECT d.*,p.digest AS projected_digest FROM documents d LEFT JOIN projection_sources p USING(document_key) "
+        "WHERE d.namespace='strategy' AND d.kind='FILE' AND (p.digest IS NULL OR p.digest<>d.digest "
+        "OR (d.path LIKE 'v4/%%/collector.json' AND p.outcome NOT IN ('COLLECTOR_V2','COLLECTOR_NO_SELLER_V2'))) AND "
         "(d.path LIKE 'v4/versions/%%/decision.json' OR d.path LIKE 'v4/sensing/%%.json' "
         "OR d.path LIKE 'v4/%%/market.json' OR d.path LIKE 'v4/%%/collector.json')")
     events, skipped = [], 0
@@ -39,6 +40,7 @@ def project_history(projection, root):
         events.append((millis(known) if known else 0, kind, row, path, value))
     counts = {}
     for _, kind, row, path, value in sorted(events, key=lambda e:(e[0],e[1],e[2]['path'])):
+        outcome = kind
         if kind == 'DECISION':
             assessment = value.get('assessment') or {}
             public = market_state.public_content(assessment)
@@ -69,11 +71,21 @@ def project_history(projection, root):
         elif kind == 'PRICES':
             projection.prices(value, path)
         elif kind == 'COLLECTOR':
-            from .collector_series import ingest
-            ingest(db, value, path)
+            from .collector_series import ingest, SELLER
+            # Earlier projections already own the other datasets. Revisit only
+            # this missing capability, once per immutable source digest.
+            backfill = row['projected_digest'] == row['digest']
+            result = ingest(db, value, path, only={SELLER} if backfill else None)
+            if any(gap.get('series') == SELLER for gap in result['gaps']):
+                counts['COLLECTOR_GAP'] = counts.get('COLLECTOR_GAP', 0) + 1
+                continue  # A missing/incompatible deployed contract remains retryable.
+            available = SELLER in (value.get('assets', {}).get('BTC', {}).get('datasets') or {})
+            outcome = 'COLLECTOR_V2' if available else 'COLLECTOR_NO_SELLER_V2'
+            if not available:
+                counts['COLLECTOR_NO_SELLER'] = counts.get('COLLECTOR_NO_SELLER', 0) + 1
         else:
             skipped += 1
         db.execute('REPLACE INTO projection_sources(document_key,digest,projected_ms,outcome) VALUES(%s,%s,%s,%s)',
-                   (row['document_key'],row['digest'],millis(),kind))
+                   (row['document_key'],row['digest'],millis(),outcome))
         counts[kind] = counts.get(kind,0)+1
     return {'sources':counts,'legacy_without_independent_public_contract':skipped}

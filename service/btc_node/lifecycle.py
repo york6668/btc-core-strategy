@@ -155,6 +155,12 @@ def _maintain(db, *, apply, now):
                 removed_observations += 1
                 if apply:
                     db.execute('DELETE FROM observations WHERE observation_key=%s', (row['observation_key'],))
+        if apply:
+            from .series import Series
+            Series(db).backfill_originals()
+            db.execute('DELETE FROM series_originals WHERE '
+                       'NOT EXISTS(SELECT 1 FROM observations o WHERE o.source_digest=series_originals.source_digest) '
+                       'AND NOT EXISTS(SELECT 1 FROM series_retrievals r WHERE r.source_digest=series_originals.source_digest)')
         protected = protected_documents(db)
         expired = db.rows('SELECT * FROM documents d WHERE expires_ms<=%s '
                           "AND retention_class NOT IN ('ACTIVE','KEY','DAILY') "
@@ -204,6 +210,7 @@ def _maintain(db, *, apply, now):
                          'NOT EXISTS(SELECT 1 FROM observations o WHERE o.digest=b.digest OR o.source_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM instruments i WHERE i.identity_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM series_retrievals r WHERE r.source_digest=b.digest) AND '
+                         'NOT EXISTS(SELECT 1 FROM series_originals r WHERE r.source_digest=b.digest OR r.original_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM operations o WHERE o.result_digest=b.digest OR o.request_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM legacy_databases l WHERE l.schema_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM legacy_rows l WHERE l.digest=b.digest) AND '
