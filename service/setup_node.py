@@ -54,7 +54,9 @@ def prepare(node_path, data, docker, compose_project, source):
                 'reader_data': node['reader_data_dir'],
                 'observation_db': node['observation_db'], 'maintenance_enabled': False,
                 'recycle_grace_hours': 48, 'compatibility_root': str(data / 'strategy'),
-                'backup_directory': str(data / 'backups'), 'backup_retention_days': 7,
+                # Keep immutable backup content on the evidence mount. A sibling
+                # bind mount can return EXDEV even when host st_dev is identical.
+                'backup_directory': str(data / 'objects' / '.backups'), 'backup_retention_days': 7,
                 'auxiliary_namespaces': {name:str(data/path) for name,path in
                     (('native_inputs','native-inputs'),('native_proofs','native-proofs'),('facts','native-facts'))},
                 'capacity_paths': [str(data/name) for name in ('strategy','reader','backups','native-proofs','native-inputs','native-facts','journal')],

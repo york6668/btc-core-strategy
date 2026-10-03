@@ -513,6 +513,27 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(target.execute('SELECT payload FROM evidence WHERE evidence_id=?',(self.id,)).fetchone()[0],'{"delivery":"UNKNOWN"}')
                 self.assertEqual(target.execute('SELECT rowid FROM evidence WHERE evidence_id=?',(self.id,)).fetchone()[0],27)
 
+    def test_backups_on_evidence_mount_share_content_and_survive_live_unlink(self):
+        import shutil
+        with self.db.transaction():
+            digest=self.db.put_blob(encode({'generated_backup':self.id}))
+        root=Path(self.settings['objects'])/'.backups'/self.id
+        try:
+            backup.create(self.db,root/'first')
+            backup.create(self.db,root/'second')
+            live=self.db.blobs.path(digest)
+            first=root/'first/objects'/digest[:2]/digest[2:]
+            second=root/'second/objects'/digest[:2]/digest[2:]
+            self.assertTrue(live.samefile(first))
+            self.assertTrue(first.samefile(second))
+            original=live.read_bytes()
+            live.unlink()
+            self.assertEqual(first.read_bytes(),original)
+            self.assertEqual(second.read_bytes(),original)
+            self.assertEqual(self.db.put_blob(original),digest)
+        finally:
+            shutil.rmtree(root,ignore_errors=True)
+
     def test_backup_restores_latest_unknown_and_blocks_stale_overwrite(self):
         with self.db.transaction():
             self.db.metadata(self.id,{'delivery':'UNKNOWN','cursor':987654},write=True)
