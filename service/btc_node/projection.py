@@ -229,11 +229,13 @@ class Projection:
         from v4 import storage, market_state, research, delivery
         from v4.common import facts
         project, root = Path(project), Path(root)
+        from .reader_prices import project as project_receipts
+        receipts = project_receipts(self.db)
         from .history import project_history
         history = project_history(self, root)
         decision = storage.current(root)
         if not decision:
-            return {'objects': [], 'status': 'NO_BASELINE'}
+            return {'objects': [], 'status': 'NO_BASELINE', 'reader_receipts': receipts}
         source = root / 'versions' / decision['decision_id'] / 'decision.json'
         assessment = decision.get('assessment') or {}
         frozen_time = decision['created_at']
@@ -310,4 +312,5 @@ class Projection:
             self.put('DELIVERY', path.parent.name, payload, path, stamp(), observed=status['updated_at'],
                      scope='PERSONAL', active=status['state'] not in {'DELIVERED', 'SUPERSEDED'},
                      dependencies=[{'type': 'BLOB', 'digest': self.db.put_blob(artifact.read_bytes()), 'relation': 'FROZEN_REPORT'}])
-        return {'objects': self.results, 'market_binding': binding, 'facts_match': match, 'history': history}
+        return {'objects': self.results, 'market_binding': binding, 'facts_match': match,
+                'history': history, 'reader_receipts': receipts}

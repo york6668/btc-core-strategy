@@ -143,8 +143,10 @@ def dispatch(settings, request):
                 if (db.metadata('writer') or {}).get('owner') != 'DOCKER':
                     raise Conflict('reader checkpoint requires the active Docker writer')
                 result = Catalog(db).sync('reader', settings['reader_data'])
+                from .reader_prices import project
+                prices = project(db)
                 db.metadata('reader.checkpoint', {'at_ms': millis(), 'databases': result['sqlite']}, write=True)
-                return {'checkpointed': True, 'databases': result['sqlite']}
+                return {'checkpointed': True, 'databases': result['sqlite'], 'prices': prices}
         finally:
             db.close()
     if method not in READS | WRITES:

@@ -124,6 +124,61 @@ class NodeContract(unittest.TestCase):
         self.assertEqual(current[0]['payload']['price'], '111')
         self.assertEqual(current[0]['known_ms'], millis(self.at(5)))
 
+    def test_reader_history_precedes_latest_model_snapshot_and_replay_is_idempotent(self):
+        from btc_node.reader_prices import project
+        from btc_node.collector_series import ingest
+        directory = Path(os.environ['BTC_COLLECTOR_CONTRACT_PATH']).parent
+        sys.path[:0] = [str(directory), str(directory/'tests')]
+        from btc_evidence_reader import EvidenceReader
+        from btc_evidence import encode_bundle
+        from test_evidence_v2 import generated, rehash
+        bundle, text = generated('BTC')
+        closing = 100.1 + int(self.id[-4:], 16) % 900 / 1000
+        bundle['measurements']['derivative_cvd_long']['rows'][-1]['close'] = closing
+        rehash(bundle); raw = encode_bundle(bundle)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with sqlite3.connect(root/'messages.sqlite3') as config:
+                config.execute('CREATE TABLE reader_config(singleton_id INTEGER,chat_id INTEGER)')
+                config.execute('INSERT INTO reader_config VALUES(1,-100123)')
+            clock = [millis(self.at(4))/1000]
+            reader = EvidenceReader(root/'collector_evidence.sqlite3', allowed_chat_id=-100123, clock=lambda: clock[0])
+            self.addCleanup(reader.close)
+            def post(parent):
+                base = {'chat': {'id': -100123, 'type': 'channel'}, 'date': int(clock[0])}
+                reader.ingest_update({'update_id':parent,'channel_post':{**base,'message_id':parent,'text':text}})
+                reader.ingest_update({'update_id':parent+1,'channel_post':{**base,'message_id':parent+1,
+                    'reply_to_message': {'message_id':parent},
+                    'document':{'file_id':str(parent),'file_name':'BTC.json','file_size':len(raw)}}})
+                reader.process_pending(lambda _: raw)
+            post(10)
+            clock[0] = millis(self.at(2))/1000; post(20)
+            latest = reader.observations(latest_only=True)[0]
+            frozen = root/'frozen.json'; frozen.write_bytes(encode({'assets': {'BTC': latest}}))
+            ingest(self.db, {'assets': {'BTC': latest}}, frozen)
+            product = next(row['product'] for row in self.prices.products(limit=500)['products']
+                           if row['identity']['product_type']=='COLLECTOR_SERIES:derivative_cvd_long'
+                           and row['identity']['symbol']=='BTCUSDT')
+            event = latest['datasets']['derivative_cvd_long']['rows'][-1]['observed_ms']
+            at = datetime.fromtimestamp(event/1000, timezone.utc).isoformat()
+            query = {'start': at, 'end': at, 'limit':10}
+            before = self.prices.query(product,'derivative_cvd_long',as_of=self.at(3),**query)['observations']
+            self.assertFalse(before and before[0]['payload']['close']==closing)
+            self.db.settings['reader_data'] = str(root)
+            first = project(self.db)
+            self.assertEqual(first['processed'],2)
+            received = self.prices.query(product,'derivative_cvd_long',as_of=self.at(3),**query)['observations'][0]
+            self.assertEqual(received['payload']['close'],closing)
+            self.assertEqual(received['known_ms'],millis(self.at(4)))
+            count = self.db.one('SELECT COUNT(*) AS n FROM observations')['n']
+            self.assertEqual(project(self.db)['processed'],0)
+            self.assertEqual(self.db.one('SELECT COUNT(*) AS n FROM observations')['n'],count)
+            clock[0] = millis(self.at(1))/1000; post(30)
+            self.assertEqual(project(self.db)['processed'],1)
+            self.assertEqual(self.db.one('SELECT COUNT(*) AS n FROM observations')['n'],count)
+            self.assertEqual(reader.observations(latest_only=True)[0]['transport']['document_message_id'],31)
+            del self.db.settings['reader_data']
+
     def test_expiry_does_not_roll_forward_and_unreported_dependencies_are_due(self):
         hypothesis = self.spec('HYPOTHESIS', valid_until=self.at(1))
         self.objects.put(hypothesis, expected_version=0)

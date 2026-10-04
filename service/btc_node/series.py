@@ -55,6 +55,7 @@ class Series:
             'ORDER BY known_ms DESC,sequence DESC) AS rn FROM observations o WHERE product=%s AND series=%s AND item_key IN ('+
             ','.join('%s' for _ in item_keys)+')) ranked WHERE rn=1', (product,series,*item_keys))
         latest = {row['item_key']:row for row in previous_rows}
+        visible = {}
         self.db.execute('INSERT IGNORE INTO series_retrievals(retrieval_key,product,series,known_ms,source_digest) VALUES(%s,%s,%s,%s,%s)',
                         (identity(product,series,source_digest),product,series,max(millis(row['known_at']) for row in rows),source_digest))
         changed, unchanged = 0, 0
@@ -67,7 +68,16 @@ class Series:
                 raise ValueError('invalid measurement identity')
             data = encode(item['payload'])
             digest = fingerprint(data)
-            previous = latest.get(item_key)
+            current = latest.get(item_key)
+            previous = current
+            if current and known < current['known_ms']:
+                if known not in visible:
+                    historical = self.db.rows('SELECT * FROM (SELECT o.*,ROW_NUMBER() OVER(PARTITION BY item_key '
+                        'ORDER BY known_ms DESC,sequence DESC) AS rn FROM observations o WHERE product=%s AND series=%s '
+                        'AND known_ms<=%s AND item_key IN ('+','.join('%s' for _ in item_keys)+')) ranked WHERE rn=1',
+                        (product, series, known, *item_keys))
+                    visible[known] = {row['item_key']: row for row in historical}
+                previous = visible[known].get(item_key)
             if previous and previous['source_digest'] not in source_cache:
                 source_cache[previous['source_digest']] = semantics(self.db.value(previous['source_digest']))
             if previous and previous['digest'] == digest and source_cache[previous['source_digest']] == current_source and previous['observed_ms'] == observed and known >= previous['known_ms']:
@@ -81,9 +91,15 @@ class Series:
                                        (observation_key, product, series, item_key, observed, known, millis(),
                                         interval_ms, digest, source_digest))
             changed += inserted
-            if inserted and (not previous or known >= previous['known_ms']):
-                latest[item_key] = {'digest':digest,'source_digest':source_digest,'observed_ms':observed,'known_ms':known}
-            if inserted and previous and known >= previous['known_ms']:
+            revision = {'digest':digest,'source_digest':source_digest,'observed_ms':observed,'known_ms':known}
+            if inserted and (not current or known >= current['known_ms']):
+                latest[item_key] = revision
+            if inserted:
+                for cutoff, values in visible.items():
+                    prior = values.get(item_key)
+                    if known <= cutoff and (not prior or known >= prior['known_ms']):
+                        values[item_key] = revision
+            if inserted and current and known >= current['known_ms']:
                 sequence = self.db.one('SELECT sequence FROM observations WHERE observation_key=%s',
                                        (observation_key,))['sequence']
                 Entities(self.db).invalidate(identity(product, series, item_key), 'OBSERVATION', sequence,

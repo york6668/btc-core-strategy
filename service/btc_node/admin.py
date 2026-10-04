@@ -58,7 +58,7 @@ def run(settings, command, args):
                     result = project_state(db, settings, args.release)
                     return {'changed': sum(1 for item in result['objects'] if item['changed']),
                             'visited': len(result['objects']), 'facts_match': result.get('facts_match'),
-                            'history': result.get('history')}
+                            'history': result.get('history'), 'reader_receipts': result.get('reader_receipts')}
             if command == 'writer':
                 with db.transaction():
                     previous = db.metadata('writer')

@@ -28,6 +28,8 @@ reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一�
 
 reader 的 SQLite 兼容挂载允许共享内存协调文件写入，catalog 连接仍使用 `mode=ro`；WAL 模式数据库在 reader 退出后可能需要重新创建 `-shm`，不能将整个目录挂成只读。
 
+reader 检查点和分析投影增量处理原频道已收到的附件价格历史，每批最多 32 份；复用实际 reader 的解码与辅助证据校验。原附件、接收时间、产品及单位进入统一序列，模型冻结时间另存。`project` 返回 `reader_receipts.remaining` 与 `gaps`；迁移时在可恢复边界重复 project 直到积压为零，核对实际缺口，不触发 Telegram 轮询。无效旧附件仅保留原文及缺口，最新附件无效也不能回退旧材料作为当前分析。
+
 ## 故障恢复与回退
 
 命令先保存 operation_id/输入摘要，再执行原 CLI，最后归档实际结果。相同 ID 与相同输入返回原结果；并发旧版本拒绝；DB 不可用不会退回宿主写入。服务返回恢复 ID 时先 `core.recover`，核对持久 journal 与实际文件，不能重发报告或换 ID 重跑不确定动作。

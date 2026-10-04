@@ -35,6 +35,7 @@
     "service/btc_node/market_store.py",
     "service/btc_node/mcp.py",
     "service/btc_node/projection.py",
+    "service/btc_node/reader_prices.py",
     "service/btc_node/schema.py",
     "service/btc_node/series.py",
     "service/check.py",
