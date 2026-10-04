@@ -27,6 +27,25 @@ def atomic(path, value):
     os.replace(temporary, path); sync_directory(path.parent)
 
 
+def value_reference_only(argv):
+    """Recognize the actual subcommand, never a flag value or substring.
+
+    Only this command reads an already frozen run and returns its scalar hash.
+    Unknown argument layouts retain the complete mutation/projection path.
+    """
+    index = 0
+    while index < len(argv):
+        if argv[index] in ('--project', '--root'):
+            if index + 1 >= len(argv):
+                return False
+            index += 2
+        elif argv[index] == '--full':
+            index += 1
+        else:
+            return argv[index] == 'run-value-ref'
+    return False
+
+
 def execute(settings, request):
     params = request['params']
     release = Path(params['release']).resolve()
@@ -37,6 +56,7 @@ def execute(settings, request):
     argv = params['argv']
     if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
         raise ValueError('argument vector required')
+    reference_only = value_reference_only(argv)
     def project_path(value):
         path = Path(value).expanduser()
         return (path if path.is_absolute() else project / path).resolve()
@@ -68,16 +88,17 @@ def execute(settings, request):
                 raise Conflict('comparison mode does not execute legacy commands')
             mysql_native = 'connect_if_configured' in (release / 'skill/btc-core-strategy/scripts/market_observation.py').read_text()
             original = Path(settings['observation_db'])
-            if not mysql_native and not original.exists() and db.one('SELECT 1 FROM mo_evidence LIMIT 1'):
+            if not reference_only and not mysql_native and not original.exists() and db.one('SELECT 1 FROM mo_evidence LIMIT 1'):
                 raise Conflict('restore the compatibility observation schema before resuming an old pinned release')
             with db.transaction():
                 db.put_blob(encode(params))
                 db.execute('INSERT INTO operations(operation_id,request_digest,status,started_ms,release_id) '
                            'VALUES(%s,%s,%s,%s,%s)', (operation, request_digest, 'EXECUTING', millis(), release.name))
             journal_state = {'operation_id': operation, 'request': params, 'status': 'EXECUTING',
-                             'mysql_native': mysql_native, 'sqlite_prepared': False}
+                             'mysql_native': mysql_native, 'sqlite_prepared': False,
+                             'value_reference_only': reference_only}
             atomic(journal, journal_state)
-            if not mysql_native:
+            if not reference_only and not mysql_native:
                 from .market_store import export_sqlite
                 if original.exists():
                     export_sqlite(db, original)
@@ -91,15 +112,21 @@ def execute(settings, request):
             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr}
             atomic(journal, {**journal_state, 'status': 'EXECUTED', 'result': result})
             with db.transaction():
-                if not mysql_native and Path(settings['observation_db']).exists():
+                if not reference_only and not mysql_native and Path(settings['observation_db']).exists():
                     from .market_store import import_sqlite
                     import_sqlite(db, settings['observation_db'])
                 # Rows in the hourly market store already use MySQL. Remaining
                 # immutable files and pointer changes become a recovery manifest.
-                catalog = Catalog(db)
-                catalog.sync('strategy', project / '.strategy', hardlink=True,
-                             protect=settings.get('protected_paths', []))
-                result['continuity'] = project_state(db, settings, release, argv)
+                # A scalar reference creates no strategy state. Re-archiving
+                # every run and rebuilding all projections here kept the writer
+                # busy for longer than the reader's checkpoint admission.
+                # Admission, immutable inputs, journal and idempotent result
+                # commit still use the same writer and operation identity.
+                if not reference_only:
+                    catalog = Catalog(db)
+                    catalog.sync('strategy', project / '.strategy', hardlink=True,
+                                 protect=settings.get('protected_paths', []))
+                    result['continuity'] = project_state(db, settings, release, argv)
                 result_digest = db.put_blob(encode(result))
                 db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",
                            (millis(), result_digest, operation))
@@ -193,11 +220,15 @@ def recover(settings, operation):
             if value.get('mysql_native') is False and value.get('sqlite_prepared') and Path(settings['observation_db']).exists():
                 from .market_store import import_sqlite
                 import_sqlite(db, settings['observation_db'])
-            Catalog(db).sync('strategy', Path(settings['project']) / '.strategy', hardlink=True)
-            continuity = project_state(db, settings, value['request']['release'])
+            reference_only = (value.get('value_reference_only') is True and
+                              value_reference_only(value['request']['argv']))
+            if not reference_only:
+                Catalog(db).sync('strategy', Path(settings['project']) / '.strategy', hardlink=True)
+                continuity = project_state(db, settings, value['request']['release'])
             result = value.get('result') or {'returncode': 75, 'stdout': '', 'stderr':
                 'Execution was interrupted. State preserved. Inspect the original run and delivery before a new operation.'}
-            result['continuity'] = continuity
+            if not reference_only:
+                result['continuity'] = continuity
             result['recovery'] = 'STATE_PRESERVED_NO_REPLAY'
             digest = db.put_blob(encode(result))
             db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",

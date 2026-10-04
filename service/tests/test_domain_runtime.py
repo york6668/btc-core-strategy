@@ -1,5 +1,7 @@
 """Replay the actual command executor and existing analysis contracts in Docker."""
 import json
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import os
 from pathlib import Path
 import shutil
@@ -10,13 +12,22 @@ import unittest
 from unittest.mock import patch
 
 from btc_node.catalog import Catalog
-from btc_node.codec import encode, fingerprint
+from btc_node.api import dispatch
+from btc_node.codec import Conflict, encode, fingerprint
 from btc_node.database import Database
-from btc_node.execution import execute, recover
+from btc_node.execution import execute, recover, value_reference_only
 from btc_node.market_store import import_sqlite
 
 
 class DomainRuntime(unittest.TestCase):
+    def test_reference_command_is_not_inferred_from_an_argument_value(self):
+        self.assertTrue(value_reference_only(['--project','/p','--root','/p/.strategy/v4','--full','run-value-ref']))
+        for argv in (['--project','run-value-ref','--root','/r','run-advance'],
+                     ['--project','/p','--root','/r','run-advance','--input','run-value-ref'],
+                     ['--project','/p','--root','/r','--unknown','run-value-ref'],
+                     ['--project']):
+            self.assertFalse(value_reference_only(argv))
+
     def test_actual_prepare_observe_and_interrupted_result_recovery(self):
         source = Path(os.environ['BTC_TEST_SOURCE'])
         settings = json.loads(Path(os.environ['BTC_TEST_CONFIG']).read_text())
@@ -94,7 +105,56 @@ class DomainRuntime(unittest.TestCase):
                         'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),
                             'run-value-ref','--run',os.path.relpath(prepared['run'],project),
                             '--file',str(sample.d/'context.json'),'--pointer','/factor_context/evidence']}}
-                    reference_result=execute(settings,reference_request)
+                    # The real pinned CLI checks the frozen run and computes the
+                    # reference. It must not archive/project unchanged strategy
+                    # state, even while a real reader checkpoint uses MySQL.
+                    import sqlite3
+                    reader=folder/'reader';reader.mkdir()
+                    with sqlite3.connect(reader/'cursor.sqlite3') as cursor:
+                        cursor.execute('CREATE TABLE cursor(next_offset INTEGER)')
+                        cursor.execute('INSERT INTO cursor VALUES(43)')
+                    settings['reader_data']=str(reader)
+                    frozen_before={p:p.read_bytes() for p in sample.d.rglob('*') if p.is_file()}
+                    actual_sync=Catalog.sync
+                    def reader_sync(catalog,namespace,*args,**kwargs):
+                        self.assertNotEqual(namespace,'strategy','scalar reference must not recatalog strategy')
+                        return actual_sync(catalog,namespace,*args,**kwargs)
+                    with patch('btc_node.execution.Catalog.sync',side_effect=reader_sync,autospec=True), \
+                         patch('btc_node.execution.project_state',side_effect=AssertionError('scalar reference must not project')):
+                        with ThreadPoolExecutor(max_workers=3) as workers:
+                            references=[]
+                            for index in range(6):
+                                ref=deepcopy(reference_request);ref['operation_id']+='-'+str(index)
+                                references.append(workers.submit(execute,settings,ref))
+                            checkpoint=workers.submit(dispatch,settings,{'method':'reader.checkpoint'})
+                            reference_result=references[0].result(timeout=30)
+                            for future in references:
+                                self.assertEqual(future.result(timeout=30),reference_result)
+                            self.assertTrue(checkpoint.result(timeout=30)['checkpointed'])
+                        replay=deepcopy(reference_request);replay['operation_id']+='-0'
+                        self.assertEqual(execute(settings,replay),reference_result)
+                        changed=deepcopy(replay);changed['params']['argv'][-1]='/changed'
+                        with self.assertRaisesRegex(Conflict,'different inputs'):execute(settings,changed)
+                        # A lost response after EXECUTED must reconcile the
+                        # saved result without replay or full-state projection.
+                        from btc_node import execution
+                        actual_atomic=execution.atomic
+                        def interrupt(path,value):
+                            actual_atomic(path,value)
+                            if value.get('status')=='EXECUTED':raise RuntimeError('lost scalar response')
+                        lost=deepcopy(reference_request);lost['operation_id']+='-lost'
+                        with patch('btc_node.execution.atomic',side_effect=interrupt):
+                            with self.assertRaisesRegex(RuntimeError,'lost scalar'):execute(settings,lost)
+                        with patch('btc_node.execution.subprocess.run',side_effect=AssertionError('must not replay')):
+                            restored=recover(settings,lost['operation_id'])
+                        self.assertEqual(restored['stdout'],reference_result['stdout'])
+                        self.assertEqual(restored['recovery'],'STATE_PRESERVED_NO_REPLAY')
+                        self.assertEqual(execute(settings,lost),restored)
+                        bad=deepcopy(reference_request);bad['operation_id']+='-bad'
+                        bad['params']['argv'][-1]='/missing'
+                        self.assertNotEqual(execute(settings,bad)['returncode'],0)
+                    self.assertEqual({p:p.read_bytes() for p in sample.d.rglob('*') if p.is_file()},frozen_before)
+                    self.assertNotIn('continuity',reference_result)
                     self.assertEqual(reference_result['returncode'],0,reference_result['stderr'])
                     from v4.common import digest
                     expected=digest(json.loads((sample.d/'context.json').read_text())['factor_context']['evidence'])

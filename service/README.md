@@ -34,6 +34,8 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 
 命令先保存 operation_id/输入摘要，再执行原 CLI，最后归档实际结果。相同 ID 与相同输入返回原结果；并发旧版本拒绝；DB 不可用不会退回宿主写入。服务返回恢复 ID 时先 `core.recover`，核对持久 journal 与实际文件，不能重发报告或换 ID 重跑不确定动作。
 
+`run-value-ref` 沿固定版本校验原冻结 run、证据及允许路径，返回精确引用哈希；服务仍串行准入并持久保存同一操作结果，但不重复归档策略目录、重建业务投影或生成 continuous 材料。原准备及写入阶段负责这些材料，其他命令保持完整提交链；中断引用操作也只核对原 journal，不重新执行。
+
 `backup --directory <新目录>` 保存一致性 MySQL 行集和被引用的不可变内容；`restore-database` 只允许空数据库。`restore --namespace strategy --root <空目录>` 导出最新兼容状态，包含当前 MySQL 的观察、研究和投递记录，并保存操作水位。只有无未决操作且导出水位仍等于最新水位，才能将 writer 改回 HOST；停止 Docker 入口后再切换宿主指针、reader 和原调度。回退使用最新导出，不能恢复迁移前快照覆盖新业务或发送状态。
 
 维护首次启用前验证实际恢复。maintenance_enabled 默认 false；启用后每日先备份再清理，备份默认七天且至少保留两份。引用保护、回收缓冲和生命周期均由 lifecycle 执行；Compose 限制日志轮转。storage.status 区分逻辑字节、去重字节、实际文件占用、MySQL 表分配量和宿主 Docker 占用；删除行不等于 InnoDB 卷缩小。
