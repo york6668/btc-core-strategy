@@ -114,10 +114,19 @@ def protected_documents(db):
 
 def allocated(paths):
     seen, total = set(), 0
-    for root in paths:
-        root = Path(root)
-        if not root.exists(): continue
-        for directory, _, files in os.walk(root, followlinks=False):
+    roots = []
+    for path in paths:
+        root = Path(path).resolve()
+        if not root.exists():
+            raise FileNotFoundError(root)
+        if any(root == parent or parent in root.parents for parent in roots):
+            continue
+        roots = [parent for parent in roots if root not in parent.parents]
+        roots.append(root)
+    def unreadable(error):
+        raise error  # An incomplete traversal is not a zero-size directory.
+    for root in roots:
+        for directory, _, files in os.walk(root, followlinks=False, onerror=unreadable):
             for name in files:
                 try:
                     item = Path(directory) / name
@@ -133,7 +142,13 @@ def allocated(paths):
 
 def maintain(db, *, apply=False, now=None):
     with db.writer():
-        return _maintain(db, apply=apply, now=now)
+        result = _maintain(db, apply=apply, now=now)
+    # Docker bind-mount traversal can take minutes. It is a capacity observation,
+    # not a business mutation; never keep the node writer locked while walking
+    # the evidence, backup and compatibility directories.
+    measure_capacity(db, now=now)
+    result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*') if p.is_file())
+    return result
 
 
 def _maintain(db, *, apply, now):
@@ -237,20 +252,6 @@ def _maintain(db, *, apply, now):
             for row in garbage:
                 db.execute('DELETE FROM blobs WHERE digest=%s', (row['digest'],))
             db.metadata('maintenance', result, write=True)
-        daily = db.metadata('capacity.daily') or []
-        day = datetime.fromtimestamp(now_ms / 1000, ZoneInfo('Asia/Tokyo')).date().isoformat()
-        total = int(db.one('SELECT COALESCE(SUM(byte_length),0) AS bytes FROM blobs')['bytes'])
-        paths = [db.blobs.root, *db.settings.get('capacity_paths', [])]
-        real_bytes = allocated(paths)
-        db_bytes = db.one('SELECT COALESCE(SUM(data_length+index_length),0) AS bytes FROM information_schema.tables WHERE table_schema=DATABASE()')['bytes']
-        record = {'day': day, 'at_ms': now_ms, 'unique_content_bytes': total,
-                  'allocated_file_bytes': real_bytes, 'mysql_table_allocated_bytes': int(db_bytes)}
-        history = [r for r in daily if r['day'] != day]
-        if history:
-            record['net_growth_bytes'] = total - history[-1]['unique_content_bytes']
-            if 'allocated_file_bytes' in history[-1]:
-                record['allocated_file_growth_bytes'] = real_bytes - history[-1]['allocated_file_bytes']
-        db.metadata('capacity.daily', (history + [record])[-401:], write=True)
     if apply:
         for row in garbage:
             db.blobs.path(row['digest']).unlink(missing_ok=True)
@@ -261,10 +262,30 @@ def _maintain(db, *, apply, now):
             digest = path.parent.name + path.name
             if re.fullmatch('[a-f0-9]{64}', digest) and digest not in registered and path.stat().st_mtime_ns // 1000000 <= now_ms - grace:
                 path.unlink()
-    # These are actual allocated bytes, not a promise that deleting InnoDB
-    # rows has shrunk the volume. Host capacity collection adds Docker stats.
-    result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*') if p.is_file())
     return result
+
+
+def measure_capacity(db, *, now=None):
+    started = millis()
+    real_bytes = allocated([db.blobs.root, *db.settings.get('capacity_paths', [])])
+    # Record the measurement interval because live analysis can keep writing
+    # during the walk. No unreadable path produces a successful zero sample.
+    with db.writer(), db.transaction():
+        now_ms = millis(now)
+        daily = db.metadata('capacity.daily') or []
+        day = datetime.fromtimestamp(now_ms / 1000, ZoneInfo('Asia/Tokyo')).date().isoformat()
+        total = int(db.one('SELECT COALESCE(SUM(byte_length),0) AS bytes FROM blobs')['bytes'])
+        db_bytes = db.one('SELECT COALESCE(SUM(data_length+index_length),0) AS bytes FROM information_schema.tables WHERE table_schema=DATABASE()')['bytes']
+        record = {'day': day, 'at_ms': now_ms, 'measurement_started_ms': started,
+                  'unique_content_bytes': total, 'allocated_file_bytes': real_bytes,
+                  'mysql_table_allocated_bytes': int(db_bytes)}
+        history = [r for r in daily if r['day'] != day]
+        if history:
+            record['net_growth_bytes'] = total - history[-1]['unique_content_bytes']
+            if 'allocated_file_bytes' in history[-1]:
+                record['allocated_file_growth_bytes'] = real_bytes - history[-1]['allocated_file_bytes']
+        db.metadata('capacity.daily', (history + [record])[-401:], write=True)
+    return record
 
 
 def prune_backups(root, *, now_ms, keep_days):

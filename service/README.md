@@ -40,6 +40,8 @@ reader 的 SQLite 兼容挂载允许共享内存协调文件写入，catalog 连
 
 宿主每天运行 `service/node_capacity.py --node <现有 node.json>` 保存 Docker 实际用量。node.native_logs 逐项指定项目日志的 path、launchd_label、max_bytes 和 keep_files；仅在对应任务空闲时轮转，运行中留待下次。node.capacity_extra_paths 明确列出迁移缓冲等额外占用，不能扫描或清理 Codex 全局历史及其他项目。
 
+容器容量遍历在清理事务和节点写锁之外进行，记录测量起止时段；统计备份和证据时跳过重复的子目录遍历，并按 inode 去重。分析与 reader 可在容量测量期间正常写入；引用检查、回收及短暂的统计提交仍保留写锁。缺失或不可读的配置路径使本次统计失败，不能记作零占用。
+
 ## 持续验证
 
 `python3 -B service/check.py --docker <实际 Docker CLI>` 创建临时 MySQL/core 节点，临时生成输入，实际执行 CLI/MCP、原分析 prepare/observe、并发和版本冲突、来源修订、期限复核、事实分离、生命周期、备份/空库恢复、中断恢复、数据库停机及容器重启；逐表内容与 CAS 在恢复前后逐项一致。结束只清理该临时节点。缺 Docker/MySQL 不跳过或伪装通过。

@@ -479,6 +479,35 @@ class NodeContract(unittest.TestCase):
         self.assertFalse(self.db.blobs.path(unneeded).exists())
         self.assertIsNone(self.db.one('SELECT digest FROM blobs WHERE digest=%s', (unneeded,)))
 
+    def test_capacity_walk_allows_live_writes_and_rejects_incomplete_measurement(self):
+        from btc_node.lifecycle import allocated
+        written = []
+        def measure(paths):
+            other = Database(self.settings)
+            try:
+                with other.writer(timeout=0), other.transaction():
+                    written.append(other.put_blob(encode({'concurrent': self.id})))
+            finally:
+                other.close()
+            return allocated(paths)
+        with patch('btc_node.lifecycle.allocated', side_effect=measure):
+            maintain(self.db, apply=True)
+        self.assertEqual(len(written), 1)
+        self.assertEqual(self.db.value(written[0]), {'concurrent': self.id})
+        self.assertIn('measurement_started_ms', self.db.metadata('capacity.daily')[-1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); child = root/'child'; child.mkdir()
+            (child/'value').write_text(self.id)
+            original = os.walk
+            with patch('btc_node.lifecycle.os.walk', wraps=original) as walk:
+                self.assertEqual(allocated([child, root, child]), (child/'value').stat().st_blocks * 512)
+                self.assertEqual(walk.call_count, 1)
+            def denied(path, *, followlinks, onerror):
+                onerror(PermissionError('unreadable generated directory'))
+            with patch('btc_node.lifecycle.os.walk', side_effect=denied):
+                with self.assertRaises(PermissionError): allocated([root])
+            with self.assertRaises(FileNotFoundError): allocated([root/'missing'])
+
     def test_catalog_roundtrip_preserves_bytes_sqlite_blobs_cursor_and_unknown(self):
         with tempfile.TemporaryDirectory() as folder:
             source, restored = Path(folder)/'source', Path(folder)/'restored'
