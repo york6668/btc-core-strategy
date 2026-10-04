@@ -229,8 +229,8 @@ class Entities:
         now_ms = millis(at)
         rows = self.db.rows('SELECT e.*,EXISTS(SELECT 1 FROM review_requirements r '
                             'WHERE r.entity_key=e.entity_key AND r.resolved_ms IS NULL) AS dependency_changed '
-                            "FROM entities e WHERE e.scope=%s AND e.active=1 AND e.kind<>'REVIEW' AND "
-                            '(e.review_at_ms<=%s OR e.valid_until_ms<=%s OR EXISTS '
+                            "FROM entities e WHERE e.scope=%s AND e.kind<>'REVIEW' AND "
+                            '((e.active=1 AND (e.review_at_ms<=%s OR e.valid_until_ms<=%s)) OR EXISTS '
                             '(SELECT 1 FROM review_requirements r WHERE r.entity_key=e.entity_key '
                             'AND r.resolved_ms IS NULL)) AND e.entity_key>%s ORDER BY e.entity_key LIMIT %s',
                             (scope, now_ms, now_ms, after or '', limit + 1))

@@ -140,6 +140,72 @@ class NodeContract(unittest.TestCase):
         self.assertIn(plan['object_id'], [row['object_id'] for row in due])
         self.assertIn(hypothesis['object_id'], [row['object_id'] for row in due])
 
+    def test_formal_plan_replacement_preserves_deadline_history_and_pending_outcome(self):
+        from btc_node.projection import Projection
+        from btc_node.execution import full_context
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'decision.json'
+            source.write_text(json.dumps({'generated': self.id}))
+            projection = Projection(self.db, 'generated-method')
+            def binding(suffix, hours):
+                value = projection.put('DECISION', self.id + suffix, {'generated': suffix}, source,
+                                       self.at(hours), active=False)
+                return {field: value[field] for field in ('object_id', 'version', 'digest')}
+            first, second = binding('first', 12), binding('second', 2)
+            name = self.id + '-side'
+            legacy_id = 'recommendation:' + name
+            old_plan = {'validity': {'until': self.at(6)}, 'execution': 'CONDITIONAL', 'filled': None}
+            new_plan = {**old_plan, 'validity': {'until': self.at(-24)}}
+            legacy = projection.put('PLAN', legacy_id,
+                {'market_binding': second, 'recommendation': new_plan}, source, self.at(1),
+                scope='PERSONAL', expires=old_plan['validity']['until'])
+            legacy_bytes = self.db.blobs.get(legacy['digest'])
+            # The original formal record still carries its own deadline. The
+            # legacy mixed object remains intact until the present correction.
+            projection.plans({name: old_plan}, first, source, self.at(12), adopted_at=self.at(12))
+            projection.plans({name: new_plan}, second, source, self.at(), adopted_at=self.at(2),
+                             fact_fields={'current_fact_version': {'generated': 'v1'}})
+            active_id = 'recommendation:' + name + ':' + second['object_id']
+            retired_id = 'recommendation:' + name + ':' + first['object_id']
+            active = self.objects.get('PLAN', active_id)
+            retired = self.objects.get('PLAN', retired_id)
+            self.assertEqual(active['valid_until'], new_plan['validity']['until'])
+            self.assertEqual(active['payload']['recommendation']['filled'], None)
+            self.assertFalse(retired['active'])
+            self.assertEqual(retired['valid_until'], old_plan['validity']['until'])
+            self.assertEqual(retired['payload']['superseded_by'], active_id)
+            self.assertEqual(self.db.blobs.get(legacy['digest']), legacy_bytes)
+            self.assertTrue(self.objects.get('PLAN', legacy_id, as_of=self.at(0.5))['active'])
+            self.assertFalse(self.objects.get('PLAN', legacy_id)['active'])
+            self.assertEqual(self.objects.get('PLAN', legacy_id)['valid_until'], legacy['valid_until'])
+            due_ids = [row['object_id'] for row in self.objects.due(scope='PERSONAL', limit=500)['objects']]
+            self.assertIn(legacy_id, due_ids)
+            self.assertIn(retired_id, due_ids)
+            self.assertNotIn(active_id, due_ids)
+            context = full_context(self.db, 'PERSONAL')
+            self.assertIn(active_id, [row['object_id'] for row in context['objects']])
+            self.assertNotIn(legacy_id, [row['object_id'] for row in context['objects']])
+            self.assertIn(retired['entity_key'], [row['entity_key'] for row in context['requirements']])
+            version = active['version']
+            projection.plans({name: new_plan}, second, source, self.at(), adopted_at=self.at(2),
+                             fact_fields={'current_fact_version': {'generated': 'v1'}})
+            self.assertEqual(self.objects.get('PLAN', active_id)['version'], version)
+            projection.plans({name: new_plan}, second, source, self.at(), adopted_at=self.at(2),
+                             fact_fields={'current_fact_version': {'generated': 'v2'}}, due=self.at())
+            self.assertEqual(self.objects.get('PLAN', active_id)['valid_until'], active['valid_until'])
+            self.assertEqual(self.objects.get('PLAN', active_id)['object_id'], active_id)
+            # A late immutable source cannot revive the retired plan or displace
+            # the replacement, even when it was not imported previously.
+            late = binding('late', 10)
+            projection.plans({name: old_plan}, late, source, self.at(10), adopted_at=self.at(10))
+            self.assertFalse(self.objects.get('PLAN', 'recommendation:' + name + ':' + late['object_id'])['active'])
+            self.assertTrue(self.objects.get('PLAN', active_id)['active'])
+            projection.plans({name: old_plan}, first, source, self.at(), adopted_at=self.at(12))
+            self.assertFalse(self.objects.get('PLAN', retired_id)['active'])
+            with self.assertRaises(Conflict):
+                changed = {**new_plan, 'validity': {'until': self.at(-48)}}
+                projection.plans({name: changed}, second, source, self.at(), adopted_at=self.at(2))
+
     def test_fact_scope_cannot_overwrite_independent_market_or_unknown_values(self):
         fact = self.spec('FACT_PROJECTION', scope='PERSONAL', payload={'cash': None, 'margin': None})
         with self.assertRaises(ValueError):

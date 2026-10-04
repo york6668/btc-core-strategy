@@ -53,11 +53,8 @@ def project_history(projection, root):
                     'fact_version':value['fact_version'], 'portfolio_analysis':assessment.get('portfolio_analysis'),
                     'portfolio':assessment.get('recommendations',{}).get('portfolio'),
                     'fact_authority':'bound source version'}, path, value['created_at'], scope='PERSONAL')
-                for name, plan in assessment.get('recommendations',{}).items():
-                    if name == 'portfolio': continue
-                    projection.put('PLAN', 'recommendation:'+name, {'market_binding':binding,
-                        'fact_version':value['fact_version'], 'recommendation':plan}, path, value['created_at'],
-                        scope='PERSONAL', expires=(plan.get('validity') or {}).get('until'))
+                projection.plans(assessment.get('recommendations', {}), binding, path, value['created_at'],
+                                 adopted_at=value['created_at'], fact_fields={'fact_version': value['fact_version']})
                 for factor in public['factor_assessment'].get('items', []):
                     projection.put('FACTOR', factor['id'], factor, path, value['created_at'])
             else:

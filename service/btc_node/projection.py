@@ -149,6 +149,81 @@ class Projection:
                          expires=judgement.get('end'), dependencies=[market_dependency], outcome_review=reviewed)
         return result
 
+    def plans(self, recommendations, binding, source, known, *, adopted_at,
+              fact_fields=None, due=None, dependencies=()):
+        """A formal adoption owns its plans; a side name is not a plan identity.
+
+        Re-reading that adoption reuses its objects. A replacement never extends
+        the old plan's deadline or supplies its missing outcome evaluation.
+        """
+        decision_id = binding['object_id']
+        existing, after = [], None
+        while True:
+            page = self.objects.list(scope='PERSONAL', kind='PLAN', active=None, limit=500, after=after)
+            existing.extend(self.objects.get('PLAN', row['object_id']) for row in page['objects']
+                            if row['object_id'].startswith('recommendation:'))
+            after = page['next']
+            if not after:
+                break
+        basis = {'type': 'ENTITY', 'kind': 'DECISION', 'object_id': decision_id,
+                 'version': binding['version'], 'digest': binding['digest'], 'relation': 'FORMAL_PLAN_BASIS'}
+        current_ids = {}
+        for name, plan in recommendations.items():
+            if name == 'portfolio':
+                continue
+            object_id = 'recommendation:' + name + ':' + decision_id
+            current_ids[name] = object_id
+            previous = self.objects.get('PLAN', object_id)
+            expires = (plan.get('validity') or {}).get('until')
+            if previous and previous['active'] and previous.get('valid_until') != expires:
+                # Do not pair changed source content with the guarded old clock.
+                raise Conflict('formal plan identity has a different deadline; preserve its outcome review')
+            payload = {'formal_decision_id': decision_id, 'formal_created_at': adopted_at,
+                       'recommendation_name': name, 'market_binding': binding,
+                       'recommendation': plan, **(fact_fields or {})}
+            self.put('PLAN', object_id, payload, source, known, observed=adopted_at,
+                     scope='PERSONAL', due=due, expires=expires,
+                     dependencies=[basis, *dependencies])
+
+        newer = [old for old in existing if old['payload'].get('formal_created_at')
+                 and millis(old['payload']['formal_created_at']) > millis(adopted_at)]
+        if newer:
+            # A late historical source gets its original version, then the known
+            # replacement. It cannot retire or revive the current formal plans.
+            successor = max(newer, key=lambda old: millis(old['payload']['formal_created_at']))
+            superseding = successor['payload']['market_binding']
+            at = successor['payload']['formal_created_at']
+            for name, object_id in current_ids.items():
+                replacements = [old for old in newer if old['payload'].get('recommendation_name') == name
+                                and old['payload']['formal_decision_id'] == superseding['object_id']]
+                self.retire_plan(self.objects.get('PLAN', object_id), source,
+                                 max(known, at, key=millis), superseding,
+                                 replacements[0]['object_id'] if replacements else None)
+            return
+        for old in existing:
+            if old['object_id'] in current_ids.values() or not old['active'] or old['known_ms'] > millis(known):
+                continue
+            name = old['payload'].get('recommendation_name') or old['object_id'].removeprefix('recommendation:')
+            self.retire_plan(old, source, known, binding, current_ids.get(name))
+
+    def retire_plan(self, old, source, known, binding, replacement):
+        if not old['active'] or old['known_ms'] > millis(known):
+            return
+        payload = {**old['payload'], 'superseded_by': replacement,
+                   'superseding_decision': binding, 'outcome_inferred': False}
+        self.put('PLAN', old['object_id'], payload, source, known, scope='PERSONAL',
+                 observed=known, active=False, due=old.get('review_at'), expires=old.get('valid_until'),
+                 dependencies=old['dependencies'])
+        if old.get('valid_until') and millis(old['valid_until']) <= millis(known):
+            # Retirement is an applicability change, not an outcome review. Keep
+            # the original version as a pending subject, including legacy IDs.
+            requirement = identity(old['entity_key'], 'PLAN_OUTCOME', old['version'])
+            self.db.execute('INSERT IGNORE INTO review_requirements(requirement_key,entity_key,cause_key,'
+                            'cause_version,reason,opened_ms) VALUES(%s,%s,%s,%s,%s,%s)',
+                            (requirement, old['entity_key'], old['entity_key'], old['version'],
+                             'Superseded plan requires outcome review of original deadline ' + old['valid_until'] +
+                             '; replacement implies neither realization nor execution.', millis(known)))
+
     def refresh(self, project, root):
         # Import only through the real validators and current-pointer authority.
         from v4 import storage, market_state, research, delivery
@@ -201,14 +276,11 @@ class Projection:
                  'portfolio': assessment.get('recommendations', {}).get('portfolio'),
                  'fact_authority': 'bound source version'}, source, checked_time, observed=frozen_time,
                  due=review_due, scope='PERSONAL', dependencies=fact_dependencies)
-        for name, plan in assessment.get('recommendations', {}).items():
-            if name == 'portfolio':
-                continue
-            validity = plan.get('validity') or {}
-            self.put('PLAN', 'recommendation:' + name, {'market_binding': binding, 'recommendation': plan,
-                     'fact_review': 'CURRENT' if match else 'REQUIRED', 'current_fact_version': fact_version},
-                     source, checked_time, observed=frozen_time, due=review_due, scope='PERSONAL',
-                     expires=validity.get('until'), dependencies=fact_dependencies)
+        if binding:
+            self.plans(assessment.get('recommendations', {}), binding, source, checked_time,
+                       adopted_at=frozen_time, due=review_due, dependencies=fact_dependencies,
+                       fact_fields={'fact_review': 'CURRENT' if match else 'REQUIRED',
+                                    'fact_version': decision['fact_version'], 'current_fact_version': fact_version})
         for issue in research.context(root)['issues']:
             # Full research context can contain portfolio findings. Existing
             # independent-phase material is still prepared by the native contract.
