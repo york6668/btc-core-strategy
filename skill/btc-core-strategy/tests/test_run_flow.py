@@ -12,6 +12,22 @@ from v4.common import Invalid, create, read, digest, facts
 
 
 class RunFlowTests(unittest.TestCase):
+    def test_waiting_attempt_is_history_only_through_prepare_and_report_material(self):
+        waiting = {'delivery_id':'HISTORICAL_DELIVERY', 'attempt_id':'HISTORICAL_ATTEMPT',
+            'state':'UNKNOWN', 'next_action':'WAIT_FOR_NEW_EVIDENCE', 'blocks_new_reports':False}
+        active = dict(waiting, delivery_id='NEW_DELIVERY', attempt_id='NEW_ATTEMPT', next_action='READ_BACK_THIS_ATTEMPT')
+        with mock.patch('v4.delivery.attempt_recovery', return_value=[waiting, active]):
+            prepared = self.prep()
+            brief = read(prepared['context'])
+            self.assertEqual(brief['pending_delivery'], [active])
+            self.assertEqual(brief['attempt_recovery'], [active])
+            self.assertEqual(read(self.d/'recovery.json')['attempt_recovery'], [waiting, active])
+            output, _ = self.observe()
+            self.assertEqual(output['delivery_recovery'], [active])
+            report = read(output['report_context'])
+            self.assertEqual(report['pending_delivery'], [active])
+            self.assertNotIn('HISTORICAL_ATTEMPT', str(report))
+
     def test_partial_prepare_explicitly_resumes_original_snapshot_without_collection(self):
         from v4 import collector
         snapshot = {'schema':collector.SCHEMA,'role':'auxiliary_observation',

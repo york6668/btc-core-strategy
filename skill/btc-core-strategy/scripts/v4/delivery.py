@@ -1,11 +1,11 @@
 """Durable source/presentation journal. This module never sends a cloud message."""
-from collections import Counter
+from collections import Counter, deque
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 import re
 
-from .common import create, digest, exact, instant, locked, now, read, replace, require, text
+from .common import Invalid, create, digest, exact, instant, locked, now, read, replace, require, text
 from .storage import current
 from .report import INTERNAL, freeze_body
 from .authored_report import FORMAT as AUTHORED_FORMAT
@@ -379,22 +379,110 @@ def _check_recovery_budget(root, run_ref, destination):
                     'one recovery resend per run and destination; delivery exception remains open')
 
 
+def _unconfirmed_readback(outbox, record):
+    """Only a recorded read after the latest transport/binding can defer work."""
+    since = instant(record['attempt']['started_at'])
+    for field, timestamp in (('transport_receipt', 'recorded_at'), ('request_binding', 'request_started_at')):
+        if record.get(field):
+            value = read(outbox / record[field])
+            if value.get(timestamp):
+                since = max(since, instant(value[timestamp]))
+    found = []
+    for name in record.get('unknown_readbacks', []):
+        value = read(outbox / name)
+        if (value.get('schema') == 'BTC_UNCONFIRMED_READBACK_V1'
+                and value.get('attempt_id') == record['attempt']['attempt_id']
+                and value.get('record_refs') and all(isinstance(v, str) and v for v in value['record_refs'])
+                and name == 'unconfirmed-readback-' + digest(value)[7:] + '.json'
+                and instant(value['checked_at']) >= since):
+            found.append((instant(value['checked_at']), str(outbox / name)))
+    return max(found)[1] if found else None
+
+
+def _delivered_coverage(root, identity, deliveries, successors, verified):
+    """Find a validated same-report or explicit coverage path; never infer meaning."""
+    artifact = deliveries[identity][0]
+    original = artifact.get('source', {}).get('report_review', {}).get('review_id')
+    queue = deque([(original, [])])
+    seen = set()
+    while queue:
+        review_id, chain = queue.popleft()
+        if review_id in seen:
+            continue
+        seen.add(review_id)
+        for other, (candidate, status) in deliveries.items():
+            same_review = review_id and candidate.get('source', {}).get('report_review', {}).get('review_id') == review_id
+            if (not same_review and other != identity) or status['state'] != 'DELIVERED':
+                continue
+            if candidate['destination'] != artifact['destination']:
+                continue
+            if other not in verified:
+                try:
+                    validate_delivered(root, other)
+                    verified[other] = True
+                except (Invalid, OSError, ValueError, KeyError, TypeError):
+                    verified[other] = False
+            if verified[other]:
+                return {'delivery_id': other, 'coverage_review_ids': chain,
+                        'receipt_ref': str(root / 'outbox' / other / status['receipt'])}
+        for successor in successors.get(review_id, []):
+            queue.append((successor, chain + [successor]))
+    return None
+
+
 def attempt_recovery(root):
-    """Every uncertain attempt remains independently recoverable, including retries."""
+    """Read-only recovery classification; UNKNOWN history never becomes delivery."""
+    root = Path(root)
     result = []
+    deliveries, candidates = {}, []
     for path in sorted((Path(root) / 'outbox').glob('*/status.json')):
         s = read(path)
+        deliveries[path.parent.name] = (read(path.parent / 'artifact.json'), s)
         records = {key: read(path.parent / name) for key, name in s.get('attempt_records', {}).items()}
         if s.get('attempt'):
             records[s['attempt']['attempt_id']] = s
         for key, record in records.items():
             if record['state'] in ('SENDING', 'UNKNOWN', 'CORRECTION_REQUIRED'):
                 transport = read(path.parent / record['transport_receipt']) if record.get('transport_receipt') else None
-                result.append({'delivery_id': path.parent.name, 'attempt_id': key,
+                item = {'delivery_id': path.parent.name, 'attempt_id': key,
                                'state': record['state'], 'request_ref': record['attempt'].get('request_ref'),
                                'transport_status': (transport or {}).get('status', 'UNKNOWN'),
                                'next_action': 'WAIT_FOR_PROCESSING_THEN_READ_BACK' if transport and transport['status'] == 'PROCESSING' and record['state'] == 'SENDING' else 'READ_BACK_THIS_ATTEMPT',
-                               'blocks_new_reports': False})
+                               'blocks_new_reports': False}
+                result.append(item)
+                if record['state'] == 'UNKNOWN':
+                    evidence = _unconfirmed_readback(path.parent, record)
+                    if evidence:
+                        candidates.append((item, evidence))
+    if candidates:
+        from .reporting import review
+        reports = {p.stem: review(root, 'sha256:' + p.stem) for p in (root / 'report-reviews').glob('*.json')}
+        successors, verified = {}, {}
+        for value in reports.values():
+            if value['action'] != 'REPORT':
+                continue
+            for coverage in value.get('delivery_coverage', []):
+                prior = coverage['review_id']
+                if (prior[7:] in reports and reports[prior[7:]]['action'] == 'REPORT'
+                        and prior in value.get('supersedes', []) and coverage.get('explanation', '').strip()):
+                    successors.setdefault(prior, []).append(value['review_id'])
+        for item, evidence in candidates:
+            covered = _delivered_coverage(root, item['delivery_id'], deliveries, successors, verified)
+            if covered:
+                item.update(next_action='WAIT_FOR_NEW_EVIDENCE',
+                            recovery_evidence={'unconfirmed_readback_ref': evidence, **covered})
+    return result
+
+
+def recovery_actions(root, attempts=None):
+    """Operational view; complete historical attempts remain in attempt_recovery."""
+    attempts = attempt_recovery(root) if attempts is None else attempts
+    result = [deepcopy(v) for v in attempts if v['next_action'] != 'WAIT_FOR_NEW_EVIDENCE']
+    for path in sorted((Path(root) / 'outbox').glob('*/status.json')):
+        state = read(path)['state']
+        if state in ('PENDING', 'NOT_SENT_CONFIRMED'):
+            result.append({'delivery_id': path.parent.name, 'state': state,
+                           'next_action': 'REVIEW_EXISTING_DELIVERY', 'blocks_new_reports': False})
     return result
 
 

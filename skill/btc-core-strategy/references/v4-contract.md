@@ -189,6 +189,8 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 未确认的实际回读用 `UNKNOWN --receipt` 保存 `BTC_UNCONFIRMED_READBACK_V1={schema,attempt_id,checked_at,record_refs,detail}`。页面异常、只能读到旧游标或尚无完整助手正文在 detail 中如实区分，不能据此声称未派发。多次回读分别保留，重复同一回读幂等；晚到回读按原 attempt_id 登记，不覆盖后续尝试。
 
+`recover.attempt_recovery` 为完整历史，新增只读派生动作 `WAIT_FOR_NEW_EVIDENCE` 及 `recovery_evidence={unconfirmed_readback_ref,delivery_id,coverage_review_ids,receipt_ref}`。仅实际未确认回读及已验证送达的同稿/显式承接链可支持等待；新运输状态晚于该回读时恢复主动处理。`recover.delivery_recovery` 为主动清单，市场与报告材料复用同一分类，不再按 UNKNOWN 状态重新生成回读指令。不存在新的投递状态或历史迁移；原协议始终接受有效的晚到回读。无变化不重读、不重复通知的方法见 market-reporting。
+
 `SUPERSEDE_PENDING` 的收据为 `{schema:BTC_REPORT_REPLACEMENT_V1,replacement_delivery_id,reason}`，只替代未派发稿，新稿必须通过 delivery_coverage 显式覆盖旧 review_id；UNKNOWN 不使用此动作。report_delivery_obligations 与 attempt_recovery 分别恢复应报告义务和不确定请求，后续静默不清除二者。
 
 历史EvidenceBundle、revision 1/2/3/4评估及BTC_REPORT_V4不重写，旧V4回读依旧精确正文＋“已收录”。当前旧版保持可pin、复用与恢复，首次revision 5通过本轮实际市场及分歧区评估装配发布新版本；不自动补写过去的因子列表、覆盖情况或解释。迁移的历史深评不是新的专项结果；只有实际有结构化证据支持的问题才可迁移，本次不凭正文补造。

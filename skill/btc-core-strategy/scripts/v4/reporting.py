@@ -146,7 +146,7 @@ def reported(root):
 
 
 def context(root):
-    from . import sensing, storage
+    from . import sensing, storage, delivery
     root = Path(root)
     decision = storage.current(root)
     require(decision and decision.get('assessment'), 'complete strategy required for report context')
@@ -171,8 +171,8 @@ def context(root):
             unreported.append({'observation_id':item['observation_id'], 'observed_hour':item['observed_hour'],
                                'summary':item['review']['market_review']['assessment_summary']})
     unreported.sort(key=lambda x:(x['observed_hour'],x['observation_id']))
-    pending_deliveries = [{'delivery_id':p.parent.name,'state':read(p)['state']} for p in (root/'outbox').glob('*/status.json')
-               if read(p)['state'] not in ('DELIVERED','SUPERSEDED')]
+    attempts = delivery.attempt_recovery(root)
+    pending_deliveries = delivery.recovery_actions(root, attempts)
     current_facts = facts(root.parent.parent)
     identity = {'decision_id':decision['decision_id'], 'observation_id':observed['observation_id'],
                 'market_evidence_id':raw['evidence_id'], 'reported_identity':prior['identity'], 'display_delivery_id':prior.get('display_delivery_id'), 'fact_version':current_facts}
@@ -213,6 +213,7 @@ def context(root):
                            'baseline_decision_id':observed['context']['identity']['decision_id']},
             'metrics':metrics(raw,start), 'unreported':unreported[-240:], 'unreported_total':len(unreported),
             'unreported_truncated':len(unreported)>240,'pending_delivery':pending_deliveries,
+            'attempt_recovery': attempts,
             'pending_report_reviews':pending(root),
             'delivery_obligations':obligations(root),
             'required_report_events':required_events(root, cycle_context.get('cycle_baseline')),

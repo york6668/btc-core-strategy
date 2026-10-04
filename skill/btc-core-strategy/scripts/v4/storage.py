@@ -163,10 +163,12 @@ def recover(root):
         comparison = report_comparison(root, pinned['assessment'], pinned, pinned['review']['material_new_outlook'])
         required = [pinned['decision_id']] if comparison['report_required'] and pinned['decision_id'] not in queued else []
     from . import reporting, report_care, delivery
+    attempts = delivery.attempt_recovery(root)
     return {'report_care':report_care.status(root), 'current': (pinned or {}).get('decision_id'), 'reports_not_enqueued': required,
             'report_reviews_not_enqueued': reporting.pending(root),
             'report_delivery_obligations': reporting.obligations(root),
-            'attempt_recovery': delivery.attempt_recovery(root),
+            'attempt_recovery': attempts,
+            'delivery_recovery': delivery.recovery_actions(root, attempts),
             'report_review_required': reporting.review_required(root),
             'staging': sorted(p.name for p in (root / 'versions').glob('.staging-*')),
             'outbox': [{'delivery_id': p.parent.name, **read(p)} for p in sorted((root / 'outbox').glob('*/status.json'))]}

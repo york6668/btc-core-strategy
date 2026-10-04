@@ -9,6 +9,105 @@ from v4.common import read, create, digest, Invalid
 
 
 class DeliveryObligationTests(MarketReportingTests):
+    def unconfirmed(self, identity, checked='2030-03-01T15:09:00Z'):
+        attempt = read(self.root/'outbox'/identity/'status.json')['attempt']['attempt_id']
+        return delivery.transition(self.root, identity, 'UNKNOWN', {
+            'schema':'BTC_UNCONFIRMED_READBACK_V1', 'attempt_id':attempt,
+            'checked_at':checked, 'record_refs':['SYNTHETIC_BOUNDED_READ'],
+            'detail':'The bounded read does not contain this request; dispatch remains uncertain.'})
+
+    def replacement(self, old_source, meaning):
+        self.seq += 1
+        spec = self.spec(meaning=meaning)
+        spec['delivery_coverage'] = [{'review_id':old_source['report_review']['review_id'],
+            'explanation':'This replacement explicitly carries all still-important meaning of the old report.'}]
+        rid = reporting.record(self.root, spec)['review_id']
+        source = reporting.source(self.root, rid)
+        identity = delivery.enqueue(self.root, self.f.decision['decision_id'], self.f.destination, source)['delivery_id']
+        return identity, source
+
+    def test_covered_unknown_waits_readonly_across_runs_and_late_receipt_still_confirms(self):
+        old, source = self.queue(); self.begin(old, source)
+        late = self.f.receipt(old)
+        self.unconfirmed(old)
+        newer, new_source = self.replacement(source, 'Explicitly corrected report')
+        self.begin(newer, new_source); self.confirm(newer)
+        status_path = self.root/'outbox'/old/'status.json'
+        before, baseline = status_path.read_bytes(), read(self.root/'reported-current.json')
+        for _ in range(2):
+            recovered = storage.recover(self.root)
+            item = next(v for v in recovered['attempt_recovery'] if v['delivery_id'] == old)
+            self.assertEqual(item['state'], 'UNKNOWN')
+            self.assertEqual(item['next_action'], 'WAIT_FOR_NEW_EVIDENCE')
+            self.assertEqual(item['recovery_evidence']['delivery_id'], newer)
+            self.assertEqual(item['recovery_evidence']['coverage_review_ids'], [new_source['report_review']['review_id']])
+            self.assertFalse(recovered['delivery_recovery'])
+        self.assertEqual(status_path.read_bytes(), before)
+        self.assertEqual(read(self.root/'reported-current.json'), baseline)
+        delivery.transition(self.root, old, 'CONFIRM', late)
+        self.assertEqual(read(status_path)['state'], 'DELIVERED')
+        self.assertEqual(read(self.root/'reported-current.json'), baseline)
+
+    def test_pending_replacement_and_plain_later_report_do_not_defer_unknown(self):
+        old, source = self.queue(); self.begin(old, source); self.unconfirmed(old)
+        self.seq += 1
+        other, other_source = self.queue('Unrelated subsequent report')
+        self.begin(other, other_source); self.confirm(other)
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'READ_BACK_THIS_ATTEMPT')
+        newer, _ = self.replacement(source, 'Explicit but not yet delivered replacement')
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'READ_BACK_THIS_ATTEMPT')
+        self.assertTrue(reporting.obligations(self.root))
+        self.assertIn(newer, {v['delivery_id'] for v in delivery.recovery_actions(self.root)})
+
+    def test_multihop_coverage_requires_actual_readback_and_valid_receipt(self):
+        old, source = self.queue(); self.begin(old, source); delivery.transition(self.root, old, 'UNKNOWN')
+        middle, middle_source = self.replacement(source, 'Intermediate correction')
+        last, last_source = self.replacement(middle_source, 'Complete correction')
+        self.begin(last, last_source); self.confirm(last)
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'READ_BACK_THIS_ATTEMPT')
+        self.unconfirmed(old)
+        item = delivery.attempt_recovery(self.root)[0]
+        self.assertEqual(item['next_action'], 'WAIT_FOR_NEW_EVIDENCE')
+        self.assertEqual(item['recovery_evidence']['coverage_review_ids'],
+                         [middle_source['report_review']['review_id'], last_source['report_review']['review_id']])
+        with patch('v4.delivery.validate_delivered', side_effect=Invalid('damaged receipt')):
+            self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'READ_BACK_THIS_ATTEMPT')
+        # A malformed historical cycle must terminate without inventing delivery.
+        deliveries = {old:(read(self.root/'outbox'/old/'artifact.json'), read(self.root/'outbox'/old/'status.json'))}
+        rid = source['report_review']['review_id']
+        self.assertIsNone(delivery._delivered_coverage(self.root, old, deliveries, {rid:['cycle'], 'cycle':[rid]}, {}))
+
+    def test_new_transport_reopens_covered_unknown_until_read_again(self):
+        old, source = self.queue(); self.begin(old, source); self.unconfirmed(old)
+        newer, new_source = self.replacement(source, 'Confirmed correction')
+        self.begin(newer, new_source); self.confirm(newer)
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'WAIT_FOR_NEW_EVIDENCE')
+        attempt = read(self.root/'outbox'/old/'status.json')['attempt']['attempt_id']
+        delivery.transition(self.root, old, 'ACKNOWLEDGE', {'schema':'BTC_TRANSPORT_RECEIPT_V1',
+            'attempt_id':attempt, 'recorded_at':'2030-03-01T15:10:00Z', 'status':'FAILED',
+            'record_refs':['SYNTHETIC_NEW_TRANSPORT'], 'detail':'New provider failure evidence for this original request.'})
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'READ_BACK_THIS_ATTEMPT')
+        self.unconfirmed(old, '2030-03-01T15:11:00Z')
+        self.assertEqual(delivery.attempt_recovery(self.root)[0]['next_action'], 'WAIT_FOR_NEW_EVIDENCE')
+
+    def test_successful_same_report_retry_defers_only_the_read_original_attempt(self):
+        identity, source = self.queue(); self.begin(identity, source)
+        original = self.unconfirmed(identity)['attempt']['attempt_id']
+        retried = delivery.transition(self.root, identity, 'RETRY_UNKNOWN', self.retry_spec(identity))
+        attempt = retried['attempt']
+        delivery.transition(self.root, identity, 'BIND_REQUEST', {
+            'schema':'BTC_SENT_REQUEST_V1', 'attempt_id':attempt['attempt_id'],
+            'destination':self.f.destination, 'request_ref':'CONFIRMED_RETRY_REQUEST',
+            'record_refs':['CONFIRMED_RETRY_REQUEST'], 'request_body':source['body'],
+            'anchor_ref':attempt['anchor_ref'], 'request_started_at':'2030-03-01T15:10:01Z'})
+        self.confirm(identity)
+        pending = delivery.attempt_recovery(self.root)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]['attempt_id'], original)
+        self.assertEqual(pending[0]['next_action'], 'WAIT_FOR_NEW_EVIDENCE')
+        self.assertEqual(pending[0]['recovery_evidence']['coverage_review_ids'], [])
+        self.assertFalse(delivery.recovery_actions(self.root, pending))
+
     def test_transport_acceptance_and_processing_are_not_display_or_retry_permission(self):
         identity,source=self.queue();self.begin(identity,source)
         status=read(self.root/'outbox'/identity/'status.json')

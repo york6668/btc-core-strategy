@@ -21,7 +21,7 @@ CLI `continuity.market_binding` 仅表示本轮已冻结市场结果，与 `cont
 3. 重要对象保留资产与周期、首次识别时间、证据及版本、支持和反证、重要变化、下一复核条件、依赖和替代关系。退出/撤回不能以旧锚保留为由恢复；新对象显式关联替代的退休对象。
 4. `conditions.due` 同时列出到期与依赖变化。旧前瞻期限到期必须实际评价原窗口，在 `REVIEW` 保存 subject（含原 version）、outcome、explanation 与证据；只有 REALIZED / FAILED / REVISE 的实际结果复核才能改原期限。PENDING / EVIDENCE_LIMITED 仍有待办，不能滚动延期或解除对应依赖复核。`review.resolve` 只接受覆盖对应 requirement 和当前版本的有依据实际复核。`REVIEW` 保存某次复核结果，程序按历史记录处理；未决工作仍挂在原 subject，不对历史复核再创建复核。默认活跃上下文不列历史 REVIEW，按需用 `object.list` 显式指定 kind=REVIEW、active=null，或按 ID/version 读取原结果；旧 active 标志和误生成的复核关系保留可查。来源纠错仍沿历史复核关系传递到实际活跃消费者。未进报告的条件同样维护。
 5. 个人阶段先核对三份确认文件的 exact fact_version，再用 `facts.project` 提交带文件、行范围和原文 quote 的持仓、操作、目标、偏好与约束视图；模型实际核对语义。派生估值、资金占用、保证金、名义敞口和风险属于 ALLOCATION，不能写成持仓事实；UNKNOWN 保持未知。建议存 PLAN，价格或模型判断不修改确认文件。
-6. 研究沿原 issue/request/progress 继续，复用完成成果及正式采纳关系。纠偏绑定受影响对象与证据版本，复核依赖项并保留有效部分。DELIVERY 只能由既有真实发送和助手回读协议投影，MCP 不能直接标为已送达。UNKNOWN 沿原请求核对，不能重放旧正文。
+6. 研究沿原 issue/request/progress 继续，复用完成成果及正式采纳关系。纠偏绑定受影响对象与证据版本，复核依赖项并保留有效部分。DELIVERY 只能由既有真实发送和助手回读协议投影，MCP 不能直接标为已送达。UNKNOWN 沿原请求核对，不能重放旧正文。投影的 recovery 与核心恢复分类一致；只有 WAIT_FOR_NEW_EVIDENCE 的历史项不进入默认活跃上下文，active 和原 UNKNOWN 仍保留，可用 object.get/history 或显式 kind=DELIVERY 查询。新主动尝试仍正常列出，等待项无变化不回读或重复通知。
 
 报告消费已完成的市场判断、配置结果和重要业务变化；对象维护不依赖报告出现次数。旧 v4 字段仍由原 validator 验证，结构化服务补充跨轮次查询及未决条件，不把旧混合正文标作独立市场结论。
 

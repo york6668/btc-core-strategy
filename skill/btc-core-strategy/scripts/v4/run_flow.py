@@ -334,10 +334,10 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
             'event_cycle': ctx.get('event_cycle'), 'research': ctx.get('research'),
             'next_evidence': (core.get('outlook') or {}).get('semantic', {}).get('next_evidence'),
             'report_care': report_care.status(root, run_ref=run_ref), 'last_actual_report': reporting.reported(root),
-            'pending_delivery': [v for v in recovery['outbox'] if v['state'] not in ('DELIVERED', 'SUPERSEDED')],
+            'pending_delivery': recovery['delivery_recovery'],
             'pending_report_reviews': recovery['report_reviews_not_enqueued'],
             'delivery_obligations': recovery['report_delivery_obligations'],
-            'attempt_recovery': recovery['attempt_recovery'],
+            'attempt_recovery': [v for v in recovery['attempt_recovery'] if v['next_action'] != 'WAIT_FOR_NEW_EVIDENCE'],
             'paths': {'full_decision': str(root / 'versions' / pinned['decision_id'] / 'decision.json'),
                       'market_summary': str(directory / 'market-summary.json'),
                       'reference_index': str(directory / 'reference-index.json'), 'raw': raw_path}}
@@ -361,7 +361,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                     'progress': item['latest_request']['progress'], 'adopted_result': item.get('adopted_result'),
                     'completed_result': item.get('completed_result'), 'pending_candidates': item.get('pending_candidates', [])}
                     for item in ctx['research']['issues']],
-                'delivery_attempts': recovery['attempt_recovery'],
+                'delivery_attempts': [v for v in recovery['attempt_recovery'] if v['next_action'] != 'WAIT_FOR_NEW_EVIDENCE'],
                 'undelivered_reports': len(recovery['report_delivery_obligations']),
                 'delivery_details_stage': 'report'}
             save(directory / 'market-template.json', market_template(ctx, raw))
@@ -469,10 +469,7 @@ def phase_material(run, label, stage='report'):
     reads = {'report': material_reads.make(d, 'report', brief_path, base=None if ctx.get('market_revision', 0) >= 6 else base_reads,
                 required={'report_template': template_path},
                 on_demand=({**extra} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path, **extra}))}
-    recovery = [{'delivery_id': v['delivery_id'], 'state': v['state'],
-                 'next_action': 'READ_BACK_EXISTING_ATTEMPT' if v['state'] in ('SENDING','UNKNOWN') else 'REVIEW_EXISTING_DELIVERY',
-                 'blocks_new_reports': False}
-                for v in ctx['pending_delivery']]
+    recovery = ctx['pending_delivery']
     return {'report_context': brief_path, 'report_template': template_path, **extra,
             'delivery_recovery': recovery, 'delivery_obligations': ctx['delivery_obligations'],
             'next_material': {'main': 'run-material --stage main', 'body': 'run-material --stage report-body'},

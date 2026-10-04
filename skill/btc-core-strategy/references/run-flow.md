@@ -10,6 +10,8 @@
 
 ## 正常路径
 
+投递恢复消费统一的 `delivery_recovery` 主动清单。完整 `attempt_recovery` 中的 `WAIT_FOR_NEW_EVIDENCE` 及其依据仅供按需历史查询，不能因原 state=UNKNOWN 在市场或报告阶段重新安排回读。没有新关联证据时，最终回复与 inbox 不重复此历史异常；原版本收到实际新运输状态、回复证据或用户明确复查时仍可恢复。未完成报告义务与新异常继续正常处理，详见[交付恢复](market-reporting.md#历史-unknown-的恢复与提醒)。
+
 Docker 节点返回 `continuity.public_context` 与冻结后的 `continuity.personal_context`，按[持续分析契约](continuous-analysis.md)在对应阶段读取；用稳定对象 ID、版本与证据提交观察和重要变化。历史查询使用事件窗口及 as_of，价格辅助材料保留原产品和单位。报告没提及的前瞻期限、计划条件、研究和纠偏仍由同一轮复核，不以复制上一小时整套内容代替进展。
 
 分析沿[前瞻复核主线](core-strategy.md#前瞻复核主线)：有效论点基线 → 新增及累积变化 → 因果与当前定价复核 → 下一验证。研究积累与最后真实送达是不同基线。先核对材料中的 comparison_baselines 和 pending_work，再读本阶段必要证据；它们由现有状态派生，不产生第二份结论。

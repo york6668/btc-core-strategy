@@ -200,7 +200,20 @@ class Entities:
         args.append(limit)
         rows = self.db.rows('SELECT * FROM entities WHERE ' + ' AND '.join(clauses) +
                             ' ORDER BY entity_key LIMIT %s', tuple(args))
-        return {'objects': rows, 'next': rows[-1]['entity_key'] if len(rows) == limit else None}
+        cursor = rows[-1]['entity_key'] if len(rows) == limit else None
+        if active is True and kind is None:
+            visible = []
+            for row in rows:
+                if row['kind'] == 'DELIVERY':
+                    recovery = self.get('DELIVERY', row['object_id'])['payload'].get('recovery') or {}
+                    attempts = recovery.get('attempts', [])
+                    if (attempts and not recovery.get('actions')
+                            and all(v.get('next_action') == 'WAIT_FOR_NEW_EVIDENCE' for v in attempts)):
+                        continue
+                visible.append(row)
+            rows = visible
+        # Cursor follows scanned rows even when a waiting delivery is omitted.
+        return {'objects': rows, 'next': cursor}
 
     def history(self, kind, object_id, *, after=0, limit=100):
         if not 1 <= limit <= 500:

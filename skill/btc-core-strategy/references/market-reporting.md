@@ -66,6 +66,14 @@ BEGIN 只核验本稿当前有效性。其他稿的 SENDING/UNKNOWN 不再锁住
 
 recover 分别返回 report_delivery_obligations（包括已入队但未送达）和 attempt_recovery（按 attempt_id 保留旧请求）；report_reviews_not_enqueued 仅是未入队兼容视图。CONFIRM/repair-completion 可修复本地确认中断。每次尝试、绑定和实际回读独立保存，晚到旧回读核验自己的 attempt_id，不替换新尝试的请求绑定，也不倒退已报告覆盖或展示顺序。
 
+### 历史 UNKNOWN 的恢复与提醒
+
+`attempt_recovery` 保留全部未确认尝试，`delivery_recovery` 只列本轮需要主动处理的项。只有 UNKNOWN 已保存实际未确认回读，且同稿或经显式 `delivery_coverage` 承接链到达已验证送达稿时，才派生 `next_action=WAIT_FOR_NEW_EVIDENCE`；`recovery_evidence` 提供回读、承接 review_id 和已送达收据引用。回读须覆盖原尝试及最新运输/请求绑定时点。分类只读，不修改 UNKNOWN、尝试次数、原上下文版本或已报告基线。
+
+等待项留在完整恢复历史和按需查询，不逐小时重复读取云端，也不反复追加相同限制说明。该历史事实已披露且没有变化时，不写入最终回复、inbox 标题或摘要；宿主强制输出仍只说明本轮有意义的结果。新异常、实质变化和需要用户处理时正常反馈。关联的新运输状态会使旧回读失效；正常发送回读中取得原请求的实际正文，或用户明确要求复查时，仍沿原物理版本接续绑定及 CONFIRM，不必先改写分类。
+
+后续报告仅入队、无明确承接、承接终点收据无效、普通新报告、时间经过和页面缺席均不满足等待条件。SENDING、CORRECTION_REQUIRED 及尚未完成的报告义务继续原有主动恢复和受控重试；等待分类不能用于关闭这些义务。当前新报告的有界等待、真实回读和每日反馈不受影响。
+
 历史revision 1/2/3/4评估及V4/V5报告不改写。旧V4正文加已收录只按旧契约认可；缺失用途、覆盖起点、information与conclusion均未知，不伪造迁移值。动态因子仍由当前DecisionSnapshot.factor_assessment唯一承载，小时观察验证已采纳周期基线，实质变化返回 Astra 完整深评。
 
 用户明确要求当次总结时，取得新鲜证据后应形成报告，不以策略未变取消；另有每日反馈兜底，具体时点由模型选择。自然运行验收与手动补发、隔离测试分别记录，未发生不宣称通过。

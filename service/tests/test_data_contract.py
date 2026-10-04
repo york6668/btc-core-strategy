@@ -56,6 +56,22 @@ class NodeContract(unittest.TestCase):
     def at(self, hours=0):
         return (self.now - timedelta(hours=hours)).isoformat()
 
+    def test_waiting_delivery_remains_active_and_queryable_outside_operational_index(self):
+        spec = self.spec('DELIVERY', scope='PERSONAL', payload={
+            'status':{'state':'UNKNOWN', 'attempts':1},
+            'recovery':{'attempts':[{'attempt_id':'SYNTHETIC_ATTEMPT', 'next_action':'WAIT_FOR_NEW_EVIDENCE'}], 'actions':[]}})
+        self.objects.put(spec, expected_version=0)
+        identity = spec['object_id']
+        self.assertNotIn(identity, {v['object_id'] for v in self.objects.list(scope='PERSONAL')['objects']})
+        self.assertIn(identity, {v['object_id'] for v in self.objects.list(scope='PERSONAL', kind='DELIVERY')['objects']})
+        actual = self.objects.get('DELIVERY', identity)
+        self.assertTrue(actual['active'])
+        self.assertEqual(actual['payload']['status'], {'state':'UNKNOWN', 'attempts':1})
+        # A new actionable attempt on the same delivery must not be hidden.
+        spec['payload']['recovery']['actions'] = [{'attempt_id':'SYNTHETIC_NEW', 'next_action':'READ_BACK_THIS_ATTEMPT'}]
+        self.objects.put(spec, expected_version=1)
+        self.assertIn(identity, {v['object_id'] for v in self.objects.list(scope='PERSONAL')['objects']})
+
     def spec(self, kind='REGION', **changes):
         value = {'kind': kind, 'object_id': self.id + kind, 'scope': 'PUBLIC',
                  'product': None, 'observed_at': self.at(4), 'known_at': self.at(3),

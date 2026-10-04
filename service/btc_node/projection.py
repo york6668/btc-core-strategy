@@ -151,7 +151,7 @@ class Projection:
 
     def refresh(self, project, root):
         # Import only through the real validators and current-pointer authority.
-        from v4 import storage, market_state, research
+        from v4 import storage, market_state, research, delivery
         from v4.common import facts
         project, root = Path(project), Path(root)
         from .history import project_history
@@ -215,13 +215,27 @@ class Projection:
             req = root / 'research/requests' / (issue['latest_request']['request_id'].removeprefix('sha256:') + '.json')
             self.put('RESEARCH', issue['issue_id'], issue, req, stamp(), scope='PERSONAL',
                      due=issue['latest_request']['created_at'] if issue['status'] == 'REQUESTED' else None)
+        attempts = delivery.attempt_recovery(root) if hasattr(delivery, 'recovery_actions') else None
+        actions = delivery.recovery_actions(root, attempts) if attempts is not None else []
         for path in (root / 'outbox').glob('*/status.json'):
             status = json.loads(path.read_bytes())
             artifact = path.with_name('artifact.json')
             if not artifact.exists():
                 raise Conflict('delivery state has no frozen artifact')
-            self.put('DELIVERY', path.parent.name, {'status': status,
-                     'artifact_digest': self.db.put_blob(artifact.read_bytes())}, path, status['updated_at'],
+            payload = {'status': status, 'artifact_digest': self.db.put_blob(artifact.read_bytes())}
+            if attempts is not None:
+                payload['recovery'] = {
+                    'attempts': [v for v in attempts if v['delivery_id'] == path.parent.name],
+                    'actions': [v for v in actions if v['delivery_id'] == path.parent.name]}
+            else:
+                # Original-version recovery still owns transitions. An unchanged
+                # historical read must not erase a newer derived classification.
+                previous = self.objects.get('DELIVERY', path.parent.name)
+                if previous and previous['payload'].get('status') == status and 'recovery' in previous['payload']:
+                    payload['recovery'] = previous['payload']['recovery']
+            # Classification may use a later covering report. Keep the original
+            # event time, but never backdate knowledge of this derived view.
+            self.put('DELIVERY', path.parent.name, payload, path, stamp(), observed=status['updated_at'],
                      scope='PERSONAL', active=status['state'] not in {'DELIVERED', 'SUPERSEDED'},
                      dependencies=[{'type': 'BLOB', 'digest': self.db.put_blob(artifact.read_bytes()), 'relation': 'FROZEN_REPORT'}])
         return {'objects': self.results, 'market_binding': binding, 'facts_match': match, 'history': history}
