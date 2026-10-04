@@ -195,7 +195,7 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 `recover`不晋升孤立generation或草稿。主发布先原子切current，当前版本本身即读取依据；main收据中断不要求伪造deep修复。旧域适配只可改变 control、fingerprints、previous_fingerprints、previous_projection_baseline；发生这种标准化时，main收据同时保存原 submitted_draft，原审阅继续绑定提交身份，接受内容继续精确绑定正式版本，收据文件以 completion_hash 命名。历史无此字段的收据仍按原草稿身份校验。已实际发布但旧收据因标准化身份中断，可用 `repair-completion --main-draft <原提交>` 核验原提交、实际当前发布及仅限适配的差异后新增恢复收据；保留旧收据和正式版本，不重发策略，再继续原 run-advance。历史DEEP只允许`repair-completion --completion`修复有真实发布证据的实物。outbox独立保留，不因新观察覆盖。
 
-先以兼容旧格式的代码完成新入口、真实引用、空因子、复用、版本迁移、发布与报告独立性的隔离验证。切换新写入规则时短暂停原任务并核验当前运行状态，同步已验证的代码、Skill、项目规则和同一任务提示，revision 6 新入口按内容能力准备材料；在办研究和未知投递保持原物理版本，不通过统一提高写入门中断旧上下文。正式迁移必须来自真实评估采纳，不能转换旧叙述。写入门只要求新格式，不要求任何具体因子或目录覆盖。新主评估与报告均兼容现有当前指针；不修改历史、资产事实、独立事件任务、全局规则或Git/Engine。
+先以兼容旧格式的代码完成新入口、真实引用、空因子、复用、版本迁移、发布与报告独立性的隔离验证。切换新写入规则时短暂停原任务并核验当前运行状态，同步已验证的代码、Skill、项目规则和同一任务提示，revision 7 新入口按内容能力准备材料；在办研究和未知投递保持原物理版本，不通过统一提高写入门中断旧上下文。正式迁移必须来自真实评估采纳，不能转换旧叙述。写入门只要求新格式，不要求任何具体因子或目录覆盖。新主评估与报告均兼容现有当前指针；不修改历史、资产事实、独立事件任务、全局规则或Git/Engine。
 
 回滚必须能读取已发布的revision 5及带dispute_zone的交付；只有未生成新格式时才可恢复完整基线实现。若旧实现不兼容则暂停自动写入，保留最新结论与交付现场，不能覆盖新状态。隔离结构验证不证明模型实际评估质量或自然运行成功；自然主运行核对真实模型输入、因子选择和依据，专项与报告分别验收，未发生的标待验收，不制造触发。文件内容与结构检查不代表本会话已重新加载新规则。
 
@@ -228,6 +228,6 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 旧研究、策略、审阅、源稿和交付收据不回填新字段，按原冻结上下文恢复。新策略、新源稿和发送前核验使用新规则。登记旧结果仅修复历史完成证据；过期、证据变化或正文来源缺失时须恢复实际深评，不能直接成为当前方案。
 
-## 内容 revision 6
+## 内容 revision 6/7
 
-外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 allocation_decision、forward、区域证据类型、allocation_review、复核条件归属及最终报告输入；recommendations 两侧增加 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。旧内容仍按原 revision 读取。
+外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 revision 7 的 risk_assessment、可选风险应对及独立 strategy_advice，风险结论不要求操作清单。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。

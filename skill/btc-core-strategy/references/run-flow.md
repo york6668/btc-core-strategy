@@ -47,7 +47,7 @@ Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务�
 
 周期观察模板同时携带applicability_review：绑定basis_result_id，独立填写outcome=VALID/EVIDENCE_LIMITED/REVISE、explanation、原始refs及limitations。是否研究与是否已验证分别判断；VALID说明本轮实际核验，REVISE使缺陷持续待修，证据受限不自动完整深评。旧观察模板没有此项时复用同一冻结行情及补充证据重新prepare，只补实际判断，不重做研究或改写旧观察。新手机模板携带consensus_price_revision=2；已确认撤回的价位在price_status用WITHDRAWN，不再从历史报告回填，历史冻结稿按原版本回读。已确认目标配置按本地事实承接，不重新称待采纳。
 
-启用完整报告策略后，report_context 携带简短 cycle_report_instructions；观察 context 通过 method_references、applicability_instructions 与 factor_context 引导核验。先独立核验当前市场变化并完成影响判断，再对照已采纳正文及最后真实展示，分别判断深评和报告；提示不生成市场结论或新增策略状态。既有 cycle_basis、deep_report_summary 与 report_basis.verification 具体核验正式研究、本轮判断与最终正文的忠实性，遵守职责边界：方向和期限清楚、依据支持结果、个人安排及必要风险和限制准确，不要求所有内部期限、冲突、状态和核验结果进入正文。分析缺项回原研究，表达遗漏在冻结前补齐；短窗变化不冒充中期反转，中期未反转也不屏蔽重要波段风险。重要价格或条件仅在已批准完整正文时，按手机契约用narrative的excerpt精确摘录绑定，不因没有独立标量字段省略。精简上下文也携带 spot_risk_review_instructions 方法提示。模型遇到下行风险，应在既有观察摘要/extra_findings 中分别核对已成交现货篮子和独立 BTC 阶梯持仓的减仓判断及保护覆盖，实际写入支持或反证，实质改变才交回深评。提示本身不是已完成评估；程序不从价格生成减仓决定。新研究按 cycle_assignment 的方法入口展开完整组合分析；最终六项审阅仍使用 portfolio_waiting，不另建结论字段。
+启用完整报告策略后，report_context 携带简短 cycle_report_instructions；观察 context 通过 method_references、applicability_instructions 与 factor_context 引导核验。先独立核验当前市场变化并完成影响判断，再对照已采纳正文及最后真实展示，分别判断深评和报告；提示不生成市场结论或新增策略状态。既有 cycle_basis、deep_report_summary 与 report_basis.verification 具体核验正式研究、本轮判断与最终正文的忠实性，遵守职责边界：方向和期限清楚、依据支持结果、个人安排及必要风险和限制准确，不要求所有内部期限、冲突、状态和核验结果进入正文。分析缺项回原研究，表达遗漏在冻结前补齐；短窗变化不冒充中期反转，中期未反转也不屏蔽重要波段风险。重要价格或条件仅在已批准完整正文时，按手机契约用narrative的excerpt精确摘录绑定，不因没有独立标量字段省略。精简上下文也携带 spot_risk_review_instructions 方法提示。模型遇到下行风险，在既有观察摘要/extra_findings 中结合持有目的与已确认组合事实分析实际影响，区分风险迹象和需要应对的风险，实际写入支持或反证，实质改变才交回深评；不能从短线走弱直接推出减仓。必要的敞口和保护核对留在内部，只有风险需要应对时才补充有依据的建议。提示本身不是已完成评估；程序不从价格生成减仓决定。新研究按 cycle_assignment 的方法入口展开完整组合分析；最终六项审阅仍使用 portfolio_waiting，不另建结论字段。
 
 映射候选送审前先完成可做的结构、精确数值、原始引用与事件身份预校验，不能用正式发布反复试探格式。新 ASSESSED domain 可用现有 `assessment.validate(draft, evidence_dir, storage.domain_baseline(root, storage.current(root)), project, review)` 做只读校验，它只创建临时兼容视图，不写当前策略；预校验不替代实际 Astra 审阅、候选哈希和发布时重验。`cycle.validate_candidate` 也复用现有 recommendations.validate 检查数字和 `from <= knowledge_cutoff < until`，并不以壁钟替换证据截止；原始引用仍需对受控证据解析。实际建议生效由真实 published_at 起算，不为匹配未知的提交秒数反复移动 from。REUSED domain 必须满足既有来源、内容一致性及到期门，已到期不能靠 LAST_VALID_ANCHOR 或复用标记跳过当前事件复核。修正影响候选内容时，重新冻结并交同一 Astra 审阅，不能沿用另一候选的批准。
 
@@ -89,8 +89,8 @@ Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务�
 
 revision 5 深评独立阶段先交付纯市场 JSON，冻结后在同一研究中追加个人应对，Sol 将完整正文原文写入 conclusion.narrative；第二阶段 Astra 在结构化结果中用 report_narrative 返回同一正文，或按 v4 契约用 report_hash 绑定本人已写且本次已读的冻结正文，避免重复输出。结果登记保留真实原回复及绑定全文，并支持已确认的末尾通知标记；不能手工删改真实回复或补造批准。研究来源、模型或实际输入无法核实时，保留现场并暴露交付异常。
 
-## revision 6 两项结果
+## revision 7 风险结果与建议
 
-新 CLI run-prepare 使用 revision 6 市场→组合→观察→报告材料，细节见[完整闭环](closed-loop.md)。market 阶段复用观察校验，在冻结前检查全部公开结构、引用、时间与适用性；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 增加 allocation_review；主评估由真实 allocation_decision 进入 revision 6，不自动转换旧结论。
+新 CLI run-prepare 使用 revision 7 市场→组合→观察→报告材料，细节见[完整闭环](closed-loop.md)。market 阶段复用观察校验，在冻结前检查全部公开结构、引用、时间与适用性；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 的 allocation_review 绑定 portfolio_risk_hash 和 strategy_advice_hash；主评估由真实 risk_assessment 进入 revision 7，风险应对可为空，原有机会建议独立保留。旧 allocation_decision 仅按原版本恢复，不自动转换为新风险结论。
 
 report 材料只含最终两项结果、适用性及必要来源，result_binding 已由模板绑定。完整内部研究不通过报告 read_set 再次提供。旧 run.json 未含 workflow_revision 时按旧上下文接续，不为升级重建输入或重发报告。

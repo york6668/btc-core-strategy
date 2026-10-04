@@ -68,7 +68,7 @@
 
 revision 6 观察增加 `allocation_review={market_result_hash,allocation_decision_hash,fact_version,outcome,explanation,limitations[],material}`。市场适用性继续归原 `applicability_review`。组合结果未知、旧格式未形成新决定、事实变化或决定过期不能声明 VALID；重要未决风险不能视为无变化。事实变化时可再次提交同一 market 阶段输入，复用冻结公开结果，返回新事实绑定的组合模板，不重采或重算市场。
 
-revision 7 报告通过 `market_result`、`portfolio_risk`（revision 6 恢复沿原 allocation_decision）、`applicability`、必要执行档位、引用和最后真实送达正文消费已形成的结果；完整内部研究留在原记录。报告必要性及维护材料仍承接原条件，不能把这些材料逐项转述为正文。运行提示按阶段提供：完整研究指令用于研究及映射，报告的 `result_instructions` 只说明最终结果的消费与表达边界。`result_binding` 绑定三个结果版本。市场部分表达方向、期限和必要依据；个人资产部分写风险结论、组合影响和必要限制，仅风险需要应对时附建议，不能重新推理或逐模块展开。缺的是分析就返回研究；缺的是表达就修稿。
+revision 7 报告通过 `market_result`、`portfolio_risk`（revision 6 恢复沿原 allocation_decision）、`applicability`、必要执行档位、引用和最后真实送达正文消费已形成的结果；完整内部研究留在原记录。报告必要性及维护材料仍承接原条件，不能把这些材料逐项转述为正文。运行提示按阶段提供：完整研究指令用于研究及映射，报告的 `result_instructions` 只说明最终结果的消费与表达边界。`result_binding` 绑定市场、个人风险、独立机会建议和适用性结果；旧上下文沿原绑定。市场部分表达方向、期限和必要依据；个人资产部分写风险结论、组合影响和必要限制，仅风险需要应对时附建议，不能重新推理或逐模块展开。缺的是分析就返回研究；缺的是表达就修稿。
 
 maintenance 的 trigger 增加 `scope=MARKET/PORTFOLIO`；checked 增加 `outcomes={MARKET,PORTFOLIO}`，逐条结果增加 scope 和 material。两类分别为 VALID / REVISE / EVIDENCE_LIMITED；总 outcome 保留最严重状态，不覆盖分项。旧未归属条件由本次实际审阅明确归属，程序不按关键词猜测。旧条件移除仍说明退休原因。个人未知不污染市场状态；已披露且无新增意义的个人缺口可以保留 EVIDENCE_LIMITED，同时市场有效并按实际比较静默。新重要未决风险或修正必须反馈，不能借分层隐藏。kind 可为 PORTFOLIO_REVIEW，真实反馈沿用日本自然日最低要求。
 
