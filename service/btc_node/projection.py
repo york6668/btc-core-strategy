@@ -182,7 +182,7 @@ class Projection:
                        'recommendation_name': name, 'market_binding': binding,
                        'recommendation': plan, **(fact_fields or {})}
             self.put('PLAN', object_id, payload, source, known, observed=adopted_at,
-                     scope='PERSONAL', due=due, expires=expires,
+                     identified=adopted_at, scope='PERSONAL', due=due, expires=expires,
                      dependencies=[basis, *dependencies])
 
         newer = [old for old in existing if old['payload'].get('formal_created_at')

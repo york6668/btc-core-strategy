@@ -169,6 +169,9 @@ class NodeContract(unittest.TestCase):
             retired_id = 'recommendation:' + name + ':' + first['object_id']
             active = self.objects.get('PLAN', active_id)
             retired = self.objects.get('PLAN', retired_id)
+            self.assertEqual(active['first_identified_ms'], millis(self.at(2)))
+            self.assertEqual(active['observed_ms'], millis(self.at(2)))
+            self.assertEqual(active['known_ms'], millis(self.at()))
             self.assertEqual(active['valid_until'], new_plan['validity']['until'])
             self.assertEqual(active['payload']['recommendation']['filled'], None)
             self.assertFalse(retired['active'])
