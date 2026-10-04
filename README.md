@@ -45,11 +45,11 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 按照 `enter` 返回的固定路径读取 Skill，并用该版本的脚本执行本轮。研究请求和投递任务产生时绑定上下文；恢复使用原上下文，不能因升级重新研究或重发。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
 
-代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–6，新入口准备 revision 6；正式状态仅经真实评估与采纳迁移，旧叙述不自动补成配置决定。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
+代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–7，新入口准备 revision 7；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
 
 完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 只运行离线检查。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
 
-revision 6 的市场结论、整体配置决定及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。全部回放材料由 scripts/build_synthetic_fixtures.py 和 scripts/build_reader_fixtures.py 在测试临时目录构造，源码导出不包含测试数据文件。
+revision 7 的市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。全部回放材料由 scripts/build_synthetic_fixtures.py 和 scripts/build_reader_fixtures.py 在测试临时目录构造，源码导出不包含测试数据文件。
 
 ## Docker 持续分析
 

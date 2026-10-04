@@ -26,7 +26,7 @@ PARAMETERS = {
     'acceptance.window': obj({'day':TEXT}, ['day']),
     'acceptance.record': obj({'day':TEXT,'checks':{'type':'object','description':'All nine criteria: status PASS/FAIL/REPLAY_ONLY, actual_input, state_change, consumer_result, stored evidence refs and any natural_gap.'}}, ['day','checks']),
     'acceptance.defect': obj({'reason':TEXT,'affected_days':{'type':'array','items':TEXT},'criteria':{'type':'array','items':TEXT}}, ['reason','affected_days','criteria']),
-    'acceptance.repair': obj({'defect_index':VERSION,'release':TEXT,'reason':TEXT,'evidence_refs':{'type':'array','minItems':1,'items':{'type':'object'}}}, ['defect_index','release','reason','evidence_refs']),
+    'acceptance.repair': obj({'defect_index':VERSION,'release':TEXT,'reason':TEXT,'evidence_refs':{'type':'array','minItems':1,'items':{'type':'object'}}, 'preserve_window':{'type':'boolean','description':'Close a scoped correction only after its actual natural acceptance; retain the shared window and other criteria.'}}, ['defect_index','release','reason','evidence_refs']),
     'status': obj({}), 'storage.status': obj({}),
     'object.get': obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'version': VERSION, 'as_of': TIME,
                        'market_binding':MARKET_BINDING}, ['kind','object_id','scope']),

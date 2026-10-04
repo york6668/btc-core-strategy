@@ -121,8 +121,12 @@ def defect(db, *, reason, affected_days, criteria):
     return status(db)
 
 
-def repair(db, *, defect_index, release, reason, evidence_refs):
-    """A verified critical repair starts a new full window, retaining history."""
+def repair(db, *, defect_index, release, reason, evidence_refs, preserve_window=False):
+    """Close an evidenced repair; scoped follow-ups retain the shared window.
+
+    preserve_window is used only after the caller has reviewed actual natural
+    consumption of the scoped correction, not merely its installation/tests.
+    """
     state=db.metadata('acceptance')
     if not state or not isinstance(defect_index,int) or not 0<=defect_index<len(state['defects']):
         raise ValueError('repair must reference a recorded defect')
@@ -130,13 +134,17 @@ def repair(db, *, defect_index, release, reason, evidence_refs):
     if item.get('repair'):
         raise Conflict('defect already repaired; do not move the observation window again')
     if not reason.strip() or not release.strip():raise ValueError('describe the actual verified repair and release')
+    if type(preserve_window) is not bool: raise ValueError('preserve_window must be boolean')
     proof=evidence(db,evidence_refs)
-    state.setdefault('prior_windows',[]).append({'first_full_day':state['first_full_day'],
-        'required_days':state['required_days'],'release':state['release'],'replaced_at':stamp(),
-        'defect_index':defect_index})
     item['repair']={'release':release,'reason':reason,'evidence':proof,'verified_at':stamp()}
-    state['first_full_day']=(utc().astimezone(JST).date()+timedelta(days=1)).isoformat()
-    state['release']=release
+    if preserve_window:
+        item['repair']['preserve_window'] = True
+    else:
+        state.setdefault('prior_windows',[]).append({'first_full_day':state['first_full_day'],
+            'required_days':state['required_days'],'release':state['release'],'replaced_at':stamp(),
+            'defect_index':defect_index})
+        state['first_full_day']=(utc().astimezone(JST).date()+timedelta(days=1)).isoformat()
+        state['release']=release
     db.metadata('acceptance',state,write=True)
     return status(db)
 

@@ -118,7 +118,7 @@ def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=
         for ref in side['refs']:
             resolve(ref)
     portfolio = value['portfolio']
-    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative' + (' allocation_decision' if revision >= 6 else ''), 'recommendation portfolio')
+    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative' + (' risk_assessment strategy_advice' if revision >= 7 else ' allocation_decision' if revision >= 6 else ''), 'recommendation portfolio')
     capitals = [total(value[s], 'capital_u') for s in SIDES]
     if any(c is None for c in capitals) or any(value[s]['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED') for s in SIDES):
         require(portfolio['capital_envelope_u'] is None, 'unknown short capital cannot become a confirmed total funding envelope')
@@ -127,7 +127,11 @@ def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=
     require(portfolio['sequence_policy'] == 'REEVALUATE_AFTER_FIRST', 'sequential proposals require Codex reassessment after first confirmed fact change')
     for field in ('existing_exposure', 'uncertainty', 'narrative'):
         text(portfolio[field], 'combined portfolio ' + field)
-    if revision >= 6:
+    if revision >= 7:
+        from .closed_loop import validate_risk, validate_actions
+        validate_risk(portfolio['risk_assessment'], cutoff, market_hash, fact_version)
+        validate_actions(portfolio['strategy_advice'])
+    elif revision >= 6:
         from .closed_loop import validate_allocation
         validate_allocation(portfolio['allocation_decision'], cutoff, market_hash, fact_version)
     return sequences(value)
@@ -164,10 +168,10 @@ def stable(value):
         result[side]['validity']['until'] = instant(result[side]['validity']['until']).astimezone(timezone.utc).isoformat()
     for field in ('existing_exposure', 'uncertainty', 'narrative'):
         result['portfolio'].pop(field)
-    decision = result['portfolio'].get('allocation_decision')
+    decision = result['portfolio'].get('risk_assessment') or result['portfolio'].get('allocation_decision')
     if decision:
         # Source/time rebinding alone is not a different arrangement. Expiry,
         # actions, uncertainty and execution limitations still carry meaning.
-        for field in ('market_result_hash', 'fact_version', 'decided_at'):
-            decision.pop(field)
+        for field in ('market_result_hash', 'fact_version', 'decided_at', 'assessed_at'):
+            decision.pop(field, None)
     return result

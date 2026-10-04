@@ -30,7 +30,7 @@ def validate_completion(value, path):
 
 
 def sections_for_revision(revision):
-    require(revision in (3, 4, 5, 6), 'unsupported main assessment revision')
+    require(revision in (3, 4, 5, 6, 7), 'unsupported main assessment revision')
     return SECTIONS + (('factor_assessment',) if revision >= 4 else ())
 
 
@@ -190,11 +190,14 @@ def projection(assessment):
              '证据截止：' + assessment['temporal_scope']['knowledge_cutoff'], '', assessment['conclusion']['narrative'], '',
              '## 价值判断', '']
     if assessment.get('revision', 1) >= 6:
-        from .closed_loop import allocation
-        decision = allocation(assessment)
+        from .closed_loop import allocation, risk
+        decision = risk(assessment) if assessment.get('revision', 1) >= 7 else allocation(assessment)
+        title = '资产风险：' if assessment.get('revision', 1) >= 7 else '配置决定：'
         lines += ['市场结论：' + assessment['outlook']['market_assessment']['summary'], '',
-                  '配置决定：' + decision['summary'], '']
+                  title + decision['summary'], '']
         lines += [action['scope'] + '：' + action['arrangement'] for action in decision['actions']]
+        if assessment.get('revision', 1) >= 7:
+            lines += [action['scope'] + '：' + action['arrangement'] for action in assessment['recommendations']['portfolio']['strategy_advice']]
     lines += ['- ' + v for v in assessment['conclusion']['business_meaning'].values()]
     for side, title, unit in (('upper_short', '溢价区空单', 'U名义额'), ('lower_spot', '超卖区现货篮子', 'U投入')):
         v = assessment['recommendations'][side]
@@ -234,8 +237,9 @@ def assemble(root, project, components, evidence_dir, market, identity, checks):
     previous = pinned['assessment']
     exact(components, 'updates section_reviews evidence_bindings domain_market_cutoff stop_reason', 'main authored components')
     require(isinstance(components['updates'], dict), 'main updates must be a mapping')
-    from .closed_loop import allocation
-    revision = (6 if allocation({'recommendations': components['updates'].get('recommendations', previous.get('recommendations'))}) is not None
+    from .closed_loop import allocation, risk
+    proposed = {'recommendations': components['updates'].get('recommendations', previous.get('recommendations'))}
+    revision = (7 if risk(proposed) is not None else 6 if allocation(proposed) is not None
                 else 5 if 'market_assessment' in components['updates'].get('outlook', previous.get('outlook', {}))
                 else 4 if previous.get('revision', 1) >= 4 or 'factor_assessment' in components['updates'] else 3)
     sections = sections_for_revision(revision)

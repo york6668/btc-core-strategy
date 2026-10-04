@@ -585,6 +585,16 @@ class NodeContract(unittest.TestCase):
         self.assertEqual(repaired['prior_windows'][0]['first_full_day'],old)
         self.assertEqual(repaired['required_days'][0],(datetime.now(acceptance.JST).date()+timedelta(days=1)).isoformat())
         self.assertEqual(repaired['open_defects'],[])
+        before = self.db.metadata('acceptance')
+        with self.db.transaction():
+            acceptance.defect(self.db, reason='scoped asset risk correction', affected_days=[],
+                              criteria=['personal_allocation', 'report_delivery'])
+            acceptance.repair(self.db, defect_index=1, release='scoped-fixed', preserve_window=True,
+                              reason='actual post-fix consumption reviewed', evidence_refs=[{'type':'BLOB','digest':proof}])
+        after = self.db.metadata('acceptance')
+        for key in ('first_full_day', 'required_days', 'release', 'days', 'prior_windows'):
+            self.assertEqual(after[key], before[key])
+        self.assertTrue(after['defects'][1]['repair']['preserve_window'])
         with self.assertRaises(Conflict):
             acceptance.repair(self.db,defect_index=0,release='later',reason='no moving target',
                 evidence_refs=[{'type':'BLOB','digest':proof}])

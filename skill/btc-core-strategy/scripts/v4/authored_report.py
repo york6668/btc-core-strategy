@@ -136,7 +136,11 @@ def render(value, decision):
                 allowed = ('/market_result/', '/metrics/', '/public_evidence/', '/report_subjects/') if ctx.get('market_revision', 0) >= 6 else PUBLIC
                 require(ref.startswith(allowed), 'market conclusion cannot bind personal portfolio data or internal research prose')
             if binding['scope'] == 'personal' and ctx.get('market_revision', 0) >= 6:
-                require(ref.startswith(('/allocation_decision/', '/applicability/portfolio/', '/execution_plans/')), 'personal report consumes only final arrangements and execution limits')
+                personal_result = '/portfolio_risk/' if ctx.get('market_revision', 0) >= 7 else '/allocation_decision/'
+                allowed = (personal_result, '/applicability/portfolio/', '/execution_plans/')
+                if ctx.get('market_revision', 0) >= 7:
+                    allowed += ('/strategy_advice/',)
+                require(ref.startswith(allowed), 'personal report consumes only assessed risk, applicable advice and limits')
             if binding['scope'] == 'clock':
                 require(ref == '/evaluation_time' and excerpt == values['evaluation_time'], 'only frozen evaluation time is a clock binding')
             scalar = pointer(values, ref)

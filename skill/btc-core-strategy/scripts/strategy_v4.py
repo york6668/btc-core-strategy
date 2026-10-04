@@ -151,7 +151,7 @@ def main(argv=None):
             from v4 import run_flow
             from v4 import market_state
             result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations,
-                                      workflow_revision=6 if market_state.enabled(args.root) else None,
+                                      workflow_revision=7 if market_state.enabled(args.root) else None,
                                       resume_preparation=args.resume_preparation, collector_snapshot=args.collector_snapshot,
                                       retained_source_bindings=args.retained_source_bindings)
         elif args.command == 'run-value-ref':
@@ -235,7 +235,7 @@ def main(argv=None):
             result={'source':args.output,'body':value['body'],'body_hash':value['body_hash']}
         elif args.command == 'research-request':
             from v4 import market_state
-            result=research.request(args.root,args.project,read(args.spec), workflow_revision=6 if market_state.enabled(args.root) else None)
+            result=research.request(args.root,args.project,read(args.spec), workflow_revision=7 if market_state.enabled(args.root) else None)
         elif args.command == 'research-result':
             result=research.result(args.root,read(args.spec))
         elif args.command == 'research-orchestrated-independent':

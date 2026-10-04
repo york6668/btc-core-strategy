@@ -144,7 +144,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     policy = read(root / 'write-policy.json') if (root / 'write-policy.json').exists() else {}
     active_revision = max(((pinned or {}).get('assessment') or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1))
     if workflow_revision is not None:
-        require(workflow_revision in (5, 6), 'invalid requested workflow revision')
+        require(workflow_revision in (5, 6, 7), 'invalid requested workflow revision')
         active_revision = max(active_revision, workflow_revision)
     factor_workflow = active_revision >= 4 or evidence_dir is not None
     require(not factor_workflow or evidence_dir is not None, 'revision 4 context requires frozen --evidence')
@@ -202,7 +202,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
                 'market_evidence_id': current_market['evidence_id'], 'retrieval_id': current_market['retrieval_id'],
                 'history_ids': [p['evidence_id'] for p in history]}
     if active_revision >= 6:
-        identity['workflow_revision'] = 6
+        identity['workflow_revision'] = min(7, active_revision)
     research_context = None
     if workflow:
         from . import research
@@ -247,7 +247,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     # This is an observation of conditions, never a maintained/withdrawn conclusion.
     value['measurements'] = measure(value, current_market)
     if workflow:
-        value['revision'] = min(6, active_revision) if active_revision >= 5 else 4 if factor_workflow else 3
+        value['revision'] = min(7, active_revision) if active_revision >= 5 else 4 if factor_workflow else 3
         if factor_workflow:
             value['factor_context'] = factor_context
         value['current_conclusion'] = core.get('conclusion')

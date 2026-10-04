@@ -1,6 +1,8 @@
+当前新内容使用 revision 7，个人结果为 `recommendations.portfolio.risk_assessment`；`allocation_review`绑定`portfolio_risk_hash`，报告消费`portfolio_risk`。完整新契约见[完整闭环](closed-loop.md)；以下 revision 1–6 仅描述历史兼容，不为新研究强制生成动作。
+
 > 报告的分析依据、触发复核和日本每日反馈以[报告复核契约](report-care.md)为当前规则。新报告包含maintenance；旧格式保持兼容。
 
-当前内容 revision 5 继续使用七个 section 及唯一 current 指针；新增纯市场结果、分歧区接续、market→portfolio 分阶段材料、MARKET_UPDATE 与 dispute_zone 手机块，完整字段和流程见[独立市场与分歧区](market-state.md)。下述 revision 1—4 保留历史读取规则；新写入以 revision 5 为准，不补造旧记录。
+历史内容 revision 5 使用七个 section 及唯一 current 指针；新增纯市场结果、分歧区接续、market→portfolio 分阶段材料、MARKET_UPDATE 与 dispute_zone 手机块，完整字段和流程见[独立市场与分歧区](market-state.md)。下述 revision 1—4 保留历史读取规则；该节 revision 5 描述仅供历史恢复，不补造旧记录。
 
 
 # v4 主策略、专项和报告契约

@@ -103,7 +103,7 @@ def validate_analysis_sections(draft, revision, resolve):
 
 def validate(draft, evidence_dir, prior, project, review):
     revision = draft.get('revision', 1)
-    require(revision in (1, 2, 3, 4, 5, 6), 'unsupported assessment revision')
+    require(revision in (1, 2, 3, 4, 5, 6, 7), 'unsupported assessment revision')
     extra = ' revision recommendations maintenance_binding' if revision >= 2 else ''
     if revision >= 3:
         extra += ' conclusion section_provenance research_absorptions'

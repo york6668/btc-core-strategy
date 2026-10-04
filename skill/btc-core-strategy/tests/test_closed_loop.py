@@ -419,7 +419,7 @@ class FinalReportTests(unittest.TestCase):
     def test_internal_analysis_and_changed_results_cannot_replace_final_arrangements(self):
         spec = self.spec()
         spec['layout']['bindings'][1]['refs'] = ['/assessment/portfolio_analysis/core_spot']
-        with self.assertRaisesRegex(Invalid, 'only final arrangements'):
+        with self.assertRaisesRegex(Invalid, 'only assessed risk'):
             self.f.source(spec)
         spec = self.spec()
         spec['result_binding']['allocation_decision_hash'] = digest('unreviewed')

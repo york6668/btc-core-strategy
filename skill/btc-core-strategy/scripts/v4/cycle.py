@@ -73,9 +73,10 @@ REPORT_SCOPE_REVIEW = (
     '每日送达为最低要求；无实质变化、无重要纠错且每日反馈未到期时可静默。实际发送才读 when_delivery 并回读，未知不写中性。'
 )
 SPOT_RISK_REVIEW = (
-    '下行风险时在完成独立市场判断之后，分别核验已成交篮子与独立 BTC 的减仓依据和保护覆盖。'
-    '波段风险可触发评估，不要求需求退出与未来价值受损共同确认；未记录成交保持未知，篮子 BTC 不重复计数。'
-    '现货减少后复查保护是否过量，重要个人建议改变交回原深评。'
+    '完成独立市场判断后，结合已确认资产、持有目的和组合情况评估风险是否值得且能够继续承担。'
+    '下行或波段风险只触发评估，不自动产生减仓；短线偏弱、配置偏离或缺数不能代替风险应对必要性的判断。'
+    '仅模型判断风险需要应对时补充简明建议；没有充分依据不指定批次减半、数量或操作顺序。'
+    '必要现货与独立BTC归属、保护覆盖和资金检查在内部完成，篮子BTC不重复计数；建议改变仍由原研究审阅采纳。'
 )
 
 from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW
@@ -363,8 +364,9 @@ def validate_publication(root, prior, draft):
     require(content(draft) == content(dict(disclosed['candidate']['assessment'], revision=market_state.revision(disclosed['candidate']['assessment']))),
             'published cycle differs from the candidate actually approved by Astra')
     if draft.get('revision', 1) >= 6:
-        from .closed_loop import allocation
-        require(instant(allocation(draft)['valid_until']) > instant(now()),
+        from .closed_loop import allocation, risk
+        personal = risk(draft) if draft.get('revision', 1) >= 7 else allocation(draft)
+        require(instant(personal['valid_until']) > instant(now()),
                 'allocation decision expired during review; reassess its applicability without renewing the report clock')
     # A check time is not an expiry of the actual authorship/approval proof.
     # Executable proposals retain their separate, immutable real expiry.

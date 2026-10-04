@@ -1,6 +1,6 @@
-# 完整研究、两个结果与持续验证（content revision 6）
+# 完整研究、两个结果与持续验证（content revision 7）
 
-本文件用于新研究、组合复核、报告和运行维护。保留全部研究与资产范围、原模型分工、调度和报告目的地。完整研究形成两个正式成果：独立市场结论，以及综合风险与机遇后的配置决定。四小时区域、现货加减、合约开平只是待解决问题的例子，不能成为固定模块或报告清单。
+本文件用于新研究、组合复核、报告和运行维护。保留全部研究与资产范围、原模型分工、调度和报告目的地。完整研究先形成独立市场结论，再由模型评估个人资产风险是否值得且能够继续承担；只有风险需要应对时补充操作建议。原有机会研究继续独立进行。四小时区域、现货加减、合约开平只是问题示例，不能成为固定模块或报告清单。
 
 ## 研究与冻结
 
@@ -20,7 +20,26 @@
 
 独立研究仍输出 `{outlook,factor_assessment,market_report}`。冻结前校验公开字段、引用、时间、适用性和前瞻承接；冻结后，组合和报告不能改写市场结果。需要修正时返回公开研究环节并保留修订原因。同一代理已读个人材料后的修订属于公开证据续研，不冒称全新盲评。
 
-## 整体配置决定
+## 当前资产风险结果（revision 7）
+
+资产配置提供分析背景与约束，不代替模型判断。结合市场、资产特点、持有目的与已确认组合事实分析风险和实际影响；总资金、占用比只是可选依据，不固定公式、评分、阈值或必填清单。风险迹象、短线偏弱、比例偏离和缺数不自动触发操作。
+
+外层 schema、七个 section 和 current 指针不变。新内容使用 revision=7，`recommendations.portfolio.risk_assessment` 替代新内容中的 `allocation_decision`：
+
+- `summary / basis`：资产风险结论及主要依据，说明组合影响和继续承担风险的判断。
+- `response_needed / response_reason`：模型判断 true、false 或 null，以及理由；null 明确未决范围，不能默认为安全。
+- `actions[]`：可选风险应对建议，可以为空；仅 response_needed=true 时允许非空。需要应对但操作不明时也可以为空，不强行凑建议。
+- `limitations[]`：实际判断限制，未决时必须说明；未知资金不写成零。
+- `market_result_hash / fact_version`：冻结公开结果与本地三份确认文件版本。
+- `assessed_at / valid_until / review_conditions[]`：真实评估时间、有效期和复核条件，不由报告时钟续期。
+
+实际 actions 复用下述 revision 6 action 结构及数量/动作缺口约束，但风险结论不从动作状态汇总。比例、数量、批次和先后顺序仅在有依据且必要时提供，不默认减半。敞口、资金和保护的必要检查留在内部，正文只呈现影响判断的内容。原有定投、折价买入、独立BTC/黄金等机会建议不受风险应对触发条件替代，也不把无依据的风险动作改名为机会建议。
+
+观察保留 `allocation_review` 名称，revision 7 将其中 `allocation_decision_hash` 改为 `portfolio_risk_hash`，同时加入strategy_advice_hash绑定独立机会建议，其他字段不变。报告消费 `portfolio_risk`，result_binding 使用 `portfolio_risk_hash`；新报告不允许从旧 allocation_decision 引用个人结论。旧结果未完成真实个人重评时为 EVIDENCE_LIMITED，不能改名冒充新结果。新入口采用 revision 7，可读 revision 1–7；以下 revision 6 字段仅用于历史恢复。
+
+原 upper_short/lower_spot 价量接口保留。其他已形成的机会建议使用 `recommendations.portfolio.strategy_advice[]`，复用 action 结构、允许为空，与风险应对分开；报告提供 `strategy_advice` 并以 `strategy_advice_hash` 绑定，同一评估的市场、事实和期限仍适用。不得将完整内部研究或无风险依据的减仓包装为机会建议。
+
+## 历史整体配置决定（revision 6）
 
 `DecisionSnapshot` 外层 schema、七个 section 和唯一当前指针不变；真实评估及采纳后，新内容写 `revision=6`。新增 `recommendations.portfolio.allocation_decision`：
 
@@ -49,7 +68,7 @@
 
 revision 6 观察增加 `allocation_review={market_result_hash,allocation_decision_hash,fact_version,outcome,explanation,limitations[],material}`。市场适用性继续归原 `applicability_review`。组合结果未知、旧格式未形成新决定、事实变化或决定过期不能声明 VALID；重要未决风险不能视为无变化。事实变化时可再次提交同一 market 阶段输入，复用冻结公开结果，返回新事实绑定的组合模板，不重采或重算市场。
 
-报告通过 `market_result`、`allocation_decision`、`applicability`、必要执行档位、引用和最后真实送达正文消费已形成的结果；完整内部研究留在原记录。报告必要性及维护材料仍承接原条件，不能把这些材料逐项转述为正文。运行提示按阶段提供：完整研究指令用于研究及映射，报告的 `result_instructions` 只说明最终结果的消费与表达边界。`result_binding` 绑定三个结果版本。市场部分表达方向、期限和必要依据；配置部分只写最终安排、范围和影响执行的限制，不能重新推理或逐模块展开。缺的是分析就返回研究；缺的是表达就修稿。
+revision 7 报告通过 `market_result`、`portfolio_risk`（revision 6 恢复沿原 allocation_decision）、`applicability`、必要执行档位、引用和最后真实送达正文消费已形成的结果；完整内部研究留在原记录。报告必要性及维护材料仍承接原条件，不能把这些材料逐项转述为正文。运行提示按阶段提供：完整研究指令用于研究及映射，报告的 `result_instructions` 只说明最终结果的消费与表达边界。`result_binding` 绑定三个结果版本。市场部分表达方向、期限和必要依据；个人资产部分写风险结论、组合影响和必要限制，仅风险需要应对时附建议，不能重新推理或逐模块展开。缺的是分析就返回研究；缺的是表达就修稿。
 
 maintenance 的 trigger 增加 `scope=MARKET/PORTFOLIO`；checked 增加 `outcomes={MARKET,PORTFOLIO}`，逐条结果增加 scope 和 material。两类分别为 VALID / REVISE / EVIDENCE_LIMITED；总 outcome 保留最严重状态，不覆盖分项。旧未归属条件由本次实际审阅明确归属，程序不按关键词猜测。旧条件移除仍说明退休原因。个人未知不污染市场状态；已披露且无新增意义的个人缺口可以保留 EVIDENCE_LIMITED，同时市场有效并按实际比较静默。新重要未决风险或修正必须反馈，不能借分层隐藏。kind 可为 PORTFOLIO_REVIEW，真实反馈沿用日本自然日最低要求。
 
@@ -59,6 +78,6 @@ AUTHORED_REPORT_V1 原文交付、实际助手回读及 UNKNOWN 恢复保持。�
 
 ## 兼容与验收
 
-代码可读 revision 1–6；旧冻结记录按原格式校验和恢复，任何安装不改历史、资产事实、当前策略或未知投递。新入口准备 revision 6 材料，正式状态等待真实评估采纳；不把旧叙述补成 allocation_decision。在办研究通常沿固定原版本，仅程序缺陷按[版本入口](releases.md)显式登记兼容修复后由新恢复运行接续；UNKNOWN 始终沿原物理版本上下文。回退只切代码，并须匹配当前内容可读范围，不回滚数据。
+代码可读 revision 1–7；旧冻结记录按原格式校验和恢复，任何安装不改历史、资产事实、当前策略或未知投递。新入口准备 revision 7 材料，正式状态等待真实评估采纳；不把旧叙述或旧动作补成 risk_assessment。在办研究通常沿固定原版本，仅程序缺陷按[版本入口](releases.md)显式登记兼容修复后由新恢复运行接续；UNKNOWN 始终沿原物理版本上下文。回退只切代码，并须匹配当前内容可读范围，不回滚数据。
 
 临时合成测试覆盖依赖隔离、历史假设非事实、期限落空、数量/动作缺口、市场与组合独立更新及联动、最终结果输入、旧版本与过期/延迟/重复/跨日/UNKNOWN 恢复。真实历史预览只在节点读取。内容验收逐项对照实际证据、判断和正文，不以字段、关键词或自评通过代替分析质量。程序验证、真实送达、自然耗时与成本分别验收，保留未关闭的运行缺陷。

@@ -41,7 +41,9 @@ def enabled(root, assessment=None):
 
 
 def revision(assessment):
-    from .closed_loop import allocation
+    from .closed_loop import allocation, risk
+    if risk(assessment) is not None:
+        return 7
     if allocation(assessment) is not None:
         return 6
     return max(5, assessment.get('revision', 5)) if 'market_assessment' in (assessment.get('outlook') or {}) else assessment.get('revision', 4)
@@ -290,7 +292,7 @@ def market_projection(ctx):
             value['market_baseline'].pop(key, None)
     if ctx.get('revision', 5) >= 6:
         from .closed_loop import INSTRUCTIONS as LOOP_INSTRUCTIONS
-        value['revision'] = 6
+        value['revision'] = ctx['revision']
         value['historical_hypotheses'] = {k: value.pop(k) for k in
             ('market_baseline', 'market_report', 'previous_market_observation')}
         value['historical_hypotheses']['factor_assessment'] = value['factor_context'].pop('current', None)

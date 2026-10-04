@@ -92,7 +92,7 @@ def observation_template(ctx, raw):
         form.update(market_assessment=None, dispute_zones=[], market_result_hash=None)
     if ctx.get('revision', 1) >= 6:
         from .closed_loop import review_template
-        form['allocation_review'] = review_template()
+        form['allocation_review'] = review_template(ctx['revision'])
     return form
 
 
@@ -385,7 +385,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         if compatibility:
             run['preparation_compatibility'] = compatibility
         if ctx.get('revision', 1) >= 6:
-            run['workflow_revision'] = 6
+            run['workflow_revision'] = ctx['revision']
         save(path, run)
         return result_paths(run, 'prepared')
 
@@ -568,8 +568,8 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
             portfolio['collector_observations'] = collector_context(package, run['evidence'])
         form_path = d / 'observation-template.json'
         if ctx.get('revision', 1) >= 6:
-            from .closed_loop import INSTRUCTIONS, allocation
-            portfolio = {'market_result': frozen, 'allocation_decision': allocation(core),
+            from .closed_loop import INSTRUCTIONS, allocation, risk, result_keys
+            portfolio = {'market_result': frozen, result_keys(ctx['revision'])[0]: risk(core) if ctx['revision'] >= 7 else allocation(core),
                          'current_recommendations': core.get('recommendations'),
                          'fact_version': latest['identity']['fact_version'],
                          'confirmed_account_facts': portfolio['confirmed_account_facts'],

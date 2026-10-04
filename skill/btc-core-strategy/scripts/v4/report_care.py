@@ -91,7 +91,10 @@ def validate(root,spec,ctx):
         from .closed_loop import report_inputs
         values.update(report_inputs(dict(ctx, current_strategy=ctx.get('current_strategy') or values['assessment'])))
         values.update({k: ctx.get(k) for k in ('public_evidence', 'report_subjects')})
-        prefixes += ('/market_result/', '/allocation_decision/', '/applicability/', '/execution_plans/', '/public_evidence/', '/report_subjects/')
+        personal_result = '/portfolio_risk/' if ctx.get('market_revision', 0) >= 7 else '/allocation_decision/'
+        prefixes += ('/market_result/', personal_result, '/applicability/', '/execution_plans/', '/public_evidence/', '/report_subjects/')
+        if ctx.get('market_revision', 0) >= 7:
+            prefixes += ('/strategy_advice/',)
     for t in m['triggers']:
         exact(t,'id condition reason refs'+(' scope' if scoped else ''),'revision trigger');require(t['id'] not in ids,'duplicate revision trigger');ids.add(t['id'])
         if scoped:
