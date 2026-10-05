@@ -12,6 +12,8 @@
 
 ## 正式市场结果
 
+先依主要投资问题与证据选择主周期，`summary` 以该周期的阶段、方向、主导机制、价值和风险为中心；对应 `horizons[].forward` 与 BTC 的 `semantic.baseline` 保持同一判断期限。小时观察和短线剩余有效期各自维护，不默认成为主情景。其他市场采用各自有据的周期，数组顺序不决定主次。周期证据不足先补证并说明实际限制，不能用日内判断替代，也不能只延长旧小时判断的期限。
+
 `outlook` 保留 `semantic/narrative/refs`，新增 `market_assessment/dispute_zones`；整个 outlook 及 factor_assessment 均为公开市场内容。独立研究输出单一 JSON：`{outlook, factor_assessment, market_report}`。`market_report` 是市场结论与价格风险正文，不含个人应对。原 semantic、因子结构见 v4 契约与 assessment.py。
 
 `market_assessment={markets,summary}`。markets 至少覆盖 SPX、NDX、BTC；每项：

@@ -168,6 +168,47 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertFalse(read(result['read_set']['report']).get('base_read_set'))
         self.assertEqual(storage.current(self.root)['assessment']['revision'], 3)
 
+    def test_cycle_result_survives_short_horizon_order_and_hourly_direction_changes(self):
+        original = storage.current(self.root)
+        for number, direction in enumerate(('BULLISH', 'BEARISH', 'UNKNOWN')):
+            with self.subTest(hourly_direction=direction):
+                self.f.d = self.f.f.base / ('cycle-' + str(number))
+                prepared = self.prepare()
+                public = self.public(prepared)
+                # The model's investment horizon is not the first array item.
+                # These independent model outputs are not a program classifier.
+                public['market_assessment']['summary'] = '主要投资周期仍为修复中的震荡，日内变化未改变价值依据；周期证据缺口保留。'
+                for assessed in public['market_assessment']['markets']:
+                    hourly = assessed['horizons'][0]
+                    primary = deepcopy(hourly)
+                    primary.update(id=assessed['id'] + '_CYCLE', direction='NEUTRAL',
+                                   period='Investment horizon selected from the synthetic mechanism.',
+                                   structure='Recovery within the assessed cycle, without a confirmed switch.')
+                    primary['forward']['judgement_window']['end'] = '2030-04-01T13:00:00Z'
+                    primary['forward']['realization_window'] = None
+                    primary['forward']['timing_basis'] = 'The investment mechanism has no precise realization date.'
+                    hourly.update(direction=direction, period='Hourly verification only.')
+                    if number:
+                        hourly['forward']['prior_check'].update(outcome='REVISE',
+                            explanation='Hourly evidence changes direction within the existing window.')
+                        primary['forward']['prior_check'].update(outcome='PENDING',
+                            explanation='The cycle mechanism remains supported despite hourly changes.')
+                    assessed['horizons'] = [hourly, primary]
+                    for relation in ('resonance', 'reversal'):
+                        assessed[relation]['periods'] = [hourly['id'], primary['id']]
+                    assessed['resonance']['status'] = 'UNKNOWN' if direction == 'UNKNOWN' else 'CONFLICTED'
+                expected = deepcopy(public['market_assessment'])
+                frozen = run_flow.advance(prepared['run'], 'market', self.f.file(public))
+                portfolio = read(frozen['portfolio_context'])
+                self.assertEqual(portfolio['market_result']['payload']['market_assessment'], expected)
+                result = run_flow.advance(prepared['run'], 'observe',
+                    template_path=frozen['observation_template'], answers_path=self.f.file(self.personal(frozen)))
+                report = read(result['report_context'])
+                self.assertEqual(report['market_result']['market_assessment'], expected)
+                self.assertEqual(report['result_instructions'], loop.REPORT_INSTRUCTIONS)
+                self.assertNotIn(market_state.CYCLE_FOCUS_REVIEW, report['result_instructions'])
+                self.assertEqual(storage.current(self.root), original)
+
 
 class PublicationTests(unittest.TestCase):
     def setUp(self):

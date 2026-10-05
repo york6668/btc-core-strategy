@@ -378,6 +378,7 @@ class CycleWorkflowTests(unittest.TestCase):
             for key,value in record.items():
                 self.assertEqual(value,old_assessment['section_provenance'][section][key])
         self.assertEqual(set(packet['cycle_assignment']['required_coverage']), set(cycle.COVERAGE))
+        self.assertIn(cycle.market_state.CYCLE_FOCUS_REVIEW, packet['cycle_assignment']['instructions'])
         self.assertFalse(set(cycle.SECTIONS) & set(packet['historical_anchor']))
         self.assertEqual(packet['cycle_assignment']['method_references'], cycle.method_references('research', self.f.project))
         disclosed = research._load(self.f.store, 'candidates', result['candidate_id'])
