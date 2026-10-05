@@ -437,6 +437,9 @@ def _read_proofs(value):
             except ValueError:
                 continue
             if isinstance(parsed, dict) and parsed.get('schema') == 'BTC_RESEARCH_INPUT_READ_V4':
+                # The node bridge appends live status outside the frozen read
+                # contract. Keep every identity and payload field exact.
+                parsed.pop('continuity', None)
                 yield parsed
 
 

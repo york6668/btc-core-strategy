@@ -42,6 +42,7 @@ class ResearchWorkflowTests(unittest.TestCase):
         values.append({'type': 'turn_context', 'payload': {'turn_id': turn, 'model': model, 'effort': 'max'}})
         if include_input:
             payload = research.read_input(self.store, req['request_id'], phase, candidate)
+            payload['continuity'] = {'reader_receipts': {'status': 'PROJECTED', 'processed': 0}}
             values.extend([{'type': 'response_item', 'payload': {'type': 'custom_tool_call', 'call_id': turn,
                 'input': 'python strategy_v4.py research-read --request ' + req['request_id'] + ' --phase ' + phase}},
                 {'type': 'response_item', 'payload': {'type': 'custom_tool_call_output', 'call_id': turn, 'output': [{'type': 'text', 'text': json.dumps(payload)}]}}])
@@ -213,6 +214,21 @@ class ResearchWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'same agent'):
             research.result(self.store, bad)
         self.assertEqual(research.context(self.store)['issues'][0]['latest_result']['result_id'], saved['result_id'])
+
+    def test_node_continuity_does_not_hide_changed_read_contract(self):
+        req = self.request()
+        for field, value in [('input_id', 'sha256:' + '0' * 64), ('payload', {'question': 'Different frozen input.'}), ('unknown_field', True)]:
+            with self.subTest(field=field):
+                path = self.trace(req, 'FIRST', '2030-03-01T13:03:01Z', '2030-03-01T13:03:03Z')
+                values = [json.loads(line) for line in path.read_text().splitlines()]
+                output = next(v['payload']['output'] for v in values if v['payload'].get('type') == 'custom_tool_call_output')
+                proof = json.loads(output[0]['text'])
+                proof[field] = value
+                output[0]['text'] = json.dumps(proof)
+                path.write_text('\n'.join(json.dumps(v) for v in values) + '\n')
+                with self.assertRaisesRegex(Invalid, 'did not read'):
+                    research.independent(self.store, req['request_id'], 'SYNTHETIC_AGENT', path, 'FIRST')
+                path.unlink()
 
     def test_context_exposes_existing_phase_and_same_agent_without_claiming_liveness(self):
         req = self.request()
