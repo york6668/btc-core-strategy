@@ -1,4 +1,5 @@
 """Frozen auxiliary input retains transport identity without credentials."""
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -13,10 +14,86 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'scripts'),
 import btc_evidence
 from test_evidence_v2 import generated
 from v4 import collector, evidence
-from v4.common import digest
+from v4.common import Invalid, create, digest, read
 
 
 class CollectorProvenanceTests(unittest.TestCase):
+    def test_retained_snapshot_reuses_exact_source_and_rejects_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = {'schema': collector.SCHEMA, 'role': 'auxiliary_observation',
+                'captured_at': '2026-09-03T12:00:00Z', 'independent_verified_sources': 0,
+                'requires_independent_verification': True, 'requires_current_source_check': True,
+                'assets': {asset: {'status': 'UNAVAILABLE'} for asset in collector.ASSETS}}
+            path = root / 'snapshot.json'; create(path, snapshot)
+            spec = {'sources': []}; files = {}
+            collector.add_source(spec, files, path)
+            original = deepcopy(spec)
+            copy = root / 'same-snapshot.json'; copy.write_bytes(path.read_bytes())
+            collector.add_source(spec, files, copy)
+            self.assertEqual(spec, original)
+            self.assertEqual(files[spec['collector']['source_id']], str(copy))
+            for field, value in [('trust', 'PUBLIC_RAW'), ('raw_hash', digest(b'different')),
+                                 ('retrieved_at', '2026-09-03T12:01:00Z')]:
+                changed = deepcopy(original)
+                changed['sources'][0][field] = value
+                before = deepcopy(changed); prior_files = dict(files)
+                with self.subTest(field=field), self.assertRaisesRegex(Invalid, 'source collision'):
+                    collector.add_source(changed, files, copy)
+                self.assertEqual(changed, before)
+                self.assertEqual(files, prior_files)
+            changed = deepcopy(original)
+            changed['sources'].append(deepcopy(changed['sources'][0]))
+            with self.assertRaisesRegex(Invalid, 'source collision'):
+                collector.add_source(changed, files, copy)
+
+    def test_compact_root_reuses_frozen_collector_with_additional_public_evidence(self):
+        import test_market_observation as market_fixture
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            market = root / 'market.json'; create(market, market_fixture.evidence())
+            snapshot = root / 'snapshot.json'
+            create(snapshot, {'schema': collector.SCHEMA, 'role': 'auxiliary_observation',
+                'captured_at': '2026-09-03T12:00:00Z', 'independent_verified_sources': 0,
+                'requires_independent_verification': True, 'requires_current_source_check': True,
+                'assets': {asset: {'status': 'UNAVAILABLE'} for asset in collector.ASSETS}})
+            raw = root / 'public.json'; create(raw, {'value': 'synthetic public evidence'})
+            spec = {'parent_id': None, 'cutoff': '2026-09-03T12:02:00Z',
+                'sources': [{'id': 'public', 'origin': evidence.canonical_origin(
+                    'https://www.federalreserve.gov/releases/h6/current/default.htm'),
+                    'url': 'https://www.federalreserve.gov/releases/h6/current/default.htm',
+                    'trust': 'PUBLIC_RAW', 'published_at': '2026-09-03T12:00:00Z',
+                    'retrieved_at': '2026-09-03T12:01:00Z', 'start': '2026-09-03T12:00:00Z',
+                    'end': '2026-09-03T12:00:00Z', 'raw_hash': digest(raw.read_bytes())}],
+                'measurements': [], 'verified_facts': [], 'candidates': [], 'gaps': [],
+                'handoff': {'previous_hour': None, 'successful_deep': None, 'changes_since_hour': [],
+                    'changes_since_deep': [], 'active_hypotheses': [], 'open_questions': []}}
+            base = root / 'base'
+            evidence.freeze(spec, {'public': raw}, base)
+            first_dir = root / 'first'
+            first = evidence.compact_root(base, market, [], first_dir, spec['cutoff'], collector_file=snapshot)
+            original = (first_dir / 'evidence.json').read_bytes()
+            source = next(s for s in first['sources'] if s['id'] == first['collector']['source_id'])
+            ref = {'source_id': source['id'], 'pointer': '/captured_at',
+                   'value_hash': digest(read(snapshot)['captured_at'])}
+            target = root / 'combined'
+            merged = evidence.compact_root(first_dir, market, [ref], target, spec['cutoff'],
+                                           additional=base, collector_file=snapshot)
+            self.assertEqual(len(merged['sources']), 3)
+            self.assertEqual(merged['collector'], first['collector'])
+            self.assertEqual(next(s for s in merged['sources'] if s['id'] == source['id']), source)
+            self.assertEqual(evidence.resolve(merged, target, ref), read(snapshot)['captured_at'])
+            self.assertEqual((first_dir / 'evidence.json').read_bytes(), original)
+            with self.assertRaisesRegex(Invalid, 'untrusted lead'):
+                evidence.resolve(merged, target, ref, verified=True)
+            newer = root / 'newer.json'
+            create(newer, dict(read(snapshot), captured_at='2026-09-03T12:01:00Z'))
+            changed = evidence.compact_root(first_dir, market, [ref], root / 'changed',
+                                           spec['cutoff'], collector_file=newer)
+            self.assertNotEqual(changed['collector']['source_id'], source['id'])
+            self.assertIn(source, changed['sources'])
+            self.assertEqual(evidence.resolve(changed, root / 'changed', ref), read(snapshot)['captured_at'])
+
     def test_gap_and_valid_identity_reach_frozen_material(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -112,10 +112,15 @@ def add_source(spec, files, snapshot_file):
     raw_hash = digest(Path(snapshot_file).read_bytes())
     sid = 'collector_' + raw_hash[7:27]
     times = [r['generated_at'] for r in payload['assets'].values() if r['status'] == 'AUXILIARY']
-    spec['sources'].append({'id': sid, 'origin': 'UNESTABLISHED:t.me', 'url': 'https://t.me/',
+    source = {'id': sid, 'origin': 'UNESTABLISHED:t.me', 'url': 'https://t.me/',
         'trust': 'UNTRUSTED_LEAD', 'published_at': max(times, key=instant) if times else payload['captured_at'],
         'retrieved_at': payload['captured_at'], 'start': min(times, key=instant) if times else payload['captured_at'],
-        'end': max(times, key=instant) if times else payload['captured_at'], 'raw_hash': raw_hash})
+        'end': max(times, key=instant) if times else payload['captured_at'], 'raw_hash': raw_hash}
+    existing = [s for s in spec['sources'] if s['id'] == sid]
+    require(len(existing) <= 1 and (not existing or existing[0] == source),
+            'collector evidence source collision')
+    if not existing:
+        spec['sources'].append(source)
     files[sid] = str(snapshot_file)
     spec['collector'] = {'source_id': sid, 'snapshot_id': digest(payload)}
 
