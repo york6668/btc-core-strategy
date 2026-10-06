@@ -19,6 +19,9 @@ DESCRIPTIONS = {
     'conditions.due': 'List conditions due by time or changed dependencies, including objects absent from reports.',
     'review.resolve': 'Resolve an affected condition using a stored, current, explicitly bound REVIEW.',
     'storage.status': 'Read logical content size, unique content bytes and retention/maintenance status.',
+    'failure.get': 'Read a fault receipt and its explicit versioned resolution. Age and later runs do not imply closure.',
+    'failure.list': 'List operational fault identities and explicit closure state, including retained closure records after process-file expiry.',
+    'failure.resolve': 'Bind an actual successful recovery operation to the exact fault receipt version; retain its process file for 14 days after confirmation, with evidence/dependency protection.',
 }
 
 

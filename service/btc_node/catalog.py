@@ -104,11 +104,25 @@ class Catalog:
                 seen.add(relative)
                 stat = path.lstat()
                 policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
+                ttl = RETENTION_DAYS[policy]
+                expires = stat.st_mtime_ns // 1000000 + ttl * DAY if ttl else None
+                if not path.is_symlink() and (name == 'failure-receipt.json' or name.endswith(('-failure.json', '-error.json'))):
+                    from .failures import is_receipt
+                    raw = path.read_bytes()
+                    try:
+                        failure = is_receipt(relative, json.loads(raw))
+                    except (ValueError, UnicodeError):
+                        failure = False
+                    if failure:
+                        closed = self.db.metadata('failure:' + identity(namespace, relative))
+                        if policy != 'ACTIVE' and closed and closed['digest'] == fingerprint(raw):
+                            policy, expires = 'FAILURE_CLOSED', closed['closed_ms'] + 14 * DAY
+                        else:
+                            policy, expires = 'ACTIVE', None
                 prior = existing.get(relative)
-                if prior and prior['retention_class'] != policy:
-                    ttl = RETENTION_DAYS[policy]
+                if prior and (prior['retention_class'] != policy or prior['expires_ms'] != expires):
                     self.db.execute('UPDATE documents SET retention_class=%s,expires_ms=%s WHERE document_key=%s',
-                                    (policy, stat.st_mtime_ns // 1000000 + ttl * DAY if ttl else None, prior['document_key']))
+                                    (policy, expires, prior['document_key']))
                     self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (prior['document_key'],))
                 if path.is_symlink():
                     link = os.readlink(path)
@@ -122,14 +136,13 @@ class Catalog:
                         databases.append(saved)
                         record=self.db.one('SELECT schema_digest FROM legacy_databases WHERE database_key=%s',
                                            (identity(namespace,relative),))
-                        ttl=RETENTION_DAYS[policy]
                         self.db.execute('INSERT INTO documents(document_key,namespace,path,kind,digest,link_target,byte_length,'
                             'source_mtime_ns,recorded_ms,retention_class,expires_ms) VALUES(%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,%s) '
                             'ON DUPLICATE KEY UPDATE kind=VALUES(kind),digest=VALUES(digest),link_target=NULL,'
                             'byte_length=VALUES(byte_length),source_mtime_ns=VALUES(source_mtime_ns),'
                             'retention_class=VALUES(retention_class),expires_ms=VALUES(expires_ms)',
                             (identity(namespace,relative),namespace,relative,'SQLITE',record['schema_digest'],stat.st_size,
-                             stat.st_mtime_ns,millis(),policy,stat.st_mtime_ns//1000000+ttl*DAY if ttl else None))
+                             stat.st_mtime_ns,millis(),policy,expires))
                         if saved['changed']:
                             self.db.execute('DELETE FROM document_recycling WHERE document_key=%s',(identity(namespace,relative),))
                         continue
@@ -144,8 +157,6 @@ class Catalog:
                     link, size, kind = None, len(data), 'FILE'
                 else:
                     continue
-                ttl = RETENTION_DAYS[policy]
-                expires = stat.st_mtime_ns // 1000000 + ttl * DAY if ttl else None
                 self.db.execute('INSERT INTO documents(document_key,namespace,path,kind,digest,link_target,byte_length,'
                                 'source_mtime_ns,recorded_ms,retention_class,expires_ms) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) '
                                 'ON DUPLICATE KEY UPDATE kind=VALUES(kind),digest=VALUES(digest),link_target=VALUES(link_target),'

@@ -42,6 +42,8 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 
 维护首次启用前验证实际恢复。maintenance_enabled 默认 false；启用后每日先备份再清理，备份默认七天且至少保留两份。引用保护、回收缓冲和生命周期均由 lifecycle 执行；Compose 限制日志轮转。storage.status 区分逻辑字节、去重字节、实际文件占用、MySQL 表分配量和宿主 Docker 占用；删除行不等于 InnoDB 卷缩小。
 
+故障过程材料通过 `failure.get` / `failure.resolve` 接续。兼容导入识别 `failure-receipt.json`、`*-failure.json`、`*-error.json` 中的失败记录；没有证据绑定的明确关闭时保持 ACTIVE。关闭要求当前 document_key、原文 digest、expected_version、已成功提交的核心恢复或验收修复 operation_id 和原因；文件旧、后续运行成功或接口登记本身均不推断恢复。14 天从本次实际关闭确认计时，重复关闭不延后；同路径新故障恢复 OPEN。原文、关闭证据和历史仍由精简记录引用保存，文件回收仍检查依赖和 48 小时缓冲。
+
 默认备份目录位于证据挂载内的 `objects/.backups`，使同一不可变内容可以通过硬链接复用；不同 bind mount 即使显示相同设备号也可能返回 EXDEV 并退回整份复制。旧节点可在维护空闲时迁入同一挂载并保留原路径软链接；逐份校验数据库归档、清单及内容哈希后才合并相同内容，备份名称、恢复入口和保留期限不变。活跃 CAS 删除自己的链接不会删除备份链接；容量按 inode 去重统计，不能把备份逻辑大小当作新增磁盘用量。
 
 宿主每天运行 `service/node_capacity.py --node <现有 node.json>` 保存 Docker 实际用量。node.native_logs 逐项指定项目日志的 path、launchd_label、max_bytes 和 keep_files；仅在对应任务空闲时轮转，运行中留待下次。node.capacity_extra_paths 明确列出迁移缓冲等额外占用，不能扫描或清理 Codex 全局历史及其他项目。

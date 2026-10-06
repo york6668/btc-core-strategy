@@ -21,6 +21,11 @@ SPEC = obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'product': {'type':
     ['kind','object_id','scope','observed_at','known_at','change_reason','source_ref','method_version','payload','dependencies'])
 
 PARAMETERS = {
+    'failure.get': obj({'document_key':TEXT}, ['document_key']),
+    'failure.list': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
+    'failure.resolve': obj({'document_key':TEXT,'expected_digest':TEXT,'expected_version':VERSION,
+        'resolution_operation_id':TEXT,'reason':TEXT},
+        ['document_key','expected_digest','expected_version','resolution_operation_id','reason']),
     'acceptance.start': obj({'release':TEXT}, ['release']),
     'acceptance.status': obj({}),
     'acceptance.window': obj({'day':TEXT}, ['day']),

@@ -12,6 +12,8 @@
 
 宿主统一入口 `btc-core data` 从 stdin 接收 JSON；项目 BTC MCP 提供同名能力（点改为下划线）。例如 `{"method":"conditions.due","params":{"scope":"PUBLIC"}}`。写操作提供稳定 operation_id；重试复用相同 ID 和输入。读取分页返回 next 时继续读取，不能把第一页当作完整范围。
 
+故障复核使用 `failure.get(document_key)` 读取当前原文与关闭版本；只有核实同一故障已恢复后，才用 `failure.resolve(document_key, expected_digest, expected_version, resolution_operation_id, reason)` 绑定成功核心恢复或 evidence-bound acceptance.repair。未确认恢复继续 OPEN，不能凭文件日期、另一次运行成功或 UNKNOWN 投递的等待状态关闭。关闭后的过程文件保留 14 天并继续接受引用与回收缓冲保护；同路径新原文不能继承旧关闭结论。
+
 查询 PERSONAL 的 object.get/list/history 或 conditions.due 同样提供已冻结的 market_binding；不能通过直接对象查询提前读取个人材料。
 
 CLI `continuity.market_binding` 仅表示本轮已冻结市场结果，与 `continuous-personal.json` 一致；尚未冻结时为 null。`formal_market_binding` 是旧正式核心基线，不能代替本轮个人阶段绑定。

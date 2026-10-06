@@ -649,6 +649,69 @@ class NodeContract(unittest.TestCase):
                 self.assertFalse(self.db.one('SELECT document_key FROM documents WHERE namespace=%s AND path=%s',(self.id,'cache/old.txt')))
                 self.assertFalse(self.db.one('SELECT database_key FROM legacy_databases WHERE namespace=%s',(self.id,)))
 
+    def test_fault_closure_uses_actual_recovery_and_closure_clock_with_grace(self):
+        from btc_node.codec import identity
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/'runtime').mkdir()
+            closed=root/'runtime/failure-receipt.json'; opened=root/'runtime/open-failure.json'
+            raw=encode({'schema':'BTC_RUN_FAILURE_RECEIPT_V1','error':'generated fault','run_ref':self.id})
+            for file in (closed,opened):
+                file.write_bytes(raw); old=(self.now-timedelta(days=60)).timestamp();os.utime(file,(old,old))
+            catalog=Catalog(self.db);key=identity(self.id,'runtime/failure-receipt.json')
+            recovery=self.id+'-recovered'
+            with self.db.transaction():
+                catalog.sync(self.id,root)
+                request=self.db.put_blob(encode({'argv':['generated-recovery'],'release':'generated-test'}))
+                result=self.db.put_blob(encode({'returncode':0}))
+                self.db.execute('INSERT INTO operations(operation_id,request_digest,status,started_ms,finished_ms,result_digest) VALUES(%s,%s,%s,%s,%s,%s)',
+                    (recovery,request,'COMMITTED',millis(),millis(),result))
+            maintain(self.db,apply=True,now=self.now+timedelta(days=3))
+            self.assertTrue(opened.exists()); self.assertTrue(closed.exists())
+            current=dispatch(self.settings,{'method':'failure.get','params':{'document_key':key}})
+            self.assertEqual(current['state'],'OPEN'); self.assertEqual(current['document']['retention_class'],'ACTIVE')
+            self.assertIn(key,{r['document_key'] for r in dispatch(self.settings,{'method':'failure.list','params':{}})['failures']})
+            params={'document_key':key,'expected_digest':current['document']['digest'],'expected_version':0,
+                    'resolution_operation_id':recovery,'reason':'Generated same-fault replay succeeded'}
+            with self.assertRaises(ValueError):
+                dispatch(self.settings,{'method':'failure.resolve','operation_id':self.id+'-missing','params':{**params,'resolution_operation_id':'missing'}})
+            request={'method':'failure.resolve','operation_id':self.id+'-close','params':params}
+            saved=dispatch(self.settings,request)
+            self.assertEqual(saved,dispatch(self.settings,request))
+            close=datetime.fromtimestamp(saved['resolution']['closed_ms']/1000,timezone.utc)
+            self.assertEqual(saved['document']['expires_ms'],millis(close+timedelta(days=14)))
+            self.db.connection.rollback()
+            with self.db.transaction():catalog.sync(self.id,root)
+            with self.assertRaises(Conflict):
+                dispatch(self.settings,{'method':'failure.resolve','operation_id':self.id+'-reclose','params':{**params,'expected_version':1}})
+            maintain(self.db,apply=True,now=close+timedelta(days=13));self.assertTrue(closed.exists())
+            maintain(self.db,apply=True,now=close+timedelta(days=15));self.assertTrue(closed.exists())
+            maintain(self.db,apply=True,now=close+timedelta(days=18));self.assertFalse(closed.exists());self.assertTrue(opened.exists())
+            state=dispatch(self.settings,{'method':'failure.get','params':{'document_key':key}})
+            self.assertEqual(state['state'],'CLOSED');self.assertIsNone(state['document'])
+            self.assertEqual(self.db.blobs.get(params['expected_digest']),raw)
+
+    def test_fault_same_path_new_original_cannot_inherit_old_closure(self):
+        from btc_node.codec import identity
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);file=root/'step-failure.json';file.write_bytes(encode({'ok':False,'error':'first'}))
+            key=identity(self.id,file.name);catalog=Catalog(self.db)
+            with self.db.transaction():
+                catalog.sync(self.id,root)
+                first=invoke(self.db,'failure.get',{'document_key':key})
+                old={'document_key':key,'digest':first['document']['digest'],'version':1,'closed_ms':millis(self.now-timedelta(days=40)),
+                     'resolution_operation_id':'generated-old','reason':'historical generated recovery'}
+                self.db.metadata('failure:'+key,old,write=True)
+                catalog.sync(self.id,root)
+                self.assertEqual(invoke(self.db,'failure.get',{'document_key':key})['state'],'CLOSED')
+                file.write_bytes(encode({'ok':False,'error':'new failure'}));catalog.sync(self.id,root)
+                current=invoke(self.db,'failure.get',{'document_key':key})
+                self.assertEqual(current['state'],'OPEN');self.assertEqual(current['prior_resolution'],old)
+                self.assertEqual(current['document']['retention_class'],'ACTIVE');self.assertIsNone(current['document']['expires_ms'])
+                with self.assertRaises(Conflict):
+                    invoke(self.db,'failure.resolve',{'document_key':key,'expected_digest':old['digest'],'expected_version':1,
+                        'resolution_operation_id':'generated-old','reason':'late close must be rejected'})
+            maintain(self.db,apply=True,now=self.now+timedelta(days=3));self.assertTrue(file.exists())
+
     def test_fact_views_require_current_files_and_preserve_unknown_and_targets(self):
         from btc_node.fact_views import project, NAMES
         from btc_node.codec import fingerprint

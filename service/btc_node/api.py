@@ -11,9 +11,9 @@ from .series import Series
 
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
-         'acceptance.window', 'acceptance.status'}
+         'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list'}
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest',
-          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair'}
+          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve'}
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
 
 
@@ -33,6 +33,9 @@ def invoke(database, method, params):
     if method.startswith('acceptance.'):
         from . import acceptance
         return getattr(acceptance, method.split('.')[1])(database, **params)
+    if method.startswith('failure.'):
+        from . import failures
+        return getattr(failures, 'listing' if method == 'failure.list' else method.split('.')[1])(database, **params)
     if method == 'status':
         return {'schema': database.one('SELECT version FROM node_schema WHERE singleton=1')['version'],
                 'writer': database.metadata('writer'),
