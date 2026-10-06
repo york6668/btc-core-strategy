@@ -156,6 +156,8 @@ def _maintain(db, *, apply, now):
     grace = int(db.settings.get('recycle_grace_hours', 48)) * 3600000
     with db.transaction():
         if apply:
+            from .backup import reap_pins
+            reap_pins(db)
             db.execute('DELETE FROM series_retrievals WHERE known_ms<%s', (now_ms-30*DAY,))
         # A measurement referenced by an analytical object remains queryable,
         # including its revisions. Age alone cannot retire that object.

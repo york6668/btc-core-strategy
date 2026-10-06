@@ -726,6 +726,81 @@ class NodeContract(unittest.TestCase):
             self.assertEqual(self.db.metadata(self.id),{'delivery':'UNKNOWN','cursor':987654})
             self.assertTrue(self.db.blobs.path(digest).is_file())
 
+    def test_backup_copy_allows_writes_and_gc_without_losing_snapshot_originals(self):
+        import gzip
+        from btc_node.lifecycle import _maintain
+        with self.db.transaction():
+            digest = self.db.put_blob(encode({'unreferenced_snapshot_original': self.id}))
+            self.db.execute('UPDATE blobs SET unreferenced_ms=%s WHERE digest=%s',
+                            (millis(self.now-timedelta(days=4)), digest))
+            self.db.metadata(self.id, {'delivery':'UNKNOWN','cursor':17}, write=True)
+        other = Database(self.settings)
+        copied = []
+        original = self.db.blobs.materialize
+        def copy_with_concurrent_writer(source_digest, target):
+            if not copied:
+                with other.writer(timeout=0), other.transaction():
+                    # The copying connection still owns its temporary lease;
+                    # another writer can change live state, but not its view.
+                    self.assertEqual(backup.reap_pins(other), [])
+                    other.metadata(self.id, {'delivery':'DELIVERED','cursor':19}, write=True)
+                with other.writer(timeout=0):
+                    _maintain(other, apply=True, now=self.now)
+                self.assertTrue(other.blobs.path(digest).is_file())
+                self.assertIsNotNone(other.one('SELECT digest FROM blobs WHERE digest=%s', (digest,)))
+            copied.append(source_digest)
+            return original(source_digest, target)
+        try:
+            with tempfile.TemporaryDirectory(prefix='btc-backup-concurrency-') as directory:
+                target=Path(directory)/'snapshot'
+                with patch.object(self.db.blobs, 'materialize', side_effect=copy_with_concurrent_writer):
+                    saved=backup.create(self.db, target)
+                self.assertIn(digest, copied)
+                with gzip.open(target/'database.jsonl.gz', 'rt') as stream:
+                    records=[json.loads(line) for line in stream]
+                record=next(r['row'] for r in records if r.get('table')=='node_metadata'
+                            and r.get('row',{}).get('name')==self.id)
+                archived=backup.Blobs(target/'objects')
+                self.assertEqual(json.loads(archived.get(record['digest'])), {'delivery':'UNKNOWN','cursor':17})
+                self.assertFalse(any(r.get('table')=='metadata_blobs' and
+                                     r.get('row',{}).get('name','').startswith(backup.PIN_PREFIX) for r in records))
+                self.db.connection.rollback()
+                self.assertEqual(self.db.metadata(self.id), {'delivery':'DELIVERED','cursor':19})
+                self.assertFalse(saved['pin_cleanup_deferred'])
+                self.assertFalse(self.db.rows('SELECT name FROM metadata_blobs WHERE name LIKE %s',
+                                              (backup.PIN_PREFIX+'%',)))
+                self.assertGreaterEqual(saved['completed_ms'], saved['created_ms'])
+        finally:
+            other.close()
+
+    def test_interrupted_backup_leases_are_reaped_but_live_copy_is_protected(self):
+        holder=Database(self.settings)
+        live=backup.PIN_PREFIX+uuid.uuid4().hex
+        orphan=backup.PIN_PREFIX+uuid.uuid4().hex
+        try:
+            self.assertEqual(holder.one('SELECT GET_LOCK(%s,0) AS acquired', (live,))['acquired'], 1)
+            with self.db.writer(), self.db.transaction():
+                digest=self.db.put_blob(encode({'backup_crash':self.id}))
+                for name in (live, orphan):
+                    self.db.execute('INSERT INTO metadata_blobs(name,digest) VALUES(%s,%s)', (name,digest))
+                self.assertEqual(backup.reap_pins(self.db), [orphan])
+                self.assertIsNotNone(self.db.one('SELECT name FROM metadata_blobs WHERE name=%s', (live,)))
+            holder.close()  # Process/connection loss releases the named lease.
+            with self.db.writer(), self.db.transaction():
+                self.assertEqual(backup.reap_pins(self.db), [live])
+            with tempfile.TemporaryDirectory(prefix='btc-backup-failure-') as directory:
+                target=Path(directory)/'failed'
+                with patch.object(self.db.blobs, 'materialize', side_effect=OSError('generated copy failure')):
+                    with self.assertRaisesRegex(OSError, 'generated copy failure'):
+                        backup.create(self.db, target)
+                self.assertFalse(list(Path(directory).iterdir()))
+                self.db.connection.rollback()
+                self.assertFalse(self.db.rows('SELECT name FROM metadata_blobs WHERE name LIKE %s',
+                                              (backup.PIN_PREFIX+'%',)))
+        finally:
+            if holder.connection.open:
+                holder.close()
+
     def test_elapsed_acceptance_window_does_not_pass_without_actual_consumption(self):
         from btc_node import acceptance
         with self.db.transaction():

@@ -8,8 +8,28 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import uuid
 
 from .codec import Blobs, Conflict, encode, fingerprint, millis, sync_directory
+from .database import Database
+
+
+PIN_PREFIX = 'btc-backup:'
+
+
+def reap_pins(db):
+    """Release interrupted backup references inside the caller's writer transaction.
+
+    The per-backup MySQL lock lives for the copying connection, independently
+    of the short node writer lock. A disconnected process cannot retain it.
+    """
+    removed = []
+    for row in db.rows('SELECT DISTINCT name FROM metadata_blobs WHERE name LIKE %s', (PIN_PREFIX+'%',)):
+        name = row['name']
+        if db.one('SELECT IS_USED_LOCK(%s) AS owner', (name,))['owner'] is None:
+            db.execute('DELETE FROM metadata_blobs WHERE name=%s', (name,))
+            removed.append(name)
+    return removed
 
 
 def identifier(value):
@@ -24,38 +44,71 @@ def create(db, destination):
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix='.backup-', dir=destination.parent))
+    snapshot = None
+    pin = PIN_PREFIX + uuid.uuid4().hex
+    acquired = False
+    cleanup_deferred = False
     try:
+        snapshot = Database(db.settings)
+        acquired = db.one('SELECT GET_LOCK(%s,0) AS acquired', (pin,))['acquired'] == 1
+        if not acquired:
+            raise Conflict('backup identity is already active')
         with db.writer(), db.transaction():
-            tables = [next(iter(r.values())) for r in db.rows('SHOW TABLES')]
-            backup_blobs = Blobs(stage/'objects')
-            counts = {}
-            with gzip.open(stage/'database.jsonl.gz', 'wb') as stream:
-                stream.write(encode({'format':'BTC_MYSQL_BACKUP_V1','created_ms':millis()}))
-                for table in tables:
-                    quoted=identifier(table)
-                    schema=db.one('SHOW CREATE TABLE '+quoted)['Create Table']
-                    stream.write(encode({'table':table,'create':schema}))
-                    rows=db.rows('SELECT * FROM '+quoted)
-                    counts[table]=len(rows)
-                    for row in rows:
-                        stream.write(encode({'table':table,'row':row}))
-                for row in db.rows('SELECT digest FROM blobs'):
-                    digest=row['digest']
-                    target=backup_blobs.path(digest)
-                    target.parent.mkdir(parents=True,exist_ok=True)
-                    # Originals are immutable. Hardlinks preserve backup bytes
-                    # even after live GC unlinks its own directory entry.
-                    db.blobs.materialize(digest,target)
-            manifest={'format':'BTC_MYSQL_BACKUP_V1','created_ms':millis(),'tables':counts,
-                      'database_sha256':fingerprint((stage/'database.jsonl.gz').read_bytes())}
-            (stage/'manifest.json').write_bytes(encode(manifest))
+            reap_pins(db)
+            # Establish a read view on a separate connection before releasing
+            # admission. Pin its originals atomically against concurrent GC.
+            snapshot.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+            snapshot.execute('START TRANSACTION WITH CONSISTENT SNAPSHOT')
+            snapshot_ms = millis()
+            db.execute('INSERT INTO metadata_blobs(name,digest) SELECT %s,digest FROM blobs', (pin,))
+        (stage/'in-progress.json').write_bytes(encode({'format':'BTC_BACKUP_PROGRESS_V1',
+            'pin':pin, 'destination':str(destination), 'snapshot_ms':snapshot_ms}))
+        tables = [next(iter(r.values())) for r in snapshot.rows('SHOW TABLES')]
+        backup_blobs = Blobs(stage/'objects')
+        counts = {}
+        with gzip.open(stage/'database.jsonl.gz', 'wb') as stream:
+            stream.write(encode({'format':'BTC_MYSQL_BACKUP_V1','created_ms':snapshot_ms}))
+            for table in tables:
+                quoted=identifier(table)
+                schema=snapshot.one('SHOW CREATE TABLE '+quoted)['Create Table']
+                stream.write(encode({'table':table,'create':schema}))
+                # Temporary copying leases must never become permanent
+                # references when restoring this consistent snapshot.
+                rows = (snapshot.rows('SELECT * FROM '+quoted+' WHERE name NOT LIKE %s', (PIN_PREFIX+'%',))
+                        if table == 'metadata_blobs' else snapshot.rows('SELECT * FROM '+quoted))
+                counts[table]=len(rows)
+                for row in rows:
+                    stream.write(encode({'table':table,'row':row}))
+        for row in snapshot.rows('SELECT digest FROM blobs'):
+            digest=row['digest']
+            target=backup_blobs.path(digest)
+            target.parent.mkdir(parents=True,exist_ok=True)
+            # Original bytes are immutable and pinned even if new writes or
+            # lifecycle sweeps run while these files are copied/verified.
+            db.blobs.materialize(digest,target)
+        manifest={'format':'BTC_MYSQL_BACKUP_V1','created_ms':snapshot_ms,'completed_ms':millis(),
+                  'tables':counts,'database_sha256':fingerprint((stage/'database.jsonl.gz').read_bytes())}
+        (stage/'manifest.json').write_bytes(encode(manifest))
+        (stage/'in-progress.json').unlink()
         for path in (stage/'manifest.json',stage/'database.jsonl.gz'):
             with path.open('rb') as handle:os.fsync(handle.fileno())
         sync_directory(stage)
         os.rename(stage,destination);sync_directory(destination.parent)
-        return {'backup':str(destination),**manifest}
     finally:
+        if snapshot is not None:
+            snapshot.close()
+        if acquired:
+            try:
+                with db.writer(), db.transaction():
+                    db.execute('DELETE FROM metadata_blobs WHERE name=%s', (pin,))
+            except Conflict:
+                # A completed backup remains valid if admission is busy. The
+                # next sweep reaps this now-ownerless temporary reference.
+                cleanup_deferred = True
+            finally:
+                db.one('SELECT RELEASE_LOCK(%s) AS released', (pin,))
         if stage.exists():shutil.rmtree(stage)
+    return {'backup':str(destination), 'pin_cleanup_deferred':cleanup_deferred, **manifest}
 
 
 def restore(db, source):
