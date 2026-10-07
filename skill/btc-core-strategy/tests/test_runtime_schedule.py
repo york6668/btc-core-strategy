@@ -52,6 +52,31 @@ class RuntimeScheduleTests(unittest.TestCase):
         self.assertNotIn('review_not_before', got)
         self.assertFalse(target.exists())
 
+    def test_prefixed_reference_finds_owner_preserves_binding_and_excludes_current(self):
+        # A resumed current thread may already contain a completed turn. It
+        # must not become its own execution-margin sample after normalization.
+        current_rollout = self.base / 'current.jsonl'
+        current_rollout.write_text('\n'.join(json.dumps(x) for x in [
+            {'timestamp':'2030-03-01T10:00:00Z','payload':{'type':'task_started'}},
+            {'timestamp':'2030-03-01T12:00:00Z','payload':{'type':'task_complete'}}])+'\n')
+        with sqlite3.connect(self.state) as c:
+            c.execute('INSERT INTO threads VALUES(?,?)', ('CURRENT',str(current_rollout)))
+        before = {p: p.read_bytes() for p in (self.db,self.state,self.rollout,current_rollout)}
+        native = runtime_schedule.snapshot(self.config, 'CURRENT', self.at)
+        got = runtime_schedule.snapshot(self.config, 'codex:CURRENT', self.at)
+        self.assertEqual(got, dict(native, run_ref='codex:CURRENT'))
+        self.assertEqual(got['status'], 'AVAILABLE')
+        self.assertEqual(got['automation_id'], 'SYNTHETIC_TASK')
+        self.assertEqual([x['run_ref'] for x in got['recent_completed_runs']], ['PRIOR'])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        path = self.base / 'prefixed-snapshot.json'
+        path.write_text(json.dumps(got))
+        runtime_schedule.bind(path, 'codex:CURRENT')
+        self.assertEqual(runtime_schedule.current(), got)
+        with self.assertRaisesRegex(ValueError, 'actual run'):
+            runtime_schedule.bind(path, 'CURRENT')
+        self.assertEqual(runtime_schedule.snapshot(self.config, 'codex:UNKNOWN', self.at)['status'], 'NOT_SCHEDULED')
+
     def test_due_or_paused_start_is_not_a_future_completion_promise(self):
         with sqlite3.connect(self.db) as c:
             c.execute('UPDATE automations SET next_run_at=0')
