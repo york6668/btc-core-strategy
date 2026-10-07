@@ -100,6 +100,7 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 - `research.context` 的 `latest_request.progress` 从既有不可变 independent/candidate/result 派生，保留阶段、同一代理及其实际运行记录路径；最新候选有对应结果才显示 RESULT_RECORDED，历史结果仍供原基线参考，不能冒充新请求完成。阶段是完成证据，不是运行锁或存活判断；Sol 先核对实际运行/返回再恢复原阶段，已有候选不重建独立深评。精简运行上下文保留同一字段，无第二份研究状态。
 - 生成不可变受控input及request。独立Astra子代理从`research-read --request <id> --phase independent`实际读入，按需回读其中原始路径。input仅问题、原始证据及带日期的历史锚，不含当前候选；事实路径保留为后续组合适配来源，Astra 先完成公开市场结论与价格风险，再由同一代理读取事实完成个人应对。
 - 等真实独立回答完成，`research-independent --request --agent --rollout --turn`校验实际Astra/max、读入实物和完成turn；`research-reveal --request --independent --candidate`此后冻结候选。
+- 独立公开阶段自行补证后，先归档合并的完整EvidenceBundle，再对`research-independent`增加`--additional <合并证据目录>`。登记仍核验原冻结输入的真实读取、同一作者和实际完成回答，补证时钟不得晚于该回答完成；补证不得改写同名原来源。登记保留原request/input身份，并记录实际补证身份与时钟，候选仍显式绑定同一补证，不重开研究或将补证写回初始输入。
 - 同一研究中途补证时保留原 request 和独立输入，先将包含最终完整行情与新增官方原文的合并 EvidenceBundle 归档，再对 `research-reveal` 加 `--additional <合并证据目录>`。候选阶段的实际输入同时携带新增来源路径及真实证据时钟，同一 Astra 必须据此修正并审阅。最终结果沿用该证据身份、行情截止和知识截止，不把新资料写回旧请求的时间；不可改写同名旧来源。BTC_CYCLE 候选时钟必须与绑定包一致，不能省略补证参数却使用较晚资料。历史无补证的候选与结果保持原样。
 - 同一Astra读取`research-read --request --phase candidate --candidate-id`并审阅候选。`research-result --spec`保存request_id、candidate_id、agent_id、rollout_path、turn_id、coverage、counterevidence、unresolved、reopen_conditions、analysis，analysis必须对应实际第二阶段回答。结果校验相同代理、顺序、输入绑定及证据截止；普通专题按 scope，BTC_CYCLE 必须覆盖完整周期与组合，均不负责报告投递。
 - 主任务阅读结果并取舍，写research_absorptions和受影响结论，重新取得context绑定后发布；结果完成不要求再做一次观察才可吸收。不同问题保留独立累计窗口；历史缺结构化覆盖维持UNKNOWN，不补造记录或批量研究。

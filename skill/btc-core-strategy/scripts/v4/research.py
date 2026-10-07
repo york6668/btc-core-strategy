@@ -478,7 +478,7 @@ def _completed_turn(path, agent_id, turn_id):
     return dict(completed, proof_reads=proof_reads)
 
 
-def independent(root, request_id, agent_id, rollout_path, turn_id):
+def independent(root, request_id, agent_id, rollout_path, turn_id, additional=None):
     with locked(root):
         req = _load(root, 'requests', request_id)
         packet = read(Path(root) / req['independent_input_path'])
@@ -489,11 +489,17 @@ def independent(root, request_id, agent_id, rollout_path, turn_id):
         expected = read_input(root, request_id)
         require(expected in turn['proof_reads'], 'independent runtime did not read this frozen request input')
         require(not any(v['phase'] == 'candidate' for v in turn['proof_reads']), 'independent runtime already read candidate material')
+        supplement = {}
+        if additional is not None:
+            context = _review_evidence(root, req, None, additional)
+            require(instant(context['knowledge_cutoff']).timestamp() <= turn['completed_at'],
+                    'independent supplement is after the actual completed answer')
+            supplement['evidence_context'] = context
         return _save(root, 'independent', 'independent_id', {'schema': 'BTC_RESEARCH_INDEPENDENT_V4',
             'request_id': request_id, 'agent_id': agent_id, 'turn_id': turn_id, 'rollout_path': str(Path(rollout_path).resolve()),
             'verification_scope': 'NATIVE_RUNTIME_PHASE_INPUT_READ',
             'input_id': req['independent_input_id'], 'summary': turn['last_agent_message'],
-            **_public_result(root, req, turn['last_agent_message']),
+            **_public_result(root, req, turn['last_agent_message'], additional), **supplement,
             'started_at': turn['started_at'], 'completed_at': turn['completed_at']})
 
 
@@ -527,7 +533,7 @@ def _review_evidence(root, req, candidate, directory):
             'supplementary market time is inconsistent')
     require(instant(req['knowledge_cutoff']) <= instant(package['cutoff']), 'supplement cannot move knowledge cutoff backwards')
     clocks = {'market_cutoff': current_market['cutoff'], 'knowledge_cutoff': package['cutoff']}
-    if req['issue_key'] == 'BTC_CYCLE':
+    if req['issue_key'] == 'BTC_CYCLE' and candidate is not None:
         require(all(instant(candidate['assessment']['temporal_scope'][k]) == instant(v) for k, v in clocks.items()),
                 'candidate clocks must match its supplementary evidence')
     return {'evidence_id': package['evidence_id'], 'market_evidence_id': current_market['evidence_id'],

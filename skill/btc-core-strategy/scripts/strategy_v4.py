@@ -125,6 +125,7 @@ def main(argv=None):
     p = sub.add_parser('research-independent')
     for flag in ('request', 'agent', 'rollout', 'turn'):
         p.add_argument('--' + flag, required=True)
+    p.add_argument('--additional', help='archived merged public evidence consumed before the actual answer completed')
     p = sub.add_parser('research-reveal')
     for flag in ('request', 'independent', 'candidate'):
         p.add_argument('--' + flag, required=True)
@@ -247,7 +248,7 @@ def main(argv=None):
         elif args.command == 'research-read':
             result=research.read_input(args.root,args.request,args.phase,args.candidate_id,args.independent_id)
         elif args.command == 'research-independent':
-            result=research.independent(args.root,args.request,args.agent,args.rollout,args.turn)
+            result=research.independent(args.root,args.request,args.agent,args.rollout,args.turn,args.additional)
         elif args.command == 'research-reveal':
             result=research.reveal(args.root,args.request,args.independent,read(args.candidate),additional=args.additional,check_only=args.check_only)
         elif args.command == 'enqueue':

@@ -248,6 +248,66 @@ class RevisionFivePublicationTests(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.c.study(authored=True,independent_output=json.dumps(self.public))
 
+    def test_independent_can_register_its_actual_public_supplement_without_restarting(self):
+        req, saved, _ = self.adopted()
+        original = research._load(self.f.store, 'independent', saved['independent_id'])
+        bundle_spec = {k: deepcopy(v) for k, v in self.f.evidence.items()
+                       if k not in ('schema', 'evidence_id')}
+        bundle_spec.update(parent_id=None, cutoff='2030-03-01T13:03:04Z')
+        raw = self.f.base / 'additional-public.json'
+        replace(raw, {'finding': 'Synthetic official financing disclosure.'})
+        files = {s['id']: self.f.evidence_dir / 'raw' / (s['raw_hash'][7:] + '.json')
+                 for s in bundle_spec['sources']}
+        source = {'id': 'additional_public', 'origin': 'FED',
+                  'url': 'https://www.federalreserve.gov/synthetic-disclosure', 'trust': 'PUBLIC_RAW',
+                  'published_at': '2030-03-01T13:03:04Z', 'retrieved_at': '2030-03-01T13:03:04Z',
+                  'start': '2030-03-01T13:03:04Z', 'end': '2030-03-01T13:03:04Z',
+                  'raw_hash': digest(raw.read_bytes())}
+        bundle_spec['sources'].append(source)
+        files[source['id']] = raw
+        directory = self.f.base / 'independent-supplement'
+        bundle = evidence.freeze(bundle_spec, files, directory)
+        public = deepcopy(self.public)
+        public['outlook']['refs'].append({'source_id': source['id'], 'pointer': '/finding',
+                                        'value_hash': digest(read(raw)['finding'])})
+        path = Path(original['rollout_path'])
+        proof = research.read_input(self.f.store, req['request_id'])
+        with path.open('a') as stream:
+            for item in (
+                {'type': 'turn_context', 'payload': {'turn_id': 'PUBLIC_SUPPLEMENT', 'model': 'gpt-6-astra', 'effort': 'max'}},
+                {'type': 'response_item', 'payload': {'type': 'custom_tool_call', 'call_id': 'supplement-read',
+                    'input': 'python strategy_v4.py research-read --request ' + req['request_id'] + ' --phase independent'}},
+                {'type': 'response_item', 'payload': {'type': 'custom_tool_call_output', 'call_id': 'supplement-read', 'output': json.dumps(proof)}},
+                {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'PUBLIC_SUPPLEMENT',
+                    'started_at': original['completed_at'] + 1, 'completed_at': original['completed_at'] + 10,
+                    'last_agent_message': json.dumps(public)}}):
+                stream.write(json.dumps(item) + '\n')
+        args = (self.f.store, req['request_id'], original['agent_id'], path, 'PUBLIC_SUPPLEMENT')
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'):
+            with self.assertRaisesRegex(Invalid, 'reference source absent'):
+                research.independent(*args)
+            with self.assertRaisesRegex(Invalid, 'archive supplementary'):
+                research.independent(*args, additional=directory)
+            storage.archive_evidence(self.f.store, directory)
+            actual = research.independent(*args, additional=directory)
+        self.assertEqual(actual['market_result'], public)
+        self.assertEqual(actual['input_id'], req['independent_input_id'])
+        self.assertEqual(actual['evidence_context']['evidence_id'], bundle['evidence_id'])
+        self.assertEqual(actual['evidence_context']['knowledge_cutoff'], bundle['cutoff'])
+        self.assertEqual(research._load(self.f.store, 'independent', original['independent_id']), original)
+        self.assertNotIn(source['id'], json.dumps(proof))
+        late_spec = deepcopy(bundle_spec)
+        late_spec['cutoff'] = '2030-03-01T13:03:14Z'
+        late_dir = self.f.base / 'late-independent-supplement'
+        evidence.freeze(late_spec, files, late_dir)
+        storage.archive_evidence(self.f.store, late_dir)
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'), self.assertRaisesRegex(Invalid, 'after the actual completed answer'):
+            research.independent(*args, additional=late_dir)
+        # A raw-source rewrite cannot acquire approval merely by using --additional.
+        (directory / 'raw' / (source['raw_hash'][7:] + '.json')).write_text('{}')
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'), self.assertRaisesRegex(Invalid, 'raw evidence'):
+            research.independent(*args, additional=directory)
+
     def test_model_selected_driver_does_not_require_legacy_factor_recipe(self):
         self.f.draft['domain']['causal_attribution'].update(driver_regime='MIXED',
             driver_components=['CRYPTO_NATIVE_SPOT','MACRO_BETA'])
