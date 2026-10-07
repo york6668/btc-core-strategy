@@ -31,7 +31,7 @@ CORE_REPORT_REVIEW = (
 )
 APPLICABILITY_REVIEW = (
     '用实际原始引用填写 applicability_review；未触发研究不等于 VALID，缺证保留具体限制。'
-    '核验已选投资周期的机制、价值和累计反证，日内方向反复但周期依据未变时保留主结论；重大机制变化无需等价格破位，周期依据不足也不能降为小时主线。'
+    '核验当前周期状态的机制、价值和累计反证，日内方向反复但周期依据未变时保留主结论；重大机制变化无需等价格破位，周期依据不足也不能降为小时主线。'
     '到期核验适用性；实质反证、遗漏或原判断失去支持才恢复同一 BTC_CYCLE，普通小时和时间到期不重跑。'
     '市场识别、深评、报告分别判断；重要结构变化、背离和波段风险可以报告，评级未变、中期未反转和当日已送达不能屏蔽。'
     '已有研究从真实进度接续，建议到期独立维护；只有明确用户请求可使用 USER_REQUESTED_REVIEW。'
@@ -48,7 +48,7 @@ MAPPING_REVIEW = (
     '按 report_boundary 区分内部完整分析与用户正文；映射和汇报不重新排序因子或另立解释，正文呈现已经形成的综合判断。'
     '继承旧版本的假设、证据缺口、宏观字段、建议目的与期限也须回到本轮来源和作者判断；正文修订同步更新全部受影响映射，不只替换摘要，历史依据保留其日期而不冒充当前结论。'
     'coverage 六项实际核验：cycle_structure/value_pricing/downside_paths/price_levels/portfolio_waiting/verification；cycle_structure须核对三个核心市场的评级、期限、结构变化及确认级别。'
-    '核对summary、对应forward、BTC semantic主情景与正文的主要投资周期一致；value_pricing核对同期限价值与美债比较，近端区域空间不能作为周期收益上限。'
+    '核对summary、BTC semantic主情景与正文的当前周期判断一致，forward分别核验其证据与期限；value_pricing核对同期限价值与美债比较，近端区域空间不能作为周期收益上限。'
     '结构实质变化写入outlook、business_meaning及正文，评级未变也不能遗漏；组合成员版本与独立机会身份须一致。'
     'verification 说明因子取舍、证据限制及相同市场输入下仓位差异未改变评级；字段齐全不等于分析完整。'
     '返回 v4-contract 的 cycle-review JSON：candidate_hash、approved、coverage、counterevidence、unresolved、'
@@ -57,13 +57,13 @@ MAPPING_REVIEW = (
 )
 REPORT_SCOPE_REVIEW = (
     '先核验当前市场变化并完成对结论、风险和安排的影响判断，再独立判断深评和报告；新数据、新冲突或未知解除不自动要求汇报。'
-    '报告围绕已形成的周期阶段、方向、价值与风险，开头承接主要投资周期及主导依据；普通日内变化留在内部，不以短线剩余期限、回收或破位替换主结论。'
+    '报告围绕框架识别的当前周期状态、方向、价值与风险，开头承接当前周期判断及主导依据；普通日内变化留在内部，不以短线剩余期限、回收或破位替换主结论。'
     'baseline_review 先指出当前重要含义在 reported.display 的对应原句，未出现则明确未展示；'
     '不得以同版报告ID、上一小时分析或 maintenance 代替已展示依据。风险较上一小时减弱也不证明用户已收到该风险。'
     '本轮市场核验、共振/反转变化及分歧区突破迹象可走 MARKET_UPDATE，重要风险仍可走 URGENT_RISK；不以评级变化、中期反转、仓位改变或当天未报告为前提；新正式建议仍须深评采纳。'
     '先理解 report_boundary，REPORT 时展开 when_report，用 AUTHORED_REPORT_V1.body 表达已完成的综合判断；不拆lead/blocks、不设固定篇幅或栏目、不自动追加建议。'
     '汇报不产生第二套判断：Sol、其他模型、程序或云端都不能在整理时重排因子、补充因果解释或改变已形成的结论；需要改变判断时返回对应研判。'
-    'cycle_basis与deep_report_summary在冻结前对照研究、当前判断和最终正文核验主要投资周期、机制、价值及风险是否一致；周期证据不足保留具体限制并返回研究，不能将小时判断改标为数周。完整分析保留内部，必要即时风险仍及时反馈。'
+    'cycle_basis与deep_report_summary在冻结前对照研究、当前判断和最终正文核验周期状态、机制、价值及风险是否一致；周期证据不足保留具体限制并返回研究，不能将小时判断改标为数周。完整分析保留内部，必要即时风险仍及时反馈。'
     '市场结论、价格风险和分歧区只绑定纯市场字段与当前观察；个人建议价、生效或撤回状态放在个人应对，文字概括同样遵守此边界。'
     '方向与适用周期明确，依据解释主导因素及重要反证怎样支持当前判断；每段及每句话都应帮助理解结论、关键依据或行动，不为数字绑定照搬 horizon.change、basis 或 narrative。'
     '分歧区、双方风险、全部期限和未知在内部完整维护，正文按其对判断与安排的影响呈现，不逐项展开；重要风险、事实纠错和建议有效性不能因去噪遗漏。'
@@ -83,8 +83,14 @@ SPOT_RISK_REVIEW = (
 )
 
 from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW
-CORE_REPORT_REVIEW += market_state.CYCLE_FOCUS_REVIEW + CLOSED_LOOP_REVIEW
-MAPPING_REVIEW += CLOSED_LOOP_REVIEW
+CORE_REPORT_REVIEW += market_state.CYCLE_FOCUS_REVIEW + market_state.MOMENTUM_REVIEW + CLOSED_LOOP_REVIEW
+APPLICABILITY_REVIEW += market_state.MOMENTUM_REVIEW
+MAPPING_REVIEW += (
+    'cycle_structure逐项对照独立研究对原推动力衰减、反向趋势延续、反证及确认程度的实际结论；'
+    '核对horizons/reversal、semantic、business_meaning与正文是否同义，不能把枯竭映射成反转、把反弹映射成趋势或把未知映射成中性。'
+    'value_pricing、portfolio_waiting继续独立核验现价风险收益与个人风险，verification说明相较上次变化及下一鉴别证据。'
+) + CLOSED_LOOP_REVIEW
+REPORT_SCOPE_REVIEW += market_state.MOMENTUM_REPORT_REVIEW
 
 
 def method_references(stage, project=None):
@@ -99,6 +105,7 @@ def method_references(stage, project=None):
     result = {key: str(references / value) for key, value in paths[stage].items()}
     result['market_state'] = str(references / 'market-state.md')
     result['closed_loop'] = str(references / 'closed-loop.md')
+    result['momentum_transition'] = str(references / 'core-strategy.md') + '#动量枯竭与反向趋势'
     result['report_boundary'] = str(references / 'mobile-report.md') + '#研判与报告的职责边界'
     if stage in ('research', 'mapping', 'observe'):
         result['opportunity_cost'] = str(references / 'core-strategy.md') + '#美债机会成本与风险补偿'

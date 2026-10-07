@@ -63,6 +63,8 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 
 ## 价值与时间分析的既有字段承载
 
+[动量枯竭与反向趋势](core-strategy.md#动量枯竭与反向趋势)沿现有字段传递实际判断：factor_assessment解释驱动，horizons的structure/change/basis/confirmation及原引用说明当前状态、变化和支持反证，reversal说明原动力衰减与反向延续各自的确认程度，conflicts/next_check保存限制及下一验证。实质含义同步到outlook.semantic、business_meaning及独立正文；cycle_structure与verification审阅真实映射，cycle_basis/deep_report_summary核对最终表达。程序保护来源、版本和同源结果，不按关键词或指标判定枯竭、反转或中性，不新增必填因子或评分。
+
 [核心策略的价值背离与时间优势](core-strategy.md#价值背离与时间优势)是分析方法Owner。每次正式主评估按该方法完成或复用综合判断；此处沿用七节分析承载；revision 5 在 outlook 中增加独立市场及分歧区状态，详见 market-state.md，不增加必选因子、评分器或独立当前指针；周期研究来源与发布校验见下节。
 
 | 现有字段 | 承载职责 |

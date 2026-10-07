@@ -33,7 +33,7 @@ INSTRUCTIONS = (
 # preceding stages and must not re-enter the report through result_instructions.
 REPORT_INSTRUCTIONS = (
     '成稿承接market_result、portfolio_risk、strategy_advice和applicability中的已形成结果；旧版本仍按原allocation_decision恢复，不冒充新版风险评估。'
-    '开头承接已形成的主要投资周期、阶段、方向和主导依据，随后表达参与价值、周期内风险及必要应对；不得以最新小时变化或短线剩余期限替换主结论。'
+    '开头承接框架识别出的当前周期状态、方向和主导依据，随后表达参与价值、周期内风险及必要应对；周期不是天数或周数，不得以最新小时变化或短线剩余期限替换主结论。'
     '普通日内变化没有改变周期判断、重要风险或安排时留在内部；重大即时风险仍及时反馈并说明影响范围。缺少周期分析返回原研究，不在成稿延长小时结论。'
     '市场写明确方向、适用周期及主导依据；个人资产部分先写主要风险、组合影响和是否可继续承担，仅风险需要应对时补充必要建议。'
     '没有操作建议不等于缺少评估；不因配置比例、短线偏弱或未知信息生成操作清单。比例、数量和操作顺序只在依据充分且必要时呈现。'
@@ -45,6 +45,9 @@ REPORT_INSTRUCTIONS = (
     '成稿不重新研究或改写结果；发现影响判断的分析缺口，返回对应研究，表达问题在冻结前修正。'
     '研究和维护材料继续完整保存；来源绑定与逐字交付不改变正文，也不代表实际成交。'
 )
+
+from .market_state import MOMENTUM_REPORT_REVIEW
+REPORT_INSTRUCTIONS += MOMENTUM_REPORT_REVIEW
 
 
 def strings(value, name, nonempty=False):
