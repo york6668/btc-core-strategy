@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import test_closed_loop as legacy
-from v4 import closed_loop as loop, run_flow, sensing, storage, reporting, delivery
+from v4 import closed_loop as loop, run_flow, sensing, storage, reporting, delivery, market_state
 from v4.common import Invalid, create, digest, instant, read, replace
 
 
@@ -57,6 +57,75 @@ class RiskTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_new_decision_report_uses_its_market_until_matching_observation(self):
+        f = legacy.PublicationTests(); f.setUp(); self.addCleanup(f.doCleanups)
+        root = f.f.store
+        draft = f.f.draft; draft['revision'] = 7
+        draft['recommendations']['portfolio'].pop('allocation_decision')
+        draft['recommendations']['portfolio']['risk_assessment'] = risk(draft, draft['temporal_scope']['knowledge_cutoff'])
+        draft['recommendations']['portfolio']['strategy_advice'] = []
+        policy = read(root / 'write-policy.json')
+        replace(root / 'write-policy.json', dict(policy, minimum_assessment_revision=7))
+        adapter = legacy.adapter.RunFlowTests()
+        adapter.f = f.f; adapter.seq = 0
+
+        def observe(label):
+            adapter.d = f.f.base / label
+            raw_file = f.f.base / (label + '-raw.json'); create(raw_file, f.f.raw)
+            prepared = run_flow.prepare(root, f.f.project, label, adapter.d, raw_file,
+                                        agent_id='SYNTHETIC_MAIN', workflow_revision=7)
+            authored = adapter.authored(prepared)
+            public = {key: authored[key] for key in market_state.MARKET_FIELDS if key in authored}
+            public.update(market_assessment=legacy.market(f.f.raw['cutoff']), dispute_zones=[])
+            public['market_assessment']['summary'] = 'Synthetic observation ' + label
+            if storage.current(root)['assessment']['outlook'].get('market_assessment'):
+                for assessed in public['market_assessment']['markets']:
+                    for horizon in assessed['horizons']:
+                        horizon['forward']['prior_check'].update(outcome='PENDING',
+                            explanation='Synthetic follow-up retains the unexpired formal thesis for verification.')
+            public['applicability_review'].update(outcome='EVIDENCE_LIMITED',
+                explanation='Synthetic public thesis check retains an explicit evidence gap.',
+                refs=[], limitations='Synthetic independent confirmation remains incomplete.')
+            frozen = run_flow.advance(prepared['run'], 'market', adapter.file(public))
+            core = storage.current(root)['assessment']; current = loop.risk(core)
+            private = {key: authored[key] for key in ('recommendation_checks', 'main_evaluation')}
+            private['allocation_review'] = {
+                'market_result_hash': frozen['market_result_hash'],
+                'portfolio_risk_hash': digest(current) if current else None,
+                'strategy_advice_hash': digest(core['recommendations']['portfolio']['strategy_advice']) if current else None,
+                'fact_version': read(frozen['portfolio_context'])['fact_version'],
+                'outcome': 'VALID' if current else 'EVIDENCE_LIMITED',
+                'explanation': 'Synthetic review of the actual current risk assessment.',
+                'limitations': [] if current else ['No current risk assessment.'], 'material': False}
+            result = run_flow.advance(prepared['run'], 'observe',
+                template_path=frozen['observation_template'], answers_path=adapter.file(private))
+            return result, public
+
+        original = storage.current(root)
+        old, old_public = observe('before-adoption')
+        history = {path: path.read_bytes() for path in (root / 'sensing').glob('*.json')}
+        f.c.d.bind()
+        f.c.study(authored=True, independent_output=json.dumps(f.public))
+        adopted = f.c.d.commit()
+        self.assertNotEqual(original['decision_id'], adopted['decision_id'])
+        ctx = reporting.context(root)
+        self.assertEqual(ctx['identity']['decision_id'], adopted['decision_id'])
+        self.assertEqual(ctx['observation']['baseline_decision_id'], original['decision_id'])
+        immediate = run_flow.report_brief(ctx)
+        self.assertEqual(immediate['market_result']['market_assessment'],
+                         adopted['assessment']['outlook']['market_assessment'])
+        self.assertNotEqual(immediate['market_result']['market_assessment'], old_public['market_assessment'])
+        self.assertEqual(immediate['portfolio_risk'], loop.risk(adopted['assessment']))
+        self.assertEqual(immediate['applicability']['market']['outcome'], 'EVIDENCE_LIMITED')
+        self.assertEqual(immediate['applicability']['portfolio']['outcome'], 'EVIDENCE_LIMITED')
+        new, new_public = observe('after-adoption')
+        current = read(new['report_context'])
+        self.assertEqual(current['market_result']['market_assessment'], new_public['market_assessment'])
+        self.assertEqual(current['applicability']['portfolio']['outcome'], 'VALID')
+        self.assertNotEqual(old['observation_id'], new['observation_id'])
+        self.assertEqual(storage.current(root), adopted)
+        self.assertTrue(all(path.read_bytes() == content for path, content in history.items()))
+
     def test_actual_research_mapping_and_publication_with_no_risk_actions(self):
         f = legacy.PublicationTests(); f.setUp(); self.addCleanup(f.doCleanups)
         draft = f.f.draft; draft['revision'] = 7
@@ -142,6 +211,24 @@ class ReportTests(unittest.TestCase):
         spec = self.spec()
         spec['layout']['bindings'][1]['refs'] = ['/allocation_decision/summary']
         with self.assertRaises(Invalid): self.f.f.source(spec)
+
+    def test_observation_selection_preserves_fact_and_expiry_limits(self):
+        for baseline in ('current', 'previous'):
+            for changed in ('facts', 'expiry'):
+                with self.subTest(baseline=baseline, changed=changed):
+                    ctx = self.context(self.root)
+                    if baseline == 'previous':
+                        ctx['observation']['baseline_decision_id'] = digest('previous decision')
+                    if changed == 'facts':
+                        ctx['identity']['fact_version'] = {'synthetic': digest('changed facts')}
+                    else:
+                        ctx['evaluated_at'] = loop.risk(self.core)['valid_until']
+                    before = deepcopy(ctx)
+                    result = loop.report_inputs(ctx)
+                    self.assertEqual(result['applicability']['portfolio']['outcome'], 'REVISE')
+                    self.assertEqual(result['portfolio_risk'], loop.risk(self.core))
+                    self.assertEqual(result['strategy_advice'], [])
+                    self.assertEqual(ctx, before)
 
     def test_independent_opportunity_advice_does_not_need_a_risk_trigger(self):
         action = deepcopy(legacy.allocation(self.core, self.stamp)['actions'][0])

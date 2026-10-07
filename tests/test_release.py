@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,29 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('btc_release', ROOT / 'scripts/release.py')
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+
+
+class ExportManifestTests(unittest.TestCase):
+    def test_service_export_includes_every_source_module(self):
+        files = set(json.loads((ROOT / 'export-manifest.json').read_text())['files'])
+        modules = {path.relative_to(ROOT).as_posix()
+                   for path in (ROOT / 'service/btc_node').glob('*.py')}
+        self.assertTrue(modules)
+        self.assertEqual(sorted(modules - files), [], 'service source modules missing from export')
+
+    def test_exported_failure_receipt_module_imports(self):
+        files = json.loads((ROOT / 'export-manifest.json').read_text())['files']
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            for name in files:
+                if name.startswith('service/btc_node/') and name.endswith('.py'):
+                    output = target / name
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / name, output)
+            subprocess.run([sys.executable, '-I', '-B', '-c',
+                'import sys; sys.path.insert(0, sys.argv[1]); '
+                'from btc_node.failures import is_receipt; assert callable(is_receipt)',
+                str(target / 'service')], check=True, capture_output=True, text=True)
 
 
 class ReleaseTests(unittest.TestCase):
