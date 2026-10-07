@@ -46,6 +46,34 @@ class NativePaths(unittest.TestCase):
         self.assertEqual(node_bridge.subcommand(['--project','run-advance','--root','/r','run-value-ref']),'run-value-ref')
         self.assertEqual(node_bridge.subcommand(['--project','/p','--root','/r','--full','report-care']),'report-care')
 
+    def test_delivery_receipt_remains_an_input_through_native_bridge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);receipt=root/'receipt.json';receipt.write_text('{"synthetic":"INPUT_RECEIPT"}')
+            original=receipt.read_bytes()
+            cfg={'project_dir':folder,'docker_service':{'enabled':True,'fact_bridge_dir':str(root/'facts'),
+                 'binary':'SYNTHETIC_DOCKER','project':'SYNTHETIC_PROJECT','env_file':str(root/'env'),
+                 'compose_file':str(root/'compose')}}
+            response=SimpleNamespace(stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}'}}))
+            args=['--project',folder,'--root',folder,'delivery','--identity','SYNTHETIC_DELIVERY',
+                  '--action','CONFIRM','--receipt',str(receipt)]
+            with mock.patch('node_config.load',return_value=cfg), mock.patch.object(node_bridge,'sync_facts'), \
+                 mock.patch.object(node_bridge.subprocess,'run',return_value=response) as execute, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as done:
+                    node_bridge.forward_if_enabled(args)
+                self.assertEqual(done.exception.code,0)
+                self.assertEqual(json.loads(execute.call_args.kwargs['input'])['params']['argv'],args)
+            self.assertEqual(receipt.read_bytes(),original)
+
+    def test_delivery_input_cannot_use_stage_filename_to_bypass_stdout_guard(self):
+        with tempfile.TemporaryDirectory() as folder:
+            receipt=Path(folder)/'market-stage-receipt.json';receipt.write_text('SYNTHETIC_INPUT')
+            args=['--project',folder,'--root',folder,'delivery','--identity','SYNTHETIC_DELIVERY',
+                  '--action','CONFIRM','--receipt',str(receipt)]
+            with receipt.open('a') as stream:
+                with self.assertRaisesRegex(ValueError,'stdout collides'):
+                    node_bridge.guard_stdout(args,stream.fileno())
+
     def test_receipt_rejects_owned_result_before_open_or_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);result=root/'market-result.json'
@@ -61,7 +89,7 @@ class NativePaths(unittest.TestCase):
     def test_shell_collision_reports_precise_path_before_dispatch(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);reserved=root/'market-result.json'
-            args=['--run',str(root/'run.json'),'--stage','market']
+            args=['run-advance','--run',str(root/'run.json'),'--stage','market']
             with reserved.open('w') as stream:
                 with self.assertRaisesRegex(ValueError,'stdout collides.*market-result.json'):
                     node_bridge.guard_stdout(args,stream.fileno())

@@ -160,7 +160,8 @@ def main(argv=None):
         arguments = list(argv if argv is not None else sys.argv[1:])
         run_ref = runtime_schedule.run_reference(arguments) if args.command in runtime_schedule.COMMANDS else None
         runtime_schedule.bind(args.runtime_schedule, run_ref)
-        output_receipt = node_bridge.receipt_path(arguments, args.receipt) if getattr(args, 'receipt', None) else None
+        output_receipt = (node_bridge.receipt_path(arguments, args.receipt)
+                          if args.command == 'run-advance' and args.receipt else None)
         if args.command == 'run-prepare':
             from v4 import run_flow
             from v4 import market_state

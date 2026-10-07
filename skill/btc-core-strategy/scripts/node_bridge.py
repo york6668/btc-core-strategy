@@ -43,6 +43,9 @@ def guard_stdout(argv, descriptor=1):
             paths.append(Path(argv[argv.index(flag) + 1]))
     if '--run' in argv:
         paths.extend(Path(argv[argv.index('--run') + 1]).parent.glob('*'))
+    stage_output = None
+    if subcommand(argv) == 'run-advance' and '--run' in argv and '--stage' in argv:
+        stage_output = Path(argv[argv.index('--run') + 1]).absolute().parent / (argv[argv.index('--stage') + 1] + '-stage-receipt.json')
     for path in paths:
         try:
             source = path.stat()
@@ -50,7 +53,7 @@ def guard_stdout(argv, descriptor=1):
             continue
         if (source.st_dev, source.st_ino) != (output.st_dev, output.st_ino):
             continue
-        if path.name.endswith('-stage-receipt.json') and not path.is_symlink() and path not in [Path(argv[i + 1]) for i, flag in enumerate(argv[:-1]) if flag in PATH_OPTIONS and flag != '--receipt']:
+        if path.absolute() == stage_output and not path.is_symlink() and path not in [Path(argv[i + 1]) for i, flag in enumerate(argv[:-1]) if flag in PATH_OPTIONS and flag != '--receipt']:
             continue  # Also inspect aliases of this inode for a reserved path.
         raise ValueError('stdout collides with program-owned/input file ' + str(path) + '; use --receipt with a dedicated stage receipt. Shell redirection may already have truncated the target; preserve and inspect it before resuming.')
 
@@ -89,7 +92,7 @@ def forward_if_enabled(argv, *, requested_release=None):
     guard_stdout(argv)
     if '--runtime-schedule' in argv:
         raise ValueError('--runtime-schedule is supplied by the native adapter, not authored input')
-    if '--receipt' in argv:
+    if subcommand(argv) == 'run-advance' and '--receipt' in argv:
         receipt_path(argv, argv[argv.index('--receipt') + 1])
     sync_facts(Path(config['project_dir']), Path(docker['fact_bridge_dir']))
     release = Path(requested_release).resolve() if requested_release else Path(__file__).resolve().parents[3]

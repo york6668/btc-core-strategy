@@ -4,6 +4,9 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import contextlib
+import io
+import json
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +124,19 @@ class WorkflowDeliveryTests(unittest.TestCase):
         self.assertTrue((self.root / 'outbox' / identity / status['presentation']).exists())
         with mock.patch('v4.hourly.complete_deep', side_effect=AssertionError('report must not fabricate a specialist completion')):
             self.assertEqual(hourly.complete_report(self.root, identity, self.root / 'unused.sqlite3')['status'], 'V3_REPORTED_CONCLUSION_AUTHORITATIVE')
+
+    def test_cli_confirms_delivery_without_overwriting_input_receipt(self):
+        import strategy_v4
+        identity=self.queue();self.begin(identity)
+        receipt=self.root/'native-readback.json';create(receipt,self.receipt(identity))
+        original=receipt.read_bytes();stream=io.StringIO()
+        with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(io.StringIO()):
+            code=strategy_v4.main(['--project',str(self.root),'--root',str(self.root),'delivery',
+                '--identity',identity,'--action','CONFIRM','--receipt',str(receipt)])
+        self.assertEqual(code,0)
+        self.assertEqual(json.loads(stream.getvalue())['state'],'DELIVERED')
+        self.assertEqual(receipt.read_bytes(),original)
+        self.assertEqual(delivery.validate_delivered(self.root,identity)[2]['assistant']['body'],self.body)
 
     def test_swapped_amounts_rejected_even_with_all_positive_semantic_checks(self):
         identity = self.queue(); self.begin(identity)
