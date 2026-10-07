@@ -1,0 +1,317 @@
+{
+  "files": [
+    {
+      "git_blob_sha": "cd83b0ffcc82706481ccf9225b75a901ad51c779",
+      "mode": "100644",
+      "path": "requirements.txt",
+      "sha256": "c268b0b1271ebc75e7ed082400abc1d252889a0298e2a4e547c03ee441a3e976",
+      "source_path": "requirements.txt"
+    },
+    {
+      "git_blob_sha": "fabbf2c4328e828c6750e63c32246796543fe3fe",
+      "mode": "100644",
+      "path": "roles/containers/Dockerfile",
+      "sha256": "945e2c051410fa432bbef6d2c86f50cc22b3dae0f63ccdc3051eb1006551257e",
+      "source_path": "roles/containers/Dockerfile"
+    },
+    {
+      "git_blob_sha": "8ab905702f4315a83a12cdc00938f7bbd2cf5415",
+      "mode": "100644",
+      "path": "roles/containers/entrypoint.py",
+      "sha256": "893aa0d6a99f368668fdb1aa18601669bbd78e76016986145c297587a6ac07b5",
+      "source_path": "roles/containers/entrypoint.py"
+    },
+    {
+      "git_blob_sha": "487df7ae1a43156e8f1e9f5003ed3887974ce8ac",
+      "mode": "100644",
+      "path": "telegram_reader/README.md",
+      "sha256": "23e6db33461cacaee79320d14bd3cbe7005b39e4d81f1ae2bd0c9ac8adc7f597",
+      "source_path": "analysis/telegram_reader/README.md"
+    },
+    {
+      "git_blob_sha": "cf362124c106da3bc70ca87e9eafeb3cccc9f7b2",
+      "mode": "100644",
+      "path": "telegram_reader/bot_client.py",
+      "sha256": "04d40a0e59aa68d873e142adff98b9cbd81c30e57c3a82fa974fb03a6ec093ee",
+      "source_path": "analysis/telegram_reader/bot_client.py"
+    },
+    {
+      "git_blob_sha": "6b8a3edbe38699ed20a09caf066705e848508164",
+      "mode": "100644",
+      "path": "telegram_reader/btc_collection.py",
+      "sha256": "3888547560db859193647e0224de67feb6996e1e9c2b89d7f6f783ff64897626",
+      "source_path": "btc_collection.py"
+    },
+    {
+      "git_blob_sha": "899e6b325751abfd8f69cd14239f967b00ea7046",
+      "mode": "100644",
+      "path": "telegram_reader/btc_evidence.py",
+      "sha256": "24a139cfa3613c4979f586a69a619e1ac284c4ae6c5ef006c5526bd70846a0cc",
+      "source_path": "btc_evidence.py"
+    },
+    {
+      "git_blob_sha": "a3b421093ee26342411a041f8b4618a1a001d983",
+      "mode": "100644",
+      "path": "telegram_reader/btc_evidence_reader.py",
+      "sha256": "8b05d8b041697efc96d67cb0439761b40a47b0f4337b2c92b339459f2d4414ba",
+      "source_path": "btc_evidence_reader.py"
+    },
+    {
+      "git_blob_sha": "a4e82c58ef807e81e73984d23eb29a8a05505688",
+      "mode": "100644",
+      "path": "telegram_reader/build_test_fixtures.py",
+      "sha256": "1ed56f63dd7ed1aa07211970d39f4c4ff7bdc000a2b4ed8ee1064843c68b8d1a",
+      "source_path": "roles/build_test_fixtures.py"
+    },
+    {
+      "git_blob_sha": "5819419228e5ec4a34ba9f6d565e4538c981fef2",
+      "mode": "100644",
+      "path": "telegram_reader/collector_v2_reader.py",
+      "sha256": "38d7670790d75d511a33569043d00346f62250d3e541c8a49203d2fe2fd8ed67",
+      "source_path": "collector_v2_reader.py"
+    },
+    {
+      "git_blob_sha": "2ce09168e60458b6173a828a0c5f94db342eef34",
+      "mode": "100644",
+      "path": "telegram_reader/docs/BTC_COLLECTOR_EVIDENCE_V1.md",
+      "sha256": "0893b731a3a3bf56fb03607742864bf0683a888fd8cd481664e1f59170250903",
+      "source_path": "analysis/telegram_reader/docs/BTC_COLLECTOR_EVIDENCE_V1.md"
+    },
+    {
+      "git_blob_sha": "0674c3c8340bf1450d78234d86715701a403d13c",
+      "mode": "100644",
+      "path": "telegram_reader/docs/MARKET_COLLECTOR_EVIDENCE_V1.md",
+      "sha256": "1fb7c662b6b83cfe459a3c8cdacb9d9cb03a0dafbbf04acce9fb85b83dfaae80",
+      "source_path": "analysis/telegram_reader/docs/MARKET_COLLECTOR_EVIDENCE_V1.md"
+    },
+    {
+      "git_blob_sha": "31243c222cfef023dda9d6874bb0fedab33ab864",
+      "mode": "100644",
+      "path": "telegram_reader/evidence.py",
+      "sha256": "4df50c72e086ee250b6a6c93fbf3d50f3b14b7c222d3e490a7b6ece23e9f38d2",
+      "source_path": "analysis/telegram_reader/evidence.py"
+    },
+    {
+      "git_blob_sha": "c003d16e44cdb602c322cef87e094132c50e1ba6",
+      "mode": "100644",
+      "path": "telegram_reader/mappings/glassnode_seller_exhaustion.md",
+      "sha256": "8bd43c88922ab29199309f6e8ba63241acb4b520e03f4b3927b9baf74a6ba2fe",
+      "source_path": "mappings/glassnode_seller_exhaustion.md"
+    },
+    {
+      "git_blob_sha": "649153770ecb7a5a74bceb593b74dc8e4a0094e6",
+      "mode": "100644",
+      "path": "telegram_reader/market_assets.py",
+      "sha256": "de995a376044a3d9a8984fc27a165d7aac41d06bbbe1486fcd0994044fa82301",
+      "source_path": "market_assets.py"
+    },
+    {
+      "git_blob_sha": "0e6fa7b666ecee72030c5892abc530bfe9ead723",
+      "mode": "100644",
+      "path": "telegram_reader/market_evidence.py",
+      "sha256": "0d347aefafaca8fd5414cc2d4354fe1845400116aef10bfce6f5d350b893d233",
+      "source_path": "market_evidence.py"
+    },
+    {
+      "git_blob_sha": "570fbac903285d27e1da069231d3d16551db7bf9",
+      "mode": "100644",
+      "path": "telegram_reader/market_evidence_v2.py",
+      "sha256": "20e5b585d97975dbf998d6c17bb0f799aa6092090561c4ac12d36a7fcf505753",
+      "source_path": "market_evidence_v2.py"
+    },
+    {
+      "git_blob_sha": "12efa8827e7cd4024b1833782314a0a7a7dec4ae",
+      "mode": "100644",
+      "path": "telegram_reader/market_history.py",
+      "sha256": "0797f2066f81967270213f2e7b9bd4d029e6ed96f4bac554a58d4f6d13c3330a",
+      "source_path": "market_history.py"
+    },
+    {
+      "git_blob_sha": "0b6bfd9889b3243c71203b816974be8b46eb7400",
+      "mode": "100644",
+      "path": "telegram_reader/market_observations.py",
+      "sha256": "4c9b58cd71f2dff3f358e8590d66249d8c3a037d09c7b89e62e8013e4e9d2f35",
+      "source_path": "market_observations.py"
+    },
+    {
+      "git_blob_sha": "aa0308e4b4d88dbe21ca1d37e5484e366d69c9a6",
+      "mode": "100644",
+      "path": "telegram_reader/market_reader.py",
+      "sha256": "e31befbd610c3f9a4303f03d53fdf21258f3c40cf6426f817a762f943c1849a7",
+      "source_path": "market_reader.py"
+    },
+    {
+      "git_blob_sha": "c6040c3bcf1ff06ff85793b7ee739e94e3b80953",
+      "mode": "100644",
+      "path": "telegram_reader/market_sources.py",
+      "sha256": "5f50f2882583f0a4d8897c2920c811ca95bc9fb277e2d5338705b782919fb9f3",
+      "source_path": "market_sources.py"
+    },
+    {
+      "git_blob_sha": "e230d738c39a1816b712f31611d081a050f79431",
+      "mode": "100644",
+      "path": "telegram_reader/models.py",
+      "sha256": "891b1b3118420b398590468f0a3bd25aa0bcc736221e5cb43cbf9fbc4f4cb2a3",
+      "source_path": "analysis/telegram_reader/models.py"
+    },
+    {
+      "git_blob_sha": "54b2ac0be040485830994536f6b42cc6a7831058",
+      "mode": "100644",
+      "path": "telegram_reader/reader.py",
+      "sha256": "4c87c3c5ec61f59097922e4279e7f2a06ecaf5636466541194cc75a53924d178",
+      "source_path": "analysis/telegram_reader/reader.py"
+    },
+    {
+      "git_blob_sha": "8d7e59c3506705c0a2876df1cd9f7d537e085695",
+      "mode": "100644",
+      "path": "telegram_reader/requirements.txt",
+      "sha256": "a30e025b585ce4b60b588939517be704015b9da08a6f0a7774299bb7a7f52e46",
+      "source_path": "analysis/telegram_reader/requirements.txt"
+    },
+    {
+      "git_blob_sha": "b5780e2c386866a30388acfd48bba7843fa790ef",
+      "mode": "100644",
+      "path": "telegram_reader/run_offline_tests.py",
+      "sha256": "353224575f0fa7c1b389475cca0981c31120821122ba4ad257eec0af837ba0ee",
+      "source_path": "analysis/telegram_reader/run_offline_tests.py"
+    },
+    {
+      "git_blob_sha": "0eadfceeac03d3979793ac56055dd13dec06f071",
+      "mode": "100644",
+      "path": "telegram_reader/seller_exhaustion.py",
+      "sha256": "048bcfa068123a8457ae4a1b813453a08ec43a4f6fde96b2ae77605c100d3621",
+      "source_path": "seller_exhaustion.py"
+    },
+    {
+      "git_blob_sha": "a8cb28de4dcf9a0d066ad237ce2d2ee99c7c398b",
+      "mode": "100644",
+      "path": "telegram_reader/store.py",
+      "sha256": "7faaefaae0e9e48f233379e9c4877b34264d3618d47656cd11032952df0c79c8",
+      "source_path": "analysis/telegram_reader/store.py"
+    },
+    {
+      "git_blob_sha": "84e72f22e51c24a4c4d48d42bd0d6becac16de69",
+      "mode": "100644",
+      "path": "telegram_reader/sync_engine.py",
+      "sha256": "94676f7fe2a1b1135df67b665b10a890b98da972c5f091688c99fd3e3a370daf",
+      "source_path": "analysis/telegram_reader/sync_engine.py"
+    },
+    {
+      "git_blob_sha": "bc8b4a1b51acd1191b649d33bb5e24bfc60e4a0f",
+      "mode": "100644",
+      "path": "telegram_reader/test_btc_evidence.py",
+      "sha256": "836ae29ceaf0226dd8ead5158e03a39f6dbb0e50b316d9a7e70f46dfbf765495",
+      "source_path": "test_btc_evidence.py"
+    },
+    {
+      "git_blob_sha": "07a062c0ea22314e390c9aa00e0011e3772af3b9",
+      "mode": "100644",
+      "path": "telegram_reader/test_btc_evidence_reader.py",
+      "sha256": "8b140373eadad59c56ee5cb010a24fa8f76e2f1e516203bfe4be270c291ca1c3",
+      "source_path": "test_btc_evidence_reader.py"
+    },
+    {
+      "git_blob_sha": "71267efbe23e2960b971aae0aea985afd1447b8f",
+      "mode": "100644",
+      "path": "telegram_reader/tests/collector_replay_fixture.py",
+      "sha256": "77b92a8b59dba856d6dbffdc18fc96e3451802d17e08283e7ee575446ef839ce",
+      "source_path": "analysis/telegram_reader/tests/collector_replay_fixture.py"
+    },
+    {
+      "git_blob_sha": "add7415ea57b604584cebad58d1b3381c4d88cff",
+      "mode": "100644",
+      "path": "telegram_reader/tests/reader_replay_fixture.py",
+      "sha256": "03ddaa3cd5c778bc37be454d1fd78d96d9903296e5cc9f637c27ccd22a4826cc",
+      "source_path": "analysis/telegram_reader/tests/reader_replay_fixture.py"
+    },
+    {
+      "git_blob_sha": "a6939b2611ac3149102943dc7719f13a6365e2bf",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_bot_client.py",
+      "sha256": "c3615bb2cd9c651a83404ee3c9aee8ebd2304572341e1dfe17d611ff9a697d24",
+      "source_path": "analysis/telegram_reader/tests/test_bot_client.py"
+    },
+    {
+      "git_blob_sha": "61b182668941a8a2adba77fde135a4781b20f7ee",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_collector_cli.py",
+      "sha256": "d19bfe5ed6ae255edae70c976307931c71975b0e86c00b4f56237124db93b0fc",
+      "source_path": "analysis/telegram_reader/tests/test_collector_cli.py"
+    },
+    {
+      "git_blob_sha": "cb95ab4ed464980e15046748284267f62c70bb03",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_collector_latest_cli.py",
+      "sha256": "96f232921d5748f7145248a8846f0b5e0a0a259d50603dbf2cb2859bac5d0094",
+      "source_path": "analysis/telegram_reader/tests/test_collector_latest_cli.py"
+    },
+    {
+      "git_blob_sha": "caea492ed20cbb951ec2392673878b6a4408ae74",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_collector_replay.py",
+      "sha256": "45c4c6b88d19e3d2e634dddc90ca203aeebb900c8dda1288c595d0fcdd07fccd",
+      "source_path": "analysis/telegram_reader/tests/test_collector_replay.py"
+    },
+    {
+      "git_blob_sha": "5f591c64113367f3746bbc4bed10e45d5252c466",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_collector_sync_ordering.py",
+      "sha256": "14850e93bbae691483b449a7d2c879b0697b973b0e166ba8a621fb66eafc0c02",
+      "source_path": "analysis/telegram_reader/tests/test_collector_sync_ordering.py"
+    },
+    {
+      "git_blob_sha": "5560c1a90f9a5bdd3c42426fe779f557d19aa7f9",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_current_attachment_priority.py",
+      "sha256": "ec9b685ab78d0072c4bdfd938a3cc975b1df0d7e4a239dd88331ef9602bbddc1",
+      "source_path": "analysis/telegram_reader/tests/test_current_attachment_priority.py"
+    },
+    {
+      "git_blob_sha": "e5183d3fa07d3dddfa4da89178a3a1a8ef8424fa",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_document_download.py",
+      "sha256": "d1cc0bd66d1282161300a228486124421970cb95423c505c394e0b0fefa1f499",
+      "source_path": "analysis/telegram_reader/tests/test_document_download.py"
+    },
+    {
+      "git_blob_sha": "57ec6d374fa0c8b311b607067879794acaeb6582",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_evidence.py",
+      "sha256": "529d3727885542938d8eabdc7ee2af44bd8ffa4de3495596e23fb4d79125059f",
+      "source_path": "analysis/telegram_reader/tests/test_evidence.py"
+    },
+    {
+      "git_blob_sha": "1c0708888e2e81639a44c1388a25acc09d74e04b",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_evidence_v2.py",
+      "sha256": "38080f32a8c5bce9ea53a60ca216f13d0163642b0596afa48a1ab908a224965d",
+      "source_path": "analysis/telegram_reader/tests/test_evidence_v2.py"
+    },
+    {
+      "git_blob_sha": "c95b276751c0dfe2069bd7958eccd155fe719407",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_security.py",
+      "sha256": "b1a89fb776161a862d66c2edbac5e27357085a5b423c888ea884154af775e575",
+      "source_path": "analysis/telegram_reader/tests/test_security.py"
+    },
+    {
+      "git_blob_sha": "0da3e28fa81c2efe3d38bfe1be8ce44f19dfca52",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_store.py",
+      "sha256": "542c72cc0e1a4232e5bc5d94045eab2b4a31d51f7389560b2f67840ffaad9802",
+      "source_path": "analysis/telegram_reader/tests/test_store.py"
+    },
+    {
+      "git_blob_sha": "5c49651680d54c90950014f6d4f896704e36b611",
+      "mode": "100644",
+      "path": "telegram_reader/tests/test_sync_engine.py",
+      "sha256": "64728141684563189ef7055d50d0178e9f00f5dc56019a7649240c8f430bccb6",
+      "source_path": "analysis/telegram_reader/tests/test_sync_engine.py"
+    }
+  ],
+  "schema": 1,
+  "source_commit": "c58d21a79f7ab014e09b117af88a91822129565e",
+  "source_map_blob": "9e4277075fedf76f4b03614cc09c8432a78811fb",
+  "source_repository": "https://github.com/york6668/market-roles.git",
+  "source_tree": "f802e320f26c7275d95957d301f315f9e65e4cb3"
+}

@@ -30,6 +30,7 @@
     "service/btc_node/entities.py",
     "service/btc_node/execution.py",
     "service/btc_node/fact_views.py",
+    "service/btc_node/failures.py",
     "service/btc_node/history.py",
     "service/btc_node/lifecycle.py",
     "service/btc_node/market_store.py",

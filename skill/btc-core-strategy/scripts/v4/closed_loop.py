@@ -201,7 +201,12 @@ def validate_allocation_review(value, ctx, market_hash):
 def report_inputs(ctx):
     """A finished-result interface, never the five-module analysis or mixed prose."""
     strategy = ctx['current_strategy']
-    review = (ctx.get('observation') or {}).get('review') or {}
+    observation = ctx.get('observation') or {}
+    # Publication can advance the decision before its next observation exists.
+    decision_id = ctx['identity'].get('decision_id')
+    matched = (isinstance(decision_id, str) and bool(decision_id)
+               and observation.get('baseline_decision_id') == decision_id)
+    review = (observation.get('review') or {}) if matched else {}
     market = {k: deepcopy(review[k]) for k in ('market_assessment', 'dispute_zones') if k in review}
     if not market:
         market = {k: deepcopy(strategy.get('outlook', {}).get(k)) for k in ('market_assessment', 'dispute_zones')}
@@ -217,7 +222,8 @@ def report_inputs(ctx):
     result = {'market_result': market, result_key: deepcopy(decision),
               'execution_plans': {s: {k: deepcopy(strategy['recommendations'][s][k]) for k in
                   ('status', 'unit', 'tiers', 'validity', 'allocation_percent')} for s in ('upper_short', 'lower_spot')},
-              'applicability': {'market': deepcopy(review.get('applicability_review')),
+              'applicability': {'market': deepcopy(review.get('applicability_review')) or {
+                                    'outcome': 'EVIDENCE_LIMITED', 'limitations': ['Current decision has no matching observation review.']},
                                 'portfolio': personal or {'outcome': 'EVIDENCE_LIMITED', 'limitations': ['Current allocation has not been reviewed in this observation.']}}}
     if revision >= 7 and decision is None:
         result['applicability']['portfolio'] = {'outcome': 'EVIDENCE_LIMITED', 'limitations': ['A revision 7 asset risk assessment has not been formed; legacy actions are not a new risk conclusion.']}

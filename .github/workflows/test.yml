@@ -7,8 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Verify pinned test dependency and export boundary
+        run: python3 -B -m unittest discover -s tests -p test_ci_reader.py -v
       - name: Verify MySQL, actual CLI and MCP, recovery and business replay
-        run: python3 -B service/check.py --docker docker
+        run: python3 -B scripts/ci_reader.py run

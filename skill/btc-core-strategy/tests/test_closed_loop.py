@@ -425,10 +425,65 @@ class FinalReportTests(unittest.TestCase):
         ctx = self.base_context(root)
         ctx.update(market_revision=6, evaluated_at=self.stamp, current_strategy=self.core)
         ctx['identity']['fact_version'] = self.core['fact_version']
-        ctx['observation'] = {'review': {'allocation_review': {
+        ctx['observation'] = {'baseline_decision_id': ctx['identity']['decision_id'], 'review': {'allocation_review': {
             'outcome': 'EVIDENCE_LIMITED', 'allocation_decision_hash': digest(loop.allocation(self.core)),
             'limitations': ['Protective coverage remains unknown.']}}}
         return ctx
+
+    def test_report_inputs_require_observation_decision_identity(self):
+        ctx = self.context(self.root)
+        review = ctx['observation']['review']
+        review['market_assessment'] = market(self.stamp)
+        review['market_assessment']['summary'] = 'Synthetic later observation of the current decision.'
+        review['dispute_zones'] = []
+        review['applicability_review'] = {'outcome': 'VALID', 'limitations': 'Synthetic current thesis check.'}
+        matched = loop.report_inputs(ctx)
+        self.assertEqual(matched['market_result']['market_assessment'], review['market_assessment'])
+        self.assertEqual(matched['applicability']['market'], review['applicability_review'])
+        self.assertEqual(matched['applicability']['portfolio'], review['allocation_review'])
+        expected = {key: self.core['outlook'][key] for key in ('market_assessment', 'dispute_zones')}
+        decision_id = ctx['identity']['decision_id']
+        for label, observation in (
+                ('observation_absent', None), ('observation_empty', {}),
+                ('baseline_absent', {'review': review}),
+                ('baseline_mismatch', {'baseline_decision_id': digest('previous decision'), 'review': review}),
+                ('matching_review_absent', {'baseline_decision_id': decision_id}),
+                ('matching_review_null', {'baseline_decision_id': decision_id, 'review': None}),
+                ('matching_review_empty', {'baseline_decision_id': decision_id, 'review': {}})):
+            with self.subTest(observation=label):
+                changed = dict(ctx, observation=observation)
+                before = deepcopy(changed)
+                result = loop.report_inputs(changed)
+                self.assertEqual(result['market_result'], expected)
+                self.assertEqual(result['allocation_decision'], loop.allocation(self.core))
+                self.assertEqual(result['applicability']['market']['outcome'], 'EVIDENCE_LIMITED')
+                self.assertEqual(result['applicability']['portfolio']['outcome'], 'EVIDENCE_LIMITED')
+                self.assertEqual(changed, before)
+
+    def test_missing_decision_identity_never_authorizes_observation(self):
+        for missing, value in (('absent', None), ('null', None), ('empty', ''),
+                               ('integer', 1), ('boolean', True), ('list', ['synthetic']),
+                               ('object', {'decision': 'synthetic'})):
+            with self.subTest(decision_id=missing):
+                ctx = self.context(self.root)
+                if missing == 'absent':
+                    ctx['identity'].pop('decision_id')
+                else:
+                    ctx['identity']['decision_id'] = value
+                ctx['observation']['baseline_decision_id'] = value
+                review = ctx['observation']['review']
+                review['market_assessment'] = market(self.stamp)
+                review['market_assessment']['summary'] = 'Unbound observation must not replace the formal result.'
+                review['applicability_review'] = {'outcome': 'VALID'}
+                review['allocation_review']['outcome'] = 'VALID'
+                before = deepcopy(ctx)
+                result = loop.report_inputs(ctx)
+                self.assertEqual(result['market_result'],
+                    {key: self.core['outlook'][key] for key in ('market_assessment', 'dispute_zones')})
+                self.assertEqual(result['allocation_decision'], loop.allocation(self.core))
+                self.assertEqual(result['applicability']['market']['outcome'], 'EVIDENCE_LIMITED')
+                self.assertEqual(result['applicability']['portfolio']['outcome'], 'EVIDENCE_LIMITED')
+                self.assertEqual(ctx, before)
 
     def spec(self):
         value = self.f.spec()
