@@ -75,11 +75,15 @@ def snapshot(config, run_ref, at=None):
     database = Path(config.get('codex_automations_db') or
                     state_path.parent / 'sqlite' / 'codex-dev.db').expanduser().resolve()
     value['source'] = {'database': str(database), 'state_database': str(state_path)}
+    # Native scheduler rows use the thread ID. Keep the full domain run
+    # reference in the frozen snapshot and use only its transport prefix-free
+    # identity for native ownership and current-run exclusion.
+    thread_id = run_ref[6:] if run_ref.startswith('codex:') else run_ref
     try:
         # URI read-only mode neither creates a database nor changes its schema.
         with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
             owner = db.execute('SELECT automation_id FROM automation_runs WHERE thread_id=?',
-                               (run_ref,)).fetchone()
+                               (thread_id,)).fetchone()
             if owner is None:
                 value.update(status='NOT_SCHEDULED', reason='No original automation owns this run.')
                 return value
@@ -95,7 +99,7 @@ def snapshot(config, run_ref, at=None):
                          next_run_nominal_at=stamp(row[3]) if row[3] is not None else None)
             candidates = db.execute('SELECT thread_id FROM automation_runs WHERE automation_id=? '
                                     'AND thread_id<>? ORDER BY created_at DESC LIMIT 8',
-                                    (owner[0], run_ref)).fetchall()
+                                    (owner[0], thread_id)).fetchall()
         samples = []
         with sqlite3.connect(state_path.as_uri() + '?mode=ro', uri=True) as db:
             for (identity,) in candidates:
