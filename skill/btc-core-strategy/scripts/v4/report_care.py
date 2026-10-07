@@ -1,8 +1,24 @@
 """Report obligations and JST daily feedback, derived from immutable evidence."""
 from pathlib import Path
 from datetime import timedelta,timezone
+from copy import deepcopy
 from .common import read,require,text,exact,instant,now,pointer
 JST=timezone(timedelta(hours=9))
+AUTHORING = {
+    'reason': 'maintenance.triggers[i].reason must explain which existing judgment the condition would change and why. At least 12 stripped characters is only an input floor, not proof of meaningful analysis; do not pad or repeat text.',
+    'continuity': 'Retain unchanged trigger explanations; checked still requires fresh actual evidence for every prior condition. UNKNOWN is not NOT_MET.',
+    'timing': 'Read report_care.execution_window. Select a meaningful review deadline no earlier than the verified next execution plus observed execution allowance. This feasibility floor is not an automatic new deadline or an extension of research/advice validity. Preserve missed deadlines and assess their actual impact.'}
+
+
+def timing_evidence(ctx, reviewed_at):
+    care = ctx.get('report_care') or {}
+    if not care.get('enabled'):
+        return None
+    prior = (care.get('active_maintenance') or {}).get('recheck_at')
+    return {'prior_review_id': care.get('prior_review_id'), 'prior_recheck_at': prior,
+            'reviewed_at': reviewed_at,
+            'late_seconds': max(0, (instant(reviewed_at) - instant(prior)).total_seconds()) if prior else None,
+            'execution_window': deepcopy(care.get('execution_window'))}
 
 def day(stamp):return instant(stamp).astimezone(JST).date().isoformat()
 def local(stamp):
@@ -68,7 +84,10 @@ def status(root,stamp=None,run_ref=None):
     events=bool(m and m['triggers'] and (run_ref is None or previous['provenance']['run_ref']!=run_ref))
     # A new day after an unfulfilled day requires catch-up even before a new plan.
     catchup=bool(gaps and gaps[-1]==(end-timedelta(days=1)).isoformat() and not fulfilled)
+    import runtime_schedule
     return {'enabled':True,'day':today,'evaluated_at':stamp,'fulfilled':fulfilled,'deliveries':verified.get(today,[]),
+            'execution_window':runtime_schedule.current(run_ref),
+            'late_seconds':max(0,(instant(stamp)-instant(m['recheck_at'])).total_seconds()) if m else None,
             'daily_due':due or catchup,'daily_plan_required':not fulfilled and plan is None,'report_by':deadline,
             'missed_days':gaps[-366:],'missed_day_count':len(gaps),'prior_review_id':previous['review_id'] if previous else None,
             'active_maintenance':m,'time_due':recheck,'event_check_required':events,
@@ -95,18 +114,32 @@ def validate(root,spec,ctx):
         prefixes += ('/market_result/', personal_result, '/applicability/', '/execution_plans/', '/public_evidence/', '/report_subjects/')
         if ctx.get('market_revision', 0) >= 7:
             prefixes += ('/strategy_advice/',)
-    for t in m['triggers']:
+    for index,t in enumerate(m['triggers']):
         exact(t,'id condition reason refs'+(' scope' if scoped else ''),'revision trigger');require(t['id'] not in ids,'duplicate revision trigger');ids.add(t['id'])
         if scoped:
             require(t['scope'] in ('MARKET', 'PORTFOLIO'), 'trigger owner required')
-        for k in ('id','condition','reason'):text(t[k],k)
-        require(len(t['reason'].strip())>=12,'trigger must explain why the analysis needs review')
+        for k in ('id','condition'):text(t[k],k)
+        label='maintenance.triggers['+str(index)+'].reason (id='+t['id']+')'
+        text(t['reason'],label)
+        reason=t['reason'].strip()
+        require(len(reason)>=12,label+': trigger must explain why the analysis needs review; minimum 12 characters, got '+str(len(reason)))
+        require(len(set(c for c in reason if c.isalnum()))>=2,label+': meaningful explanation required; punctuation or repeated characters are not analysis')
         require(isinstance(t['refs'],list),'trigger references required')
         for ref in t['refs']:require(ref.startswith(prefixes),'invalid trigger reference');pointer(values,ref)
         if scoped and t['scope'] == 'MARKET':
             from .authored_report import PUBLIC
             require(all(ref.startswith(PUBLIC + ('/market_result/', '/applicability/market/')) for ref in t['refs']), 'private account condition cannot be a market trigger')
     current_time=ctx['evaluated_at'];require(instant(m['recheck_at'])>instant(current_time),'next review must be in the future')
+    window=(ctx.get('report_care') or {}).get('execution_window') or {}
+    if window.get('automation_id'):
+        require(window.get('run_ref')==spec['provenance']['run_ref'],'execution window belongs to another run; refresh native timing')
+        require(window.get('status')=='AVAILABLE','next execution is unverified: '+window.get('reason','refresh native timing'))
+        age=(instant(current_time)-instant(window['checked_at'])).total_seconds()
+        require(-5<=age<=300 and instant(window['next_run_at'])>instant(current_time),'execution window is stale; refresh native timing without changing prior deadlines')
+        require(instant(m['recheck_at'])>=instant(window['review_not_before']),
+                'maintenance.recheck_at precedes the next executable review: next_run_at='+window['next_run_at']+
+                ', execution_margin_seconds='+str(window['execution_margin_seconds'])+', review_not_before='+window['review_not_before']+
+                '; choose a justified feasible deadline and preserve the actual prior check and any lateness')
     daily=m['daily'];exact(daily,'day report_by reason','daily feedback plan')
     require(daily['day']==day(current_time)==day(daily['report_by']),'daily plan must refer to current Japanese day')
     text(daily['reason'],'daily timing rationale');require(len(daily['reason'].strip())>=12,'daily timing needs a reason')

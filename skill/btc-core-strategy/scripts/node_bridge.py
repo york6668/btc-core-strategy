@@ -8,12 +8,51 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+import stat
 
 # Paths keep the native caller's meaning when the command crosses into Docker.
 PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--answers',
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
-                '--retained-source-bindings', '--file')
+                '--retained-source-bindings', '--file', '--receipt', '--runtime-schedule')
+
+
+def receipt_path(argv, output):
+    if '--run' not in argv or '--stage' not in argv:
+        raise ValueError('a stage receipt requires --run and --stage')
+    directory = Path(argv[argv.index('--run') + 1]).absolute().parent
+    stage = argv[argv.index('--stage') + 1]
+    target = Path(output).absolute()
+    if target != directory / (stage + '-stage-receipt.json') or target.is_symlink():
+        raise ValueError('receipt must use the dedicated ' + str(directory / (stage + '-stage-receipt.json')) + '; program-owned result/input paths are reserved')
+    return target
+
+
+def guard_stdout(argv, descriptor=1):
+    """Catch caller redirection before dispatch. A shell may already truncate it.
+
+    --receipt validates before opening and is the supported safe alternative.
+    Never repair a possibly truncated business artifact by guessing its contents.
+    """
+    output = os.fstat(descriptor)
+    if not stat.S_ISREG(output.st_mode):
+        return
+    paths = []
+    for flag in PATH_OPTIONS:
+        if flag in argv:
+            paths.append(Path(argv[argv.index(flag) + 1]))
+    if '--run' in argv:
+        paths.extend(Path(argv[argv.index('--run') + 1]).parent.glob('*'))
+    for path in paths:
+        try:
+            source = path.stat()
+        except OSError:
+            continue
+        if (source.st_dev, source.st_ino) != (output.st_dev, output.st_ino):
+            continue
+        if path.name.endswith('-stage-receipt.json') and not path.is_symlink() and path not in [Path(argv[i + 1]) for i, flag in enumerate(argv[:-1]) if flag in PATH_OPTIONS and flag != '--receipt']:
+            continue  # Also inspect aliases of this inode for a reserved path.
+        raise ValueError('stdout collides with program-owned/input file ' + str(path) + '; use --receipt with a dedicated stage receipt. Shell redirection may already have truncated the target; preserve and inspect it before resuming.')
 
 
 def absolute_paths(argv, directory):
@@ -27,6 +66,18 @@ def absolute_paths(argv, directory):
     return result
 
 
+def subcommand(argv):
+    index = 0
+    while index < len(argv):
+        if argv[index] in ('--project', '--root', '--runtime-schedule'):
+            index += 2
+        elif argv[index] == '--full':
+            index += 1
+        else:
+            return argv[index]
+    return None
+
+
 def forward_if_enabled(argv, *, requested_release=None):
     if os.environ.get('BTC_IN_CONTAINER') == '1':
         return
@@ -35,11 +86,33 @@ def forward_if_enabled(argv, *, requested_release=None):
     docker = config.get('docker_service')
     if not docker or not docker.get('enabled'):
         return
+    guard_stdout(argv)
+    if '--runtime-schedule' in argv:
+        raise ValueError('--runtime-schedule is supplied by the native adapter, not authored input')
+    if '--receipt' in argv:
+        receipt_path(argv, argv[argv.index('--receipt') + 1])
     sync_facts(Path(config['project_dir']), Path(docker['fact_bridge_dir']))
     release = Path(requested_release).resolve() if requested_release else Path(__file__).resolve().parents[3]
     operation = os.environ.get('BTC_OPERATION_ID') or 'core-' + uuid.uuid4().hex
     arguments = absolute_paths(argv, Path.cwd())
     inputs = {}
+    # Reuse the existing immutable native-input bridge; no scheduler or service
+    # process is added and older service images pass these CLI arguments through.
+    import runtime_schedule
+    if subcommand(arguments) in runtime_schedule.COMMANDS:
+        timing = runtime_schedule.snapshot(config, runtime_schedule.run_reference(arguments))
+        data = json.dumps(timing, sort_keys=True, ensure_ascii=False).encode()
+        digest = hashlib.sha256(data).hexdigest()
+        directory = Path(docker['fact_bridge_dir']).parent / 'native-inputs' / digest
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = directory / 'execution-window.json'
+        if not target.exists():
+            with target.open('xb') as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        elif target.read_bytes() != data:
+            raise ValueError('frozen execution window changed')
+        inputs[str(target)] = digest
+        arguments = ['--runtime-schedule', str(target), *arguments]
     for flag in ('--input', '--answers', '--template', '--market', '--collector-observations',
                  '--collector-snapshot', '--retained-source-bindings'):
         if flag in arguments:

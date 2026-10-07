@@ -6,8 +6,13 @@ from pathlib import Path
 import sys
 
 if __name__ == '__main__':
-    from node_bridge import forward_if_enabled
-    forward_if_enabled(sys.argv[1:])
+    from node_bridge import forward_if_enabled, guard_stdout
+    try:
+        guard_stdout(sys.argv[1:])
+        forward_if_enabled(sys.argv[1:])
+    except ValueError as exc:
+        print(json.dumps({'error': 'Invalid', 'message': str(exc)}), file=sys.stderr)
+        raise SystemExit(2)
 
 from v4 import assessment, delivery, domain, draft, evidence, hourly, migration, storage, sensing, main_flow, research, reporting
 from v4.common import Invalid, create, digest, facts, read, locked
@@ -18,6 +23,7 @@ def main(argv=None):
     parser.add_argument('--project', required=True)
     parser.add_argument('--root', required=True, help='isolated store during testing; production .strategy/v4')
     parser.add_argument('--full', action='store_true', help='include full immutable payload instead of compact paths')
+    parser.add_argument('--runtime-schedule', help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('run-prepare')
     p.add_argument('--run-ref', required=True)
@@ -45,6 +51,7 @@ def main(argv=None):
     choice.add_argument('--answers', help='authored judgment JSON, merged with --template')
     p.add_argument('--template', help='unchanged stage template from this run, required with --answers')
     p.add_argument('--check-only', action='store_true', help='main stage: validate without writing any artifact or strategy state')
+    p.add_argument('--receipt', help='write the result to <run directory>/<stage>-stage-receipt.json; never redirect stdout into program-owned artifacts')
     p = sub.add_parser('migrate')
     p.add_argument('--state', required=True)
     p.add_argument('--plan', required=True)
@@ -148,6 +155,12 @@ def main(argv=None):
     repair.add_argument('--main-draft', help='original submitted draft for an already published normalized main')
     args = parser.parse_args(argv)
     try:
+        import runtime_schedule
+        import node_bridge
+        arguments = list(argv if argv is not None else sys.argv[1:])
+        run_ref = runtime_schedule.run_reference(arguments) if args.command in runtime_schedule.COMMANDS else None
+        runtime_schedule.bind(args.runtime_schedule, run_ref)
+        output_receipt = node_bridge.receipt_path(arguments, args.receipt) if getattr(args, 'receipt', None) else None
         if args.command == 'run-prepare':
             from v4 import run_flow
             from v4 import market_state
@@ -284,6 +297,9 @@ def main(argv=None):
                 result={'evidence_id':result['evidence_id'],'directory':args.directory,'source_count':len(result['sources'])}
             elif args.command.startswith('research-'):
                 result={k:v for k,v in result.items() if k not in ('analysis','summary','candidate')}
+        if output_receipt is not None:
+            from v4.common import replace
+            replace(output_receipt, result)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False))
         return 0
     except (Invalid, OSError, ValueError, KeyError, TypeError) as exc:

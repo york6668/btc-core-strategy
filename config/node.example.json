@@ -13,5 +13,6 @@
   "codex_state_db": "/absolute/local/codex/actual-state-database.sqlite",
   "automation_id": "LOCAL_AUTOMATION_ID",
   "report_destination": "EXISTING_LOCAL_DESTINATION",
-  "automation_memory": "/absolute/local/codex/automations/btc/memory.md"
+  "automation_memory": "/absolute/local/codex/automations/btc/memory.md",
+  "codex_automations_db": "/absolute/local/codex/sqlite/codex-dev.db"
 }

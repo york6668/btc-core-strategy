@@ -7,6 +7,59 @@ from v4 import reporting,report_care,delivery,storage
 from v4.common import create,read,replace,Invalid,instant
 
 class ReportCareTests(unittest.TestCase):
+    def execution_window(self):
+        return {'schema':'BTC_EXECUTION_WINDOW_V1','status':'AVAILABLE','automation_id':'SYNTHETIC_TASK',
+                'run_ref':self.run,'checked_at':self.clock,'next_run_at':'2030-03-01T14:10:00Z',
+                'execution_margin_seconds':1200,'review_not_before':'2030-03-01T14:30:00Z'}
+
+    def test_deadline_must_cover_original_next_execution_and_margin(self):
+        with mock.patch('runtime_schedule.current',side_effect=lambda *args:self.execution_window()):
+            spec=self.spec('SILENT')
+            with self.assertRaisesRegex(Invalid,'maintenance.recheck_at precedes.*review_not_before'):
+                reporting.record(self.root,spec)
+            self.assertFalse((self.root/'report-review-current.json').exists())
+            spec['maintenance']['recheck_at']='2030-03-01T14:30:00Z'
+            result=reporting.record(self.root,spec)
+            self.assertEqual(reporting.review(self.root,result['review_id'])['timing_evidence']['execution_window']['execution_margin_seconds'],1200)
+
+    def test_feasible_next_deadline_does_not_erase_lateness_or_skip_checks(self):
+        identity,source=self.queue();self.begin(identity,source);self.confirm(identity)
+        first=report_care.latest(self.root)
+        self.clock='2030-03-01T13:36:00Z';self.run='SYNTHETIC_RUN_2'
+        with mock.patch('runtime_schedule.current',side_effect=lambda *args:self.execution_window()):
+            spec=self.spec('SILENT');spec['maintenance']['recheck_at']='2030-03-01T14:30:00Z'
+            invalid=deepcopy(spec);invalid['maintenance']['checked']['trigger_results']=[]
+            with self.assertRaisesRegex(Invalid,'all prior'):
+                reporting.record(self.root,invalid)
+            result=reporting.record(self.root,spec)
+        frozen=reporting.review(self.root,result['review_id'])
+        self.assertEqual(frozen['timing_evidence']['prior_review_id'],first['review_id'])
+        self.assertEqual(frozen['timing_evidence']['late_seconds'],60)
+        self.assertEqual(reporting.review(self.root,first['review_id'])['maintenance']['recheck_at'],'2030-03-01T13:35:00+00:00')
+
+    def test_short_and_empty_padded_reason_identifies_exact_trigger(self):
+        for value,pattern in [('short','maintenance.triggers\\[0\\].reason.*LOWER.*got 5'),('',r'maintenance.triggers\[0\].reason'),('。'*12,'meaningful explanation'),('同'*12,'repeated characters')]:
+            spec=self.spec('SILENT');spec['maintenance']['triggers'][0]['reason']=value
+            with self.assertRaisesRegex(Invalid,pattern):reporting.record(self.root,spec)
+        self.assertFalse((self.root/'report-review-current.json').exists())
+
+    def test_template_retains_explanation_but_requires_fresh_evidence_and_deadline(self):
+        from v4.run_flow import report_template, report_brief
+        reporting.record(self.root,self.spec('SILENT'))
+        ctx=self.context(self.root);template=report_template(ctx)
+        self.assertEqual(template['maintenance']['triggers'],ctx['report_care']['active_maintenance']['triggers'])
+        self.assertIsNone(template['maintenance']['recheck_at'])
+        self.assertIsNone(template['maintenance']['checked']['trigger_results'][0]['evidence'])
+        ctx['current_strategy'] = {}
+        self.assertIn('not proof',report_brief(ctx)['maintenance_authoring']['reason'])
+
+    def test_unavailable_or_stale_schedule_does_not_certify_feasibility(self):
+        for window in [dict(self.execution_window(),status='UNAVAILABLE'),dict(self.execution_window(),checked_at='2030-03-01T12:00:00Z')]:
+            with mock.patch('runtime_schedule.current',return_value=window):
+                spec=self.spec('SILENT');spec['maintenance']['recheck_at']='2030-03-01T14:30:00Z'
+                with self.assertRaisesRegex(Invalid,'unverified|stale'):
+                    reporting.record(self.root,spec)
+
     def setUp(self):
         self.f=fixture.MobileReportTests();self.f.setUp();self.addCleanup(self.f.doCleanups)
         self.root=self.f.f.root;self.clock='2030-03-01T13:05:00Z';self.run='SYNTHETIC_RUN_1'

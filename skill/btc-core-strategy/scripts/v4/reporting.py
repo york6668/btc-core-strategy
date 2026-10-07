@@ -355,6 +355,9 @@ def record(root, spec, *, prepared_context=None):
             require(len(item['explanation'].strip()) >= 12, 'replacement must explain covered or corrected meaning')
             covered.add(item['review_id'])
         frozen = dict(spec, context=ctx, created_at=now(), supersedes=sorted(covered))
+        timing = report_care.timing_evidence(ctx, frozen['created_at'])
+        if timing is not None:
+            frozen['timing_evidence'] = timing
         frozen['review_id']=digest(frozen)
         if spec['action']=='REPORT':
             body=render(frozen,storage.current(root))

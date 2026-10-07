@@ -92,11 +92,15 @@ class DomainRuntime(unittest.TestCase):
                             Catalog(db).sync('strategy',project/'.strategy')
                             db.metadata('writer',{'owner':'DOCKER'},write=True)
                     finally:db.close()
-                    argv=['--project',str(project),'--root',str(sample.f.store),'run-prepare',
+                    timing=folder/'execution-window.json'
+                    timing.write_text(json.dumps({'schema':'BTC_EXECUTION_WINDOW_V1','status':'UNAVAILABLE',
+                        'run_ref':'SYNTHETIC_CONTAINER_RUN','reason':'Synthetic timing bridge transport; no real automation.'}))
+                    argv=['--runtime-schedule',str(timing),'--project',str(project),'--root',str(sample.f.store),'run-prepare',
                           '--run-ref','SYNTHETIC_CONTAINER_RUN','--agent','SYNTHETIC_MAIN',
                           '--directory',os.path.relpath(sample.d,project),'--market',str(sample.raw_file)]
                     request={'method':'core.execute','operation_id':folder.name+'-prepare',
-                             'params':{'release':str(release),'argv':argv}}
+                             'params':{'release':str(release),'argv':argv,
+                                       'input_hashes':{str(timing):fingerprint(timing.read_bytes())}}}
                     result=execute(settings,request)
                     self.assertEqual(result['returncode'],0,result['stderr'])
                     self.assertEqual(execute(settings,request),result)

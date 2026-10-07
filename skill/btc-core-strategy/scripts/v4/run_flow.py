@@ -103,11 +103,14 @@ def market_template(ctx, raw):
 
 def report_template(ctx):
     previous = (ctx.get('report_care') or {}).get('active_maintenance') or {}
+    retained = deepcopy(previous.get('triggers', []))
+    if ctx.get('market_revision', 0) >= 6 and any('scope' not in t for t in retained):
+        retained = []  # Legacy ownership needs actual model review, not inference.
     form = {'action': None, 'purposes': [], 'reason': None, 'next_observation': None,
         'baseline_review': None, 'applicability_review': None, 'information': {}, 'layout': None, 'delivery_coverage': [],
         'important_events': deepcopy(ctx.get('required_report_events', [])),
         'maintenance': {'kind': 'MARKET_REVIEW', 'thesis': None, 'support': None, 'unresolved': None,
-            'triggers': [], 'recheck_at': None,
+            'triggers': retained, 'recheck_at': None,
             'daily': {'day': (ctx.get('report_care') or {}).get('day'),
                       'report_by': (ctx.get('report_care') or {}).get('report_by'), 'reason': None},
             'checked': {'prior_review_id': (ctx.get('report_care') or {}).get('prior_review_id'),
@@ -135,6 +138,8 @@ def report_brief(ctx):
     brief = {k: ctx.get(k) for k in ('current_strategy', 'cycle_policy_revision', 'deep_report_policy_revision', 'cycle_baseline', 'context_id', 'evaluated_at', 'reported', 'report_care', 'coverage',
         'knowledge_cutoff', 'silent_hours', 'unreported', 'unreported_total', 'unreported_truncated',
         'pending_delivery', 'pending_report_reviews', 'delivery_obligations', 'required_report_events', 'previous_silence', 'observation', 'public_evidence', 'market_revision', 'report_subjects', 'report_quote_policy', 'collector_observations')}
+    from .report_care import AUTHORING
+    brief['maintenance_authoring'] = deepcopy(AUTHORING)
     if ctx.get('deep_report_policy_revision') == 1:
         brief['cycle_report_instructions'] = cycle.REPORT_SCOPE_REVIEW
         brief['method_references'] = cycle.method_references('report')

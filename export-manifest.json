@@ -149,7 +149,9 @@
     "test_support/reader.lock.json",
     "tests/test_release.py",
     "skill/btc-core-strategy/references/seller-exhaustion.md",
-    "skill/btc-core-strategy/tests/test_portfolio_risk.py"
+    "skill/btc-core-strategy/tests/test_portfolio_risk.py",
+    "skill/btc-core-strategy/scripts/runtime_schedule.py",
+    "skill/btc-core-strategy/tests/test_runtime_schedule.py"
   ],
   "content_contract": {
     "read_revisions": [
