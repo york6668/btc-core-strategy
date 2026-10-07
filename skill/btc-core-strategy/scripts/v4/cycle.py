@@ -63,7 +63,7 @@ REPORT_SCOPE_REVIEW = (
     '本轮市场核验、共振/反转变化及分歧区突破迹象可走 MARKET_UPDATE，重要风险仍可走 URGENT_RISK；不以评级变化、中期反转、仓位改变或当天未报告为前提；新正式建议仍须深评采纳。'
     '先理解 report_boundary，REPORT 时展开 when_report，用 AUTHORED_REPORT_V1.body 表达已完成的综合判断；不拆lead/blocks、不设固定篇幅或栏目、不自动追加建议。'
     '汇报不产生第二套判断：Sol、其他模型、程序或云端都不能在整理时重排因子、补充因果解释或改变已形成的结论；需要改变判断时返回对应研判。'
-    'cycle_basis与deep_report_summary在冻结前对照研究、当前判断和最终正文核验周期状态、机制、价值及风险是否一致；周期证据不足保留具体限制并返回研究，不能将小时判断改标为数周。完整分析保留内部，必要即时风险仍及时反馈。'
+    'cycle_basis与deep_report_summary在冻结前对照研究、当前判断和最终正文核验周期状态、机制、价值及风险是否一致；具体指出正文如何分别表达当前方向与日期用途，不能只以日期未变证明语义一致。周期证据不足保留具体限制并返回研究，不能将小时判断改标为数周。完整分析保留内部，必要即时风险仍及时反馈。'
     '市场结论、价格风险和分歧区只绑定纯市场字段与当前观察；个人建议价、生效或撤回状态放在个人应对，文字概括同样遵守此边界。'
     '方向与适用周期明确，依据解释主导因素及重要反证怎样支持当前判断；每段及每句话都应帮助理解结论、关键依据或行动，不为数字绑定照搬 horizon.change、basis 或 narrative。'
     '分歧区、双方风险、全部期限和未知在内部完整维护，正文按其对判断与安排的影响呈现，不逐项展开；重要风险、事实纠错和建议有效性不能因去噪遗漏。'
@@ -89,8 +89,8 @@ MAPPING_REVIEW += (
     'cycle_structure逐项对照独立研究对原推动力衰减、反向趋势延续、反证及确认程度的实际结论；'
     '核对horizons/reversal、semantic、business_meaning与正文是否同义，不能把枯竭映射成反转、把反弹映射成趋势或把未知映射成中性。'
     'value_pricing、portfolio_waiting继续独立核验现价风险收益与个人风险，verification说明相较上次变化及下一鉴别证据。'
-) + CLOSED_LOOP_REVIEW
-REPORT_SCOPE_REVIEW += market_state.MOMENTUM_REPORT_REVIEW
+) + market_state.CYCLE_EXPRESSION_REVIEW + CLOSED_LOOP_REVIEW
+REPORT_SCOPE_REVIEW += market_state.CYCLE_EXPRESSION_REVIEW + market_state.MOMENTUM_REPORT_REVIEW
 
 
 def method_references(stage, project=None):

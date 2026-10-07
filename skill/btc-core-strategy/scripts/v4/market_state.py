@@ -14,13 +14,19 @@ from .factors import OPPORTUNITY_COST_REVIEW
 CORE_MARKETS = {'SPX', 'NDX', 'BTC'}
 MARKET_FIELDS = ('market_review', 'extra_findings', 'research_findings',
                  'factor_checks', 'applicability_review', 'market_assessment', 'dispute_zones')
+CYCLE_EXPRESSION_REVIEW = (
+    '当前周期状态与时间窗口分别表达：先说明截至当前识别的方向和依据；提及日期时说明其检验、有效或兑现用途，不能把检验截止日写成该状态将持续到那天。'
+    '有独立依据的前瞻延续判断仍可表达，保留其条件、期限与确认程度，不一律降为观察窗口；当前识别本身不构成延续预测。'
+    '原稿以“至某日”含混连接状态时，对照structure/basis及forward的timing_basis、conditions和invalidations澄清真实含义；不为逐字摘要保留歧义，不能从措辞修正产生新判断。'
+    '按内容自然分句或说明日期用途，不规定句式、栏目或禁词；不要求为表达当前状态展示所有内部期限，也不删除影响理解或执行的有效期限。'
+)
 CYCLE_FOCUS_REVIEW = (
     '周期是框架识别出的当前中性、向上或向下状态，不是若干天或周；证据不足明确哪项状态尚不能判断，未知不填成中性。'
     '先按驱动机制、价格反应及证据形成当前周期、切换确认、参与价值、双向风险与改变条件；观察窗口、判断有效期及兑现窗口另行选择，不用延长预测期限回答周期。'
     'market_assessment.summary、horizons中的结构与方向、BTC的outlook.semantic主情景和market_report承接同一当前周期判断；forward维护其证据与期限，小时核验及短线剩余有效期不能替代周期结论。'
     '日内数据用于验证支持、反证及重要即时风险，普通回收、反弹或破位不替代周期依据；周期证据不足先补证并保留具体限制，不能退回小时判断充当周期结论。'
     '观察窗口、判断期限和兑现窗口分别维护；修正原主周期须有实际研究依据并保留旧判断和期限，不能将小时结论直接改标为数周。'
-)
+) + CYCLE_EXPRESSION_REVIEW
 MOMENTUM_REVIEW = (
     '本轮重点分别判断原方向推动力是否衰减，以及相反方向是否建立可持续趋势；上涨后的买方动量与下跌后的卖方动量均适用，不预设当前已经枯竭或反转。'
     '动量由实际驱动力及其价格效果解释，不限定日内技术指标、卖竭指数或固定因子组合；按问题选择需求、供给、融资、盈利等证据及竞争解释，不制造综合分数。'

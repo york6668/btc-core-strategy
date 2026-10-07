@@ -383,6 +383,8 @@ class CycleWorkflowTests(unittest.TestCase):
         self.assertEqual(packet['cycle_assignment']['method_references'], cycle.method_references('research', self.f.project))
         disclosed = research._load(self.f.store, 'candidates', result['candidate_id'])
         self.assertEqual(disclosed['review_assignment']['method_references'], cycle.method_references('mapping'))
+        self.assertIn(cycle.market_state.CYCLE_EXPRESSION_REVIEW, packet['cycle_assignment']['instructions'])
+        self.assertIn(cycle.market_state.CYCLE_EXPRESSION_REVIEW, disclosed['review_assignment']['instructions'])
         for stage in ('research', 'mapping', 'observe', 'report'):
             for path in cycle.method_references(stage).values():
                 self.assertTrue(Path(path.split('#')[0]).is_file(), path)

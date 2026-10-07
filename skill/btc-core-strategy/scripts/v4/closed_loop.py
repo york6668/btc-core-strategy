@@ -46,8 +46,8 @@ REPORT_INSTRUCTIONS = (
     '研究和维护材料继续完整保存；来源绑定与逐字交付不改变正文，也不代表实际成交。'
 )
 
-from .market_state import MOMENTUM_REPORT_REVIEW
-REPORT_INSTRUCTIONS += MOMENTUM_REPORT_REVIEW
+from .market_state import CYCLE_EXPRESSION_REVIEW, MOMENTUM_REPORT_REVIEW
+REPORT_INSTRUCTIONS += CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW
 
 
 def strings(value, name, nonempty=False):
