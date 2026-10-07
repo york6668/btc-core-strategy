@@ -38,7 +38,9 @@ services:
       - mysql:/var/lib/mysql
     command: [--innodb-buffer-pool-size=512M, --binlog-expire-logs-seconds=604800]
     healthcheck:
-      test: [CMD, mysqladmin, ping, -h, localhost]
+      # The initialization server has a local socket but disables networking.
+      # Core must wait for the final TCP server, after users/schema are ready.
+      test: [CMD, mysqladmin, ping, --protocol=tcp, -h, 127.0.0.1]
       interval: 5s
       timeout: 5s
       retries: 30

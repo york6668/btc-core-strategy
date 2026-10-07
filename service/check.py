@@ -101,6 +101,15 @@ def run(docker, reader, reader_image=None):
         print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True,
               'reader_cli_readonly_source_writable_data':True if reader_image else 'NOT_RUN'}))
         result = 0
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # Capture startup evidence before cleanup, scoped to this disposable
+        # test project. Never dump settings, environment or credential files.
+        for diagnostic in (['ps','--all'], ['logs','--no-color','--tail','60','core']):
+            try:
+                subprocess.run(command+diagnostic, timeout=15, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Preserve the original test failure.
+        raise
     finally:
         stopped = subprocess.run(command+['down','--volumes','--remove-orphans'], timeout=90)
         if stopped.returncode == 0:
