@@ -13,7 +13,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'scripts'),
                str(reader_root), str(reader_root / 'tests')]
 import btc_evidence
 from test_evidence_v2 import generated
-from v4 import collector, evidence
+from v4 import collector, evidence, run_flow
 from v4.common import Invalid, create, digest, read
 
 
@@ -93,6 +93,26 @@ class CollectorProvenanceTests(unittest.TestCase):
             self.assertNotEqual(changed['collector']['source_id'], source['id'])
             self.assertIn(source, changed['sources'])
             self.assertEqual(evidence.resolve(changed, root / 'changed', ref), read(snapshot)['captured_at'])
+            # Both batches remain legal; only the frozen collector binding is current.
+            index = run_flow.ref_index(changed, root / 'changed', read(market))
+            roles = {s['id']: s['input_role'] for s in index}
+            self.assertEqual(roles[source['id']], 'SUPPORTING_EVIDENCE')
+            self.assertEqual(roles[changed['collector']['source_id']], 'CURRENT_COLLECTOR')
+            self.assertEqual(list(roles.values()).count('CURRENT_MARKET'), 1)
+            old_entry = next(s for s in index if s['id'] == source['id'])
+            old_asset_ref = next(r for r in old_entry['refs'] if r['pointer'] == '/assets/BTC')
+            self.assertEqual(evidence.resolve(changed, root / 'changed', old_asset_ref),
+                             read(snapshot)['assets']['BTC'])
+            current_entry = next(s for s in index if s['id'] == changed['collector']['source_id'])
+            current_ref = dict(ref, source_id=current_entry['id'], value_hash=digest(read(newer)['captured_at']))
+            self.assertEqual(evidence.resolve(changed, root / 'changed', current_ref), read(newer)['captured_at'])
+            self.assertEqual((first_dir / 'evidence.json').read_bytes(), original)
+            original_roles = {s['id']: s['input_role'] for s in run_flow.ref_index(merged, target, read(market))}
+            self.assertEqual(original_roles[source['id']], 'CURRENT_COLLECTOR')
+            self.assertEqual(original_roles['public'], 'SUPPORTING_EVIDENCE')
+            no_collector = dict(changed, collector=None)
+            self.assertNotIn('CURRENT_COLLECTOR', [s['input_role'] for s in
+                             run_flow.ref_index(no_collector, root / 'changed', read(market))])
 
     def test_gap_and_valid_identity_reach_frozen_material(self):
         with tempfile.TemporaryDirectory() as directory:

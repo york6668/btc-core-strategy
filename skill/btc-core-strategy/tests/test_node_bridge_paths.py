@@ -101,8 +101,14 @@ class NativePaths(unittest.TestCase):
             root=Path(folder);owned=root/'market-result.json';owned.write_text('SYNTHETIC')
             alias=root/'market-stage-receipt.json';os.link(owned,alias)
             with alias.open('a') as stream:
-                with self.assertRaisesRegex(ValueError,'stdout collides.*market-result.json'):
-                    node_bridge.guard_stdout(['--run',str(root/'run.json')],stream.fileno())
+                # Either hard link can be the first collision; directory order
+                # does not change the requirement to reject without dispatch.
+                for paths in ([owned,alias], [alias,owned]):
+                    with mock.patch.object(Path,'glob',return_value=paths):
+                        with self.assertRaisesRegex(ValueError,'stdout collides') as rejected:
+                            node_bridge.guard_stdout(['--run',str(root/'run.json')],stream.fileno())
+                    self.assertIn(str(paths[0]),str(rejected.exception))
+            self.assertEqual(owned.read_text(),'SYNTHETIC')
 
     def test_dedicated_receipt_writes_result_without_changing_market_artifact(self):
         with tempfile.TemporaryDirectory() as folder:

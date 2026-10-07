@@ -43,6 +43,10 @@ def ref_index(package, directory, raw):
         value = read(path)
         item = {k: source[k] for k in ('id', 'origin', 'url', 'trust', 'published_at', 'retrieved_at', 'start', 'end')}
         item['raw_path'] = str(path)
+        # Role comes from this frozen package, not recency or source trust.
+        item['input_role'] = ('CURRENT_MARKET' if value == raw else
+            'CURRENT_COLLECTOR' if source['id'] == (package.get('collector') or {}).get('source_id')
+            else 'SUPPORTING_EVIDENCE')
         item['refs'] = []
         paths = []
         if value == raw:
