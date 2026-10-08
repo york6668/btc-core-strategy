@@ -147,7 +147,8 @@ def maintain(db, *, apply=False, now=None):
     # not a business mutation; never keep the node writer locked while walking
     # the evidence, backup and compatibility directories.
     measure_capacity(db, now=now)
-    result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*') if p.is_file())
+    result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*')
+        if p.is_file() and re.fullmatch('[a-f0-9]{64}', p.parent.name + p.name))
     return result
 
 

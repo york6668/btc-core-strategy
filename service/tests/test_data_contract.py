@@ -634,6 +634,22 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(self.db.blobs.get(digest), raw)
             finally:self.db.settings.pop('require_shared_evidence',None)
 
+    def test_content_capacity_excludes_compatibility_files_but_total_allocation_keeps_them(self):
+        directory=Path(self.db.settings['objects'])/'.strategy';directory.mkdir(exist_ok=True)
+        marker=directory/(self.id+'.json');marker.write_bytes(b'generated compatibility material'*10000)
+        try:
+            before=sum(p.stat().st_blocks*512 for p in self.db.blobs.root.glob('*/*')
+                         if p.is_file() and len(p.parent.name)==2 and len(p.name)==62)
+            result=maintain(self.db,apply=False)
+            expected=sum(p.stat().st_blocks*512 for p in self.db.blobs.root.glob('*/*')
+                         if p.is_file() and len(p.parent.name)==2 and len(p.name)==62)
+            self.assertEqual(result['content_allocated_bytes'],expected)
+            self.assertTrue(marker.exists())
+            sample=self.db.metadata('capacity.daily')[-1]
+            self.assertGreaterEqual(sample['allocated_file_bytes'],before+marker.stat().st_blocks*512)
+        finally:
+            marker.unlink()
+
     def test_frozen_run_inputs_share_only_verified_bindings_and_keep_original_clocks(self):
         with tempfile.TemporaryDirectory(dir=self.db.settings['objects']) as folder:
             root = Path(folder)
