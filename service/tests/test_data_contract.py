@@ -460,6 +460,45 @@ class NodeContract(unittest.TestCase):
             ref=original[-1]['provenance']['retrieval']['raw_ref']
             self.assertEqual(ref['value_hash'],'sha256:'+__import__('hashlib').sha256(encode(dataset)).hexdigest())
             self.assertEqual(self.db.value(original[-1]['provenance']['original_digest']),package)
+            # Receipt projection stores a producer attachment, not the frozen
+            # assets snapshot. Resolve the reference against its actual bytes.
+            attachment = {'measurements': {SELLER: deepcopy(dataset)}}
+            raw_source = Path(folder)/'attachment.json'
+            raw_source.write_bytes(encode(attachment))
+            self.assertEqual(sum(r['inserted'] for r in ingest(self.db,package,raw_source)['counts']),0)
+            attachment_digest = self.db.put_blob(raw_source.read_bytes())
+            retrieval = next(self.db.value(r['source_digest']) for r in self.db.rows(
+                'SELECT source_digest FROM series_retrievals WHERE product=%s AND series=%s', (product,SELLER))
+                if self.db.value(r['source_digest']).get('original_digest') == attachment_digest)
+            ref = retrieval['retrieval']['raw_ref']
+            self.assertEqual(ref['pointer'], '/measurements/' + SELLER)
+            self.assertEqual(ref['value_hash'], 'sha256:'+__import__('hashlib').sha256(encode(attachment['measurements'][SELLER])).hexdigest())
+            from btc_node.collector_series import seller_source_ref
+            conflicting = deepcopy(attachment)
+            conflicting['measurements'][SELLER]['rows'][-1]['value'] += 0.001
+            with self.assertRaisesRegex(ValueError, 'differs from stored source'):
+                seller_source_ref(attachment_digest, conflicting, [original[-1]['payload']])
+            # Reproduce the already-persisted bad pointer in this isolated DB.
+            legacy = deepcopy(retrieval)
+            legacy['retrieval']['raw_ref'] = {**ref, 'pointer':'/assets/BTC/datasets/' + SELLER}
+            legacy_digest = self.db.put_blob(encode(legacy))
+            self.prices.preserve_original(legacy_digest, legacy)
+            self.db.execute('UPDATE observations SET source_digest=%s WHERE observation_key=%s',
+                            (legacy_digest, original[-1]['observation_key']))
+            count = self.db.one('SELECT COUNT(*) AS n FROM observations')['n']
+            with patch('btc_node.series.millis', return_value=millis(self.at(1))):
+                repaired = self.prices.repair_seller_references(limit=500)
+            self.assertGreaterEqual(repaired['repaired'], 1)
+            old = self.prices.query(product,SELLER,as_of=self.at(2),**query)['observations'][-1]
+            self.assertNotIn('reference_correction', old)
+            corrected = self.prices.query(product,SELLER,as_of=self.at(),**query)['observations'][-1]
+            self.assertEqual(corrected['provenance'], legacy)
+            self.assertEqual(corrected['reference_correction']['corrected_ref'], ref)
+            self.assertEqual(corrected['reference_correction']['original_ref'], legacy['retrieval']['raw_ref'])
+            self.assertEqual(corrected['known_ms'], known)
+            self.assertEqual(self.prices.repair_seller_references(limit=500)['repaired'], 0)
+            self.assertEqual(self.db.one('SELECT COUNT(*) AS n FROM observations')['n'], count)
+            self.assertEqual(raw_source.read_bytes(), encode(attachment))
             # Upgrade an already-projected frozen file, without rewriting it
             # or reprojecting unrelated datasets; absent old fields stay absent.
             from btc_node.history import project_history
@@ -506,6 +545,7 @@ class NodeContract(unittest.TestCase):
             maintain(self.db,apply=True,now=self.now+timedelta(days=503))
             self.assertTrue(self.prices.query(product,SELLER,as_of=self.at(),**query)['observations'])
             self.assertTrue(self.db.value(original[-1]['provenance']['original_digest']))
+            self.assertTrue(self.db.value(attachment_digest))
 
     def test_frozen_run_binding_is_returned_and_formal_binding_stays_separate(self):
         from btc_node.execution import project_state

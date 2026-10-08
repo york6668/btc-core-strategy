@@ -61,3 +61,5 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 局部行为纠偏沿现有任务逐日追踪，在实际自然输入、结果与必要报告消费已完成审阅后，可用 `acceptance.repair(preserve_window=true)` 关闭该项，保留全局窗口、其他待办与历史。此模式不把安装或测试当作自然通过；未覆盖场景继续待验收。资产风险纠偏的具体接续见核心 Skill 的 runtime-maintenance.md。
 
 `acceptance.status.scope=LOCAL_NATURAL_ACCEPTANCE` 只表示本机自然验收；源码发布、采集节点迁移、云端环境发布和全新任务验证分别核实，不由本机状态推导，也不作为其他操作的一概前置条件。卖竭投影保留附件前30天原料但不将预热行写成派生观测，避免滚动导出边界撤销旧有效值。
+
+`prices.query` 的投影 `provenance.retrieval.raw_ref` 对应 `original_digest` 保存的实际原件：reader 附件使用 `/measurements/seller_exhaustion_daily`，冻结快照使用 `/assets/BTC/datasets/seller_exhaustion_daily`。引用哈希绑定该位置的原值，不能用规范化后的结构替代原件。已存错误引用通过显式写操作 `prices.repair_seller_references`（`limit`、`after` 分页）追加修正；原观测、原获知时间和原引用不变，不增加数值修订。查询仅在 `as_of` 不早于修正获知时间时提供附加 `reference_correction`，其中 `corrected_ref` 可按 `original_digest` 解析。缺原件或原料不一致明确返回 `gaps`，不猜测修正，也不阻断正常市场分析。

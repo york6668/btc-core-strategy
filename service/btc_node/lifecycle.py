@@ -178,6 +178,11 @@ def _maintain(db, *, apply, now):
             db.execute('DELETE FROM series_originals WHERE '
                        'NOT EXISTS(SELECT 1 FROM observations o WHERE o.source_digest=series_originals.source_digest) '
                        'AND NOT EXISTS(SELECT 1 FROM series_retrievals r WHERE r.source_digest=series_originals.source_digest)')
+            for repair in db.rows('SELECT name FROM node_metadata WHERE name LIKE %s', ('seller.ref-repair:%',)):
+                digest = repair['name'].split(':', 1)[1]
+                if not db.one('SELECT 1 FROM observations WHERE source_digest=%s LIMIT 1', (digest,)):
+                    db.execute('DELETE FROM metadata_blobs WHERE name=%s', (repair['name'],))
+                    db.execute('DELETE FROM node_metadata WHERE name=%s', (repair['name'],))
         protected = protected_documents(db)
         expired = db.rows('SELECT * FROM documents d WHERE expires_ms<=%s '
                           "AND retention_class NOT IN ('ACTIVE','KEY','DAILY') "

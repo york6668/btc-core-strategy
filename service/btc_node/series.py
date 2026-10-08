@@ -113,6 +113,44 @@ class Series:
         return {'products': [{'product':r['product'],'identity':self.db.value(r['identity_digest'])} for r in rows[:limit]],
                 'next': rows[limit-1]['product'] if len(rows)>limit else None}
 
+    def repair_seller_references(self, *, after='', limit=100):
+        """Append reference corrections; never revise a numerical observation."""
+        from .collector_series import SELLER, seller_source_ref
+        if not isinstance(after, str) or not 1 <= limit <= 500:
+            raise ValueError('bounded source continuation required')
+        sources = self.db.rows('SELECT DISTINCT source_digest FROM observations '
+            'WHERE series=%s AND source_digest>%s ORDER BY source_digest LIMIT %s',
+            (SELLER, after, limit + 1))
+        repaired, unchanged, gaps = 0, 0, []
+        for row in sources[:limit]:
+            digest = row['source_digest']
+            name = 'seller.ref-repair:' + digest
+            if self.db.metadata(name):
+                unchanged += 1
+                continue
+            try:
+                provenance = self.db.value(digest)
+                original = provenance.get('original_digest')
+                if not isinstance(original, str) or len(original) != 64:
+                    raise ValueError('original source digest is missing')
+                payloads = [self.db.value(r['digest']) for r in self.db.rows(
+                    'SELECT digest FROM observations WHERE series=%s AND source_digest=%s', (SELLER, digest))]
+                ref = seller_source_ref(original, self.db.value(original), payloads)
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                gaps.append({'source_digest': digest, 'reason': str(exc)})
+                continue
+            old = provenance.get('retrieval', {}).get('raw_ref')
+            if old == ref:
+                unchanged += 1
+                continue
+            self.db.metadata(name, {'schema': 'SELLER_REFERENCE_CORRECTION_V1',
+                'source_digest': digest, 'original_digest': original, 'known_ms': millis(),
+                'original_ref': old, 'corrected_ref': ref,
+                'reason': 'reference pointer must resolve against the stored original source shape'}, write=True)
+            repaired += 1
+        return {'repaired': repaired, 'unchanged': unchanged, 'gaps': gaps,
+                'next': sources[limit-1]['source_digest'] if len(sources)>limit else None}
+
     def query(self, product, series, *, start, end, as_of, limit=1000, after=None):
         if not 1 <= limit <= 10000:
             raise ValueError('bounded query limit required')
@@ -136,6 +174,15 @@ class Series:
         items = [{k: v for k, v in row.items() if k not in {'rn', 'digest', 'source_digest'}} |
                  {'payload': self.db.value(row['digest']), 'provenance': self.db.value(row['source_digest'])}
                  for row in rows[:limit]]
+        corrections = {}
+        if series == 'seller_exhaustion_daily':
+            for row, item in zip(rows[:limit], items):
+                digest = row['source_digest']
+                if digest not in corrections:
+                    corrections[digest] = self.db.metadata('seller.ref-repair:' + digest)
+                correction = corrections[digest]
+                if correction and correction['known_ms'] <= known_ms:
+                    item['reference_correction'] = correction
         return {'product': product, 'identity': self.db.value(identity_row['identity_digest']),
                 'series': series, 'as_of_ms': known_ms, 'observations': items, 'truncated': truncated,
                 'next': {k:items[-1][k] for k in ('observed_ms','item_key')} if truncated else None}

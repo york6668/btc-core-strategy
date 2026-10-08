@@ -16,6 +16,31 @@ from .series import Series
 SELLER = 'seller_exhaustion_daily'
 
 
+def seller_source_ref(original, source, rows):
+    """Reference the stored source shape, including raw reader attachments."""
+    if SELLER in source.get('measurements', {}):
+        dataset, pointer = source['measurements'][SELLER], '/measurements/' + SELLER
+    else:
+        dataset = source.get('assets', {}).get('BTC', {}).get('datasets', {}).get(SELLER)
+        pointer = '/assets/BTC/datasets/' + SELLER
+    if not isinstance(dataset, dict):
+        raise ValueError('stored source has no seller dataset')
+    originals = {r['observed_ms']: r for r in dataset.get('rows', [])}
+    for row in rows:
+        expected = deepcopy(originals.get(row['observed_ms']))
+        if expected is None:
+            raise ValueError('seller row is absent from stored source')
+        for raw in expected['inputs'].values():
+            raw.pop('retrieved_at_ms', None)
+        actual = deepcopy(row)
+        for raw in actual['inputs'].values():
+            raw.pop('retrieved_at_ms', None)
+        if expected != actual:
+            raise ValueError('seller row differs from stored source')
+    return {'source_id': 'collector_' + original[:20], 'pointer': pointer,
+            'value_hash': 'sha256:' + fingerprint(encode(dataset))}
+
+
 def seller_rows(dataset, asset, known, reader_directory=None):
     """Validate with the deployed producer contract, not a second formula."""
     location = os.environ.get('BTC_COLLECTOR_CONTRACT_PATH')
@@ -59,7 +84,8 @@ def seller_rows(dataset, asset, known, reader_directory=None):
 
 def ingest(db, package, source, *, only=None):
     series = Series(db)
-    original = db.put_blob(Path(source).read_bytes())
+    source_bytes = Path(source).read_bytes()
+    original = db.put_blob(source_bytes)
     counts, gaps = [], []
     for asset, value in package.get('assets', {}).items():
         received = (value.get('transport') or {}).get('received_at')
@@ -84,6 +110,8 @@ def ingest(db, package, source, *, only=None):
                     node_path = db.settings.get('container_node_config')
                     reader_directory = json.loads(Path(node_path).read_text())['reader_code_dir'] if node_path else None
                     prepared = seller_rows(dataset, asset, known, reader_directory)
+                    raw_ref = seller_source_ref(original, json.loads(source_bytes),
+                                                [item[2] for item in prepared if item is not None])
                 except (ImportError, OSError, ValueError, KeyError, TypeError) as exc:
                     gaps.append({'asset':asset,'series':name,'reason':str(exc)})
                     continue
@@ -122,13 +150,12 @@ def ingest(db, package, source, *, only=None):
                     'relation':dataset.get('relation','UNKNOWN'),'quality':dataset.get('quality'),
                     'analysis_eligible':False,'field_units':dataset.get('field_units',{})}
                 if name == SELLER:
-                    # Full original clocks, quality and the exact frozen raw_ref
-                    # belong to this retrieval, not every numerical revision.
+                    # Reader history stores the original attachment, while a
+                    # frozen source stores an assets snapshot. The pointer must
+                    # resolve against the bytes identified by original_digest.
                     provenance['retrieval'].update(quality=provenance.pop('quality'),
                         status=dataset.get('status'), calculated_at_ms=dataset.get('calculated_at_ms'),
-                        raw_ref={'source_id':'collector_'+original[:20],
-                                 'pointer':'/assets/'+asset+'/datasets/'+name,
-                                 'value_hash':'sha256:'+fingerprint(encode(dataset))})
+                        raw_ref=raw_ref)
                     provenance.update(method=dataset['method'], official_equivalence='unverified')
                 for start in range(0,len(items),10000):
                     counts.append(series.ingest(product,name,[r for _,r in items[start:start+10000]],provenance,
