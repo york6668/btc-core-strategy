@@ -73,6 +73,18 @@ class Catalog:
     def __init__(self, db):
         self.db = db
 
+    def share_original(self, path, digest):
+        """Only hash-named originals are immutable; ordinary JSON stays writable."""
+        if path.parent.name != 'raw' or path.stem != digest:
+            return
+        target = self.db.blobs.path(digest)
+        if target.is_file() and target.samefile(path):
+            return
+        if fingerprint(path.read_bytes()) != digest:
+            raise Conflict('immutable original changed before sharing: ' + str(path))
+        self.db.blobs.materialize(digest, path,
+            require_link=self.db.settings.get('require_shared_evidence', False))
+
     def sync(self, namespace, root, *, hardlink=False, protect=(), default_retention=None):
         root = Path(root).resolve()
         if not root.is_dir():
@@ -103,9 +115,15 @@ class Catalog:
                     continue
                 seen.add(relative)
                 stat = path.lstat()
+                prior = existing.get(relative)
+                # A shared inode carries the CAS creation time. Retention uses
+                # the original document clock, not that physical inode clock.
+                immutable = (prior and prior['kind'] == 'FILE' and path.parent.name == 'raw'
+                             and path.stem == prior['digest'] and stat.st_size == prior['byte_length'])
+                source_mtime_ns = prior['source_mtime_ns'] if immutable else stat.st_mtime_ns
                 policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
                 ttl = RETENTION_DAYS[policy]
-                expires = stat.st_mtime_ns // 1000000 + ttl * DAY if ttl else None
+                expires = source_mtime_ns // 1000000 + ttl * DAY if ttl else None
                 if not path.is_symlink() and (name == 'failure-receipt.json' or name.endswith(('-failure.json', '-error.json'))):
                     from .failures import is_receipt
                     raw = path.read_bytes()
@@ -148,6 +166,8 @@ class Catalog:
                         continue
                     prior = existing.get(relative)
                     if prior and prior['kind'] == 'FILE' and prior['byte_length'] == stat.st_size and (prior['source_mtime_ns'] == stat.st_mtime_ns or (path.parent.name == 'raw' and path.stem == prior['digest'])):
+                        if hardlink and policy != 'CACHE':
+                            self.share_original(path, prior['digest'])
                         continue
                     data = path.read_bytes()
                     after = path.stat()
@@ -163,13 +183,12 @@ class Catalog:
                                 'byte_length=VALUES(byte_length),source_mtime_ns=VALUES(source_mtime_ns),recorded_ms=VALUES(recorded_ms),'
                                 'retention_class=VALUES(retention_class),expires_ms=VALUES(expires_ms)',
                                 (identity(namespace, relative), namespace, relative, kind, digest, link, size,
-                                 stat.st_mtime_ns, millis(), policy, expires))
+                                 source_mtime_ns, millis(), policy, expires))
                 changed.append(relative)
                 self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (identity(namespace, relative),))
                 if hardlink and kind == 'FILE' and policy != 'CACHE':
                     # Do not link arbitrary mutable binaries to immutable content.
-                    if path.parent.name == 'raw' and path.stem == digest:
-                        self.db.blobs.materialize(digest, path)
+                    self.share_original(path, digest)
         missing = (set(existing) | existing_databases) - seen
         for relative in missing:
             self.remove_sqlite(identity(namespace,relative))

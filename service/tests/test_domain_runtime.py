@@ -32,7 +32,7 @@ class DomainRuntime(unittest.TestCase):
         source = Path(os.environ['BTC_TEST_SOURCE'])
         settings = json.loads(Path(os.environ['BTC_TEST_CONFIG']).read_text())
         self.assertTrue(settings.get('test_only'))
-        with tempfile.TemporaryDirectory(prefix='btc-domain-contract-') as folder:
+        with tempfile.TemporaryDirectory(prefix='btc-domain-contract-', dir=settings['objects']) as folder:
             folder = Path(folder)
             for name in ('资产配置.md','操作记录.md','纠正记录.md'):
                 (folder/name).write_text('# SYNTHETIC TEST FACTS\nNo real account or position.\n')
@@ -42,7 +42,10 @@ class DomainRuntime(unittest.TestCase):
             node.write_text(json.dumps({'schema':'BTC_NODE_CONFIG_V1','project_dir':str(folder),
                 'legacy_revision2_dir':str(fixtures),'python':sys.executable,'frozen_market_python':sys.executable}))
             sys.path[:0] = [str(source/'skill/btc-core-strategy/scripts'),str(source/'skill/btc-core-strategy/tests')]
-            with patch.dict(os.environ, {'BTC_TEST_FIXTURE_DIR':str(fixtures),'BTC_NODE_CONFIG':str(node)}):
+            # Generated analysis directories use the prepared evidence mount,
+            # just as the production project and CAS share one mount.
+            with patch.object(tempfile, 'tempdir', settings['objects']), patch.dict(os.environ,
+                    {'BTC_TEST_FIXTURE_DIR':str(fixtures),'BTC_NODE_CONFIG':str(node), 'TMPDIR':settings['objects']}):
                 import test_run_flow as fixture
                 sample = fixture.RunFlowTests('test_prepare_never_calls_network_with_frozen_input_or_changes_owners')
                 try:

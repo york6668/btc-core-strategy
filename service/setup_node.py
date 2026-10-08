@@ -33,7 +33,9 @@ def prepare(node_path, data, docker, compose_project, source):
     sys.path.insert(0, str(source / 'skill/btc-core-strategy/scripts'))
     from node_bridge import sync_facts
     sync_facts(project, data / 'native-facts')
-    native_project = data / 'native-project'
+    # The project alias and CAS use the same bind mount. A separately mounted
+    # .strategy returns EXDEV even on a single host filesystem.
+    native_project = data / 'objects'
     native_project.mkdir(exist_ok=True)
     (data / 'reader-source/data').mkdir(parents=True, exist_ok=True)
     (data / 'reader').mkdir(exist_ok=True)
@@ -48,18 +50,19 @@ def prepare(node_path, data, docker, compose_project, source):
     container_node.pop('docker_service', None)
     write(data / 'container-node.json', container_node)
     settings = {'mysql': {'host': 'mysql', 'user': 'btc', 'database': 'btc', 'password_file': '/run/secrets/mysql_password'},
-                'objects': str(data / 'objects'), 'socket': '/run/btc/btc.sock', 'journal': str(data / 'journal'),
+                'objects': str(project), 'require_shared_evidence': True,
+                'socket': '/run/btc/btc.sock', 'journal': str(data / 'journal'),
                 'project': str(project), 'release_root': str(Path(node['release_root']) / 'releases'),
                 'container_node_config': str(data / 'container-node.json'),
                 'reader_data': node['reader_data_dir'],
                 'observation_db': node['observation_db'], 'maintenance_enabled': False,
-                'recycle_grace_hours': 48, 'compatibility_root': str(data / 'strategy'),
+                'recycle_grace_hours': 48, 'compatibility_root': str(native_project / '.strategy'),
                 # Keep immutable backup content on the evidence mount. A sibling
                 # bind mount can return EXDEV even when host st_dev is identical.
-                'backup_directory': str(data / 'objects' / '.backups'), 'backup_retention_days': 7,
+                'backup_directory': str(project / '.backups'), 'backup_retention_days': 7,
                 'auxiliary_namespaces': {name:str(data/path) for name,path in
                     (('native_inputs','native-inputs'),('native_proofs','native-proofs'),('facts','native-facts'))},
-                'capacity_paths': [str(data/name) for name in ('strategy','reader','backups','native-proofs','native-inputs','native-facts','journal')],
+                'capacity_paths': [str(data/name) for name in ('reader','native-proofs','native-inputs','native-facts','journal')],
                 'namespaces': {'strategy': str(project / '.strategy')}}
     write(settings_path, settings)
     environment = {'BTC_DATA_DIR': str(data), 'BTC_CONTAINER_DATA_DIR': str(data), 'BTC_SETTINGS_FILE': str(settings_path),
@@ -74,7 +77,6 @@ def prepare(node_path, data, docker, compose_project, source):
                # shared-memory coordination when the previous reader closed.
                str(data / 'reader') + ':' + node['reader_data_dir'],
                str(native_project) + ':' + str(project),
-               str(data / 'strategy') + ':' + str(project / '.strategy'),
                str(data / 'native-facts') + ':/run/btc/facts:ro']
     # Import runs on the native adapter through a localhost-only DB endpoint.
     # Containers receive source exports and fact generations, never broad home

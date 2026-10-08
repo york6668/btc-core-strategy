@@ -107,17 +107,23 @@ class Blobs:
             raise Conflict('stored content checksum mismatch')
         return data
 
-    def materialize(self, digest, destination):
-        self.get(digest)
+    def materialize(self, digest, destination, *, require_link=False):
         destination = Path(destination)
+        source = self.path(digest)
+        self.get(digest)
+        if destination.is_file() and source.samefile(destination):
+            return
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as handle:
             temporary = Path(handle.name)
         try:
             temporary.unlink()
             try:
-                os.link(self.path(digest), temporary)
-            except OSError:
+                os.link(source, temporary)
+            except OSError as error:
+                if require_link:
+                    raise Conflict('immutable evidence must share the content volume; hardlink failed: '
+                                   + str(error.errno)) from error
                 with temporary.open('xb') as handle:
                     handle.write(self.get(digest))
                     handle.flush()

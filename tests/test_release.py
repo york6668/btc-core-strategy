@@ -19,6 +19,29 @@ spec.loader.exec_module(release)
 
 
 class ExportManifestTests(unittest.TestCase):
+    def test_prepared_node_keeps_strategy_and_cas_on_one_project_mount(self):
+        spec = importlib.util.spec_from_file_location('btc_setup', ROOT/'service/setup_node.py')
+        setup = importlib.util.module_from_spec(spec);spec.loader.exec_module(setup)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve();project=root/'project';project.mkdir()
+            for name in ('资产配置.md','操作记录.md','纠正记录.md'):
+                (project/name).write_text('# SYNTHETIC FACTS\n',encoding='utf-8')
+            node=root/'node.json';node.write_text(json.dumps({'schema':'BTC_NODE_CONFIG_V1',
+                'project_dir':str(project),'release_root':str(root/'runtime'),
+                'reader_code_dir':str(root/'reader-code'),'reader_data_dir':str(root/'reader-data'),
+                'observation_db':str(project/'.strategy/market.sqlite3')}))
+            data=root/'data';setup.prepare(node,data,Path('/synthetic/docker'),'synthetic',ROOT)
+            settings=json.loads((data/'settings.json').read_text())
+            self.assertEqual(settings['objects'],str(project))
+            self.assertTrue(settings['require_shared_evidence'])
+            self.assertEqual(settings['compatibility_root'],str(data/'objects/.strategy'))
+            self.assertEqual(settings['backup_directory'],str(project/'.backups'))
+            volumes=json.loads((data/'compose.active.json').read_text())['services']['core']['volumes']
+            self.assertIn(str(data/'objects')+':'+str(project),volumes)
+            self.assertFalse(any(v.split(':')[1]==str(project/'.strategy') for v in volumes))
+            self.assertTrue((data/'objects/.strategy').is_dir())
+            self.assertTrue(all((data/'objects'/name).is_symlink() for name in ('资产配置.md','操作记录.md','纠正记录.md')))
+
     def test_service_export_includes_every_source_module(self):
         files = set(json.loads((ROOT / 'export-manifest.json').read_text())['files'])
         modules = {path.relative_to(ROOT).as_posix()

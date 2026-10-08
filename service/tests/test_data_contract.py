@@ -4,6 +4,7 @@ All inputs are built at runtime. Set BTC_TEST_CONFIG to an isolated node config;
 this suite never reads local account files, production state or saved fixtures.
 """
 import base64
+import errno
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,7 @@ import unittest
 import uuid
 
 from btc_node.api import dispatch, invoke
-from btc_node.codec import Conflict, encode, millis
+from btc_node.codec import Conflict, encode, fingerprint, millis
 from btc_node.database import Database
 from btc_node.entities import Entities
 from btc_node.lifecycle import maintain
@@ -602,6 +603,65 @@ class NodeContract(unittest.TestCase):
             with patch('btc_node.lifecycle.os.walk', side_effect=denied):
                 with self.assertRaises(PermissionError): allocated([root])
             with self.assertRaises(FileNotFoundError): allocated([root/'missing'])
+
+    def test_unchanged_raw_views_share_content_without_changing_retention_clocks(self):
+        with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as folder:
+            root = Path(folder)
+            raw = b'{"source":"generated","value":17}\n'
+            with self.db.transaction():
+                digest = self.db.put_blob(raw)
+            # CAS predates this run. Sharing must not transfer its old age to
+            # the run document or alter an ordinary, writable collector export.
+            os.utime(self.db.blobs.path(digest), (millis(self.now)/1000-20*86400,)*2)
+            paths = [root/name/'evidence/raw'/(digest+'.json') for name in ('run-a','run-b')]
+            for path in paths:
+                path.parent.mkdir(parents=True);path.write_bytes(raw)
+            export = root/'collector.json';export.write_bytes(raw)
+            catalog = Catalog(self.db)
+            with self.db.transaction():catalog.sync(self.id, root)
+            before = self.db.rows('SELECT * FROM documents WHERE namespace=%s ORDER BY path',(self.id,))
+            self.db.settings['require_shared_evidence'] = True
+            try:
+                for _ in range(2):
+                    with self.db.transaction():
+                        result = catalog.sync(self.id, root, hardlink=True)
+                    self.assertEqual(result['changed'], [])
+                    self.assertTrue(all(path.samefile(self.db.blobs.path(digest)) for path in paths))
+                    self.assertFalse(export.samefile(self.db.blobs.path(digest)))
+                    self.assertEqual(self.db.rows('SELECT * FROM documents WHERE namespace=%s ORDER BY path',(self.id,)), before)
+                self.assertEqual(self.db.blobs.get(digest), raw)
+                export.write_bytes(b'{"source":"generated","value":18}\n')
+                self.assertEqual(self.db.blobs.get(digest), raw)
+            finally:self.db.settings.pop('require_shared_evidence',None)
+
+    def test_required_shared_original_rejects_cross_mount_copy_and_preserves_original(self):
+        with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as folder:
+            root = Path(folder);raw = b'{"generated":true}\n'
+            path = root/'raw'/(fingerprint(raw)+'.json');path.parent.mkdir();path.write_bytes(raw)
+            catalog = Catalog(self.db)
+            with self.db.transaction():catalog.sync(self.id,root)
+            before = self.db.rows('SELECT * FROM documents WHERE namespace=%s',(self.id,))
+            self.db.settings['require_shared_evidence']=True
+            try:
+                with patch('btc_node.codec.os.link',side_effect=OSError(errno.EXDEV,'generated different mounts')):
+                    with self.assertRaisesRegex(Conflict,'must share the content volume'):
+                        with self.db.transaction():catalog.sync(self.id,root,hardlink=True)
+                self.assertEqual(path.read_bytes(),raw)
+                self.assertEqual(self.db.rows('SELECT * FROM documents WHERE namespace=%s',(self.id,)),before)
+                self.assertEqual(list(path.parent.iterdir()),[path])
+            finally:self.db.settings.pop('require_shared_evidence',None)
+
+    def test_sharing_checks_actual_original_bytes_before_replacing_a_view(self):
+        with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as folder:
+            root=Path(folder);raw=b'{"value":17}\n'
+            path=root/'raw'/(fingerprint(raw)+'.json');path.parent.mkdir();path.write_bytes(raw)
+            catalog=Catalog(self.db)
+            with self.db.transaction():catalog.sync(self.id,root)
+            path.write_bytes(b'{"value":18}\n')
+            with self.assertRaisesRegex(Conflict,'immutable original changed'):
+                with self.db.transaction():catalog.sync(self.id,root,hardlink=True)
+            self.assertEqual(self.db.blobs.get(fingerprint(raw)),raw)
+            self.assertEqual(path.read_bytes(),b'{"value":18}\n')
 
     def test_catalog_roundtrip_preserves_bytes_sqlite_blobs_cursor_and_unknown(self):
         with tempfile.TemporaryDirectory() as folder:

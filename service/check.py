@@ -48,15 +48,37 @@ def run(docker, reader, reader_image=None):
                 raise AssertionError('real reader CLI must return the observation list')
         for name in ('mysql', 'mysql-root'):
             (directory/name).write_text(secrets.token_urlsafe(40)+'\n'); (directory/name).chmod(0o600)
+        evidence = directory/'objects'; evidence.mkdir()
+        legacy = directory/'strategy'; legacy.mkdir()
+        marker = legacy/'fixed-run-path.json'
+        marker.write_text('{"generated":true}')
+        legacy_inode = marker.stat().st_ino
+        legacy.rename(evidence/'.strategy')
+        legacy.symlink_to(evidence/'.strategy', target_is_directory=True)
+        if (legacy/marker.name).stat().st_ino != legacy_inode:
+            raise AssertionError('compatibility move changed the original file')
+        alias = '/fixture/project'
         settings = {'mysql': {'host':'mysql','user':'btc','database':'btc','password_file':'/run/secrets/mysql_password'},
-                    'objects':'/data/objects','socket':'/run/btc/btc.sock','test_only':True,
+                    'objects':alias,'project':alias,'compatibility_root':alias+'/.strategy',
+                    'require_shared_evidence':True,
+                    'socket':'/run/btc/btc.sock','test_only':True,
                     'maintenance_enabled':False,'recycle_grace_hours':48}
         (directory/'settings.json').write_text(json.dumps(settings))
+        override = directory/'compose.test.json'
+        override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias]}}}))
+        command += ['-f',str(override)]
         (directory/'compose.env').write_text('\n'.join(['BTC_DATA_DIR='+str(directory),
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
         subprocess.run(command+['up','-d','--build','--wait','mysql','core'], check=True, timeout=600)
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
+        probe = ('import json,os; from pathlib import Path; '
+                 'root=Path("/fixture/project"); assert (root/".strategy").resolve()==root/".strategy"; '
+                 'assert json.loads((root/".strategy/fixed-run-path.json").read_text())=={"generated":True}; '
+                 'source=root/"mount-probe"; target=root/".strategy/mount-probe"; '
+                 'source.write_bytes(b"generated mount check"); os.link(source,target); '
+                 'assert source.samefile(target); target.unlink(); source.unlink()')
+        subprocess.run(command+['exec','-T','core','python','-c',probe],check=True)
         subprocess.run([docker,'cp',str(ROOT/'service/tests'),container+':/tmp/tests'],check=True)
         subprocess.run([docker,'cp',str(reader),container+':/tmp/reader'],check=True)
         subprocess.run(command+['exec','-T','core','mkdir','-p','/tmp/source/scripts'],check=True)
@@ -99,6 +121,7 @@ def run(docker, reader, reader_image=None):
         if fingerprint_state() != original_state:
             raise AssertionError('business content changed after database outage recovery')
         print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True,
+              'project_evidence_single_mount_and_legacy_path':True,
               'reader_cli_readonly_source_writable_data':True if reader_image else 'NOT_RUN'}))
         result = 0
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):

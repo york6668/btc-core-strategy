@@ -22,7 +22,9 @@ reader 使用独立 namespace 导入与对比。校验包括原字节/hash、路
 
 宿主解释器接入 `service/host_python.py`，node.native_python 保留原解释器，node.python 指向节点生成的启动器。适配层按实际 strategy_v4.py 路径选择原固定发布，所以恢复早于 Docker 的发布也进入同一服务；不改旧发布文件或用 current 替换其方法。其他 Python 工具仍使用原生解释器。
 
-容器将兼容目录直接挂载到原项目 `.strategy` 路径，容器内该路径不是符号链接；旧运行中的绝对路径和模板绑定因此保持一致。宿主可使用符号链接访问同一目录。模板保留原运行路径并校验原字节，不能像普通模型输入一样改写到新路径。
+证据卷同时保存 CAS、`.strategy` 兼容视图和 `.backups`，将该卷整体挂到原项目路径。容器内 `.strategy` 仍是真目录，旧运行中的绝对路径和模板绑定保持一致；CAS 使用该项目挂载的根目录作为 `objects`，而不是另一个 bind mount 别名。这样 hash 命名的 raw 原文与 CAS 能共享 inode。确认文件在卷根部只保留指向只读事实挂载的链接，宿主三份文件仍为权威。普通可变 JSON 不硬链接到不可变 CAS。
+
+旧节点需在原运行、reader 和维护空闲的边界，将兼容目录原子移到证据卷内 `.strategy`，保留宿主旧路径软链接，替换原项目挂载并移除独立 `.strategy` 子挂载。先核对最新备份、原字节及引用，再验证原固定版本和模板能接续；不得恢复旧业务快照。`require_shared_evidence=true` 使无法硬链接的原文显式失败，不能用隐蔽复制冒充去重。兼容导入后未变的 hash 原文也重新核对并复用；保留原文档时间和过期时间，不能用 CAS inode 时间改变保留期限。既有备份原件可在核对哈希后与当前原文合并 inode，备份名称、清单和恢复入口不变。
 
 reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一次 offset 持久化后才允许下次 getUpdates 确认。Keychain token 经 stdin 注入一次性容器，不落入镜像、环境文件或日志。collector 在其原节点暂停旧进程并持有原 writer locks，按实际 state_paths 获取 SQLite backup 与字节快照；核对队列及游标后按原周期启动容器，保留原传输和 UNKNOWN 语义。
 
