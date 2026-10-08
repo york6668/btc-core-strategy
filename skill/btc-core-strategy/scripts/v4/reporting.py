@@ -220,6 +220,28 @@ def context(root):
             'previous_silence':{k:previous[k] for k in ('action','reason','next_observation')} if previous else None}
 
 
+def authoring_guidance(ctx):
+    """Reuse the report-stage method at every model-facing context entry."""
+    from . import cycle
+    from .report_care import AUTHORING
+    guidance = {'maintenance_authoring': deepcopy(AUTHORING),
+                'applicability_instructions': cycle.APPLICABILITY_REVIEW}
+    if ctx.get('deep_report_policy_revision') == 1:
+        guidance.update(cycle_report_instructions=cycle.REPORT_SCOPE_REVIEW,
+                        method_references=cycle.method_references('report'))
+    if ctx.get('market_revision', 0) >= 6:
+        from .closed_loop import REPORT_INSTRUCTIONS
+        guidance['result_instructions'] = REPORT_INSTRUCTIONS
+    return guidance
+
+
+def authoring_context(root):
+    # Instructions are presentation metadata, not a new decision or identity.
+    value = context(root)
+    value.update(authoring_guidance(value))
+    return value
+
+
 def review(root, identity):
     require(isinstance(identity,str) and re.fullmatch(r'sha256:[a-f0-9]{64}',identity), 'invalid report review identity')
     value = read(Path(root)/'report-reviews'/(identity[7:]+'.json'))

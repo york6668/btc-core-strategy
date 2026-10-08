@@ -14,7 +14,7 @@
 
 以下命令沿用strategy_v4.py的--project与--root；使用$BTC_PYTHON。
 
-1. 完成当前observe和必要的主评估后，`report-context`取得BTC_REPORT_CONTEXT_V1。包含当前策略、最新已验证观察、原始指标、最后真实展示正文、累计未报告摘要及缺口、静默时长、上一静默理由与条件、独立交付队列。metrics严格按dataset保留SPOT/PERPETUAL、交易所、instrument和USD/USDT；today_utc与since_report为不同窗口，不能相加。最新行latest与累计测量分开，测量缺失保持null。上下文含未报告条数与截断标记，超出240项时按引用补读，不以截断证明无变化。
+1. 完成当前observe和必要的主评估后，`report-context`取得BTC_REPORT_CONTEXT_V1。包含当前策略、最新已验证观察、原始指标、最后真实展示正文、累计未报告摘要及缺口、静默时长、上一静默理由与条件、独立交付队列。直接入口与`run-advance`报告阶段提供同一套既有报告审阅指令及方法引用；这些作者输入不改变context_id、正式结论或原冻结来源。metrics严格按dataset保留SPOT/PERPETUAL、交易所、instrument和USD/USDT；today_utc与since_report为不同窗口，不能相加。最新行latest与累计测量分开，测量缺失保持null。上下文含未报告条数与截断标记，超出240项时按引用补读，不以截断证明无变化。
 2. 主任务实际阅读证据和展示稿后，用`report-review --spec <JSON>`保存BTC_REPORT_REVIEW_V1，字段如下：
 
 ```json

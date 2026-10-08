@@ -142,26 +142,20 @@ def report_brief(ctx):
     brief = {k: ctx.get(k) for k in ('current_strategy', 'cycle_policy_revision', 'deep_report_policy_revision', 'cycle_baseline', 'context_id', 'evaluated_at', 'reported', 'report_care', 'coverage',
         'knowledge_cutoff', 'silent_hours', 'unreported', 'unreported_total', 'unreported_truncated',
         'pending_delivery', 'pending_report_reviews', 'delivery_obligations', 'required_report_events', 'previous_silence', 'observation', 'public_evidence', 'market_revision', 'report_subjects', 'report_quote_policy', 'collector_observations')}
-    from .report_care import AUTHORING
-    brief['maintenance_authoring'] = deepcopy(AUTHORING)
-    if ctx.get('deep_report_policy_revision') == 1:
-        brief['cycle_report_instructions'] = cycle.REPORT_SCOPE_REVIEW
-        brief['method_references'] = cycle.method_references('report')
     brief = deepcopy(brief)
     basis = brief.get('cycle_baseline') or {}
     if basis.get('report_narrative') == (brief.get('current_strategy', {}).get('conclusion') or {}).get('narrative'):
         basis.pop('report_narrative', None)
         basis['report_narrative_ref'] = '/current_strategy/conclusion/narrative'
-    brief['applicability_instructions'] = cycle.APPLICABILITY_REVIEW
     if ctx.get('market_revision', 0) >= 6:
-        from .closed_loop import report_inputs, REPORT_INSTRUCTIONS
+        from .closed_loop import report_inputs
         for key in ('current_strategy', 'observation', 'collector_observations'):
             brief.pop(key, None)
         basis = brief.get('cycle_baseline') or {}
         brief['cycle_baseline'] = {k: basis.get(k) for k in
             ('status', 'market_status', 'portfolio_status', 'result_id', 'report_hash', 'recheck_at')}
         brief.update(report_inputs(ctx))
-        brief['result_instructions'] = REPORT_INSTRUCTIONS
+    brief.update(reporting.authoring_guidance(ctx))
     return brief
 
 

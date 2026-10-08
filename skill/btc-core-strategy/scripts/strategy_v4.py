@@ -237,7 +237,7 @@ def main(argv=None):
             from v4 import report_care
             result=report_care.status(args.root,run_ref=args.run_ref)
         elif args.command == 'report-context':
-            result=reporting.context(args.root)
+            result=reporting.authoring_context(args.root)
         elif args.command == 'report-review':
             result=reporting.record(args.root,read(args.spec))
         elif args.command == 'market-report-source':

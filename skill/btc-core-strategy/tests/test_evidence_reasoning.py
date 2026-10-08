@@ -88,6 +88,38 @@ CASES = ('correlation', 'single_venue', 'historical_demand', 'low_volume',
 
 
 class EvidenceReasoningWorkflowTests(unittest.TestCase):
+    def test_direct_report_context_carries_same_review_method_without_rebinding(self):
+        import io
+        from contextlib import redirect_stdout
+        import strategy_v4
+        from v4.closed_loop import REPORT_INSTRUCTIONS
+
+        f, public, boundary, trigger, invalidation, _ = self.fixture('compression')
+        self.prior_observation(f)
+        f.c.study(authored=True, coverage=dict.fromkeys(cycle.COVERAGE, boundary + trigger + invalidation),
+                  independent_output=json.dumps(public))
+        f.c.d.commit()
+        original = reporting.context(f.f.store)
+        before = storage.current(f.f.store)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = strategy_v4.main(['--project', str(f.f.project), '--root', str(f.f.store), 'report-context'])
+        self.assertEqual(code, 0)
+        packet = json.loads(stream.getvalue())
+        self.assertEqual(packet['cycle_report_instructions'], cycle.REPORT_SCOPE_REVIEW)
+        self.assertEqual(packet['result_instructions'], REPORT_INSTRUCTIONS)
+        self.assertIn(market_state.EVIDENCE_REPORT_REVIEW, packet['result_instructions'])
+        self.assertNotIn(market_state.EVIDENCE_REASONING_REVIEW, packet['result_instructions'])
+        self.assertEqual(packet['method_references'], cycle.method_references('report'))
+        for key in ('context_id', 'identity', 'cycle_baseline', 'current_strategy', 'observation', 'metrics'):
+            self.assertEqual(packet[key], original[key])
+        brief = run_flow.report_brief(original)
+        for key in ('cycle_report_instructions', 'method_references', 'result_instructions',
+                    'maintenance_authoring', 'applicability_instructions'):
+            self.assertEqual(packet[key], brief[key])
+        self.assertEqual(storage.current(f.f.store), before)
+        self.assertEqual(list((f.f.store / 'outbox').glob('*/artifact.json')), [])
+
     def fixture(self, kind, unsafe=False):
         f = publication_fixture.PublicationTests()
         f.setUp()
