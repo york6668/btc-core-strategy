@@ -133,9 +133,25 @@ class Series:
                 original = provenance.get('original_digest')
                 if not isinstance(original, str) or len(original) != 64:
                     raise ValueError('original source digest is missing')
+                source = self.db.value(original)
+                old = provenance.get('retrieval', {}).get('raw_ref')
+                # An earlier numerical correction may intentionally retain a
+                # valid frozen original and disclose its producer separately.
+                # A resolvable original reference does not need another repair.
+                if isinstance(old, dict):
+                    try:
+                        value = source
+                        for part in old['pointer'].strip('/').split('/'):
+                            value = value[part]
+                        if (old['source_id'] == 'collector_' + original[:20] and
+                                old['value_hash'] == 'sha256:' + fingerprint(encode(value))):
+                            unchanged += 1
+                            continue
+                    except (KeyError, TypeError):
+                        pass
                 payloads = [self.db.value(r['digest']) for r in self.db.rows(
                     'SELECT digest FROM observations WHERE series=%s AND source_digest=%s', (SELLER, digest))]
-                ref = seller_source_ref(original, self.db.value(original), payloads)
+                ref = seller_source_ref(original, source, payloads)
             except (ValueError, KeyError, TypeError, OSError) as exc:
                 gaps.append({'source_digest': digest, 'reason': str(exc)})
                 continue
