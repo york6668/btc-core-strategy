@@ -124,6 +124,7 @@
     "skill/btc-core-strategy/tests/test_dynamic_factor_sensing.py",
     "skill/btc-core-strategy/tests/test_event_contract.py",
     "skill/btc-core-strategy/tests/test_evidence_numbers.py",
+    "skill/btc-core-strategy/tests/test_evidence_reasoning.py",
     "skill/btc-core-strategy/tests/test_fact_sync_comparison.py",
     "skill/btc-core-strategy/tests/test_market_observation.py",
     "skill/btc-core-strategy/tests/test_market_reporting.py",
