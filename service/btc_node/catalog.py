@@ -73,6 +73,22 @@ class Catalog:
     def __init__(self, db):
         self.db = db
 
+    @staticmethod
+    def raw_directories(records):
+        """Only content-addressed originals qualify; mutable files never do."""
+        grouped = {}
+        for row in records:
+            path = Path(row['path'])
+            if path.parent.name == 'raw':
+                grouped.setdefault(str(path.parent), []).append(row)
+        return {name: rows for name, rows in grouped.items()
+                if all(row['kind'] == 'FILE' and Path(row['path']).stem == row['digest']
+                       and row['retention_class'] != 'CACHE' for row in rows)}
+
+    @staticmethod
+    def raw_manifest(rows):
+        return fingerprint(encode(sorted((row['path'], row['digest'], row['byte_length']) for row in rows)))
+
     def share_original(self, path, digest):
         """Share originals and verified frozen inputs; ordinary JSON stays writable."""
         named_original = path.parent.name == 'raw' and path.stem == digest
@@ -117,6 +133,16 @@ class Catalog:
         if not root.is_dir():
             raise ValueError('namespace source does not exist')
         existing = {row['path']: row for row in self.db.rows('SELECT * FROM documents WHERE namespace=%s', (namespace,))}
+        # A verified raw directory contains immutable CAS hardlinks. Its entry
+        # clock and complete filename/manifest set detect additions, removal,
+        # and recovery. Do not stat every historical original on every command.
+        # Source hash validation on consumption remains unchanged.
+        shared = hardlink and self.db.settings.get('require_shared_evidence', False)
+        cache_key = 'catalog.raw-directories:' + namespace
+        cache = self.db.metadata(cache_key) if shared else None
+        cached = (cache or {}).get('directories', {}) if (cache or {}).get('root') == str(root) else {}
+        raw_groups = self.raw_directories(existing.values()) if shared else {}
+        candidates, reused, reused_files = {}, 0, 0
         existing_databases = {row['path'] for row in self.db.rows('SELECT path FROM legacy_databases WHERE namespace=%s', (namespace,))}
         # A run with a completed report decision has finished its analysis
         # flow. Pending research/delivery references are protected separately.
@@ -132,6 +158,29 @@ class Catalog:
         protect = tuple(protect) + tuple(pending)
         seen, changed, databases = set(), [], []
         for directory, dirs, files in os.walk(root, followlinks=False):
+            relative_directory = str(Path(directory).relative_to(root))
+            group = raw_groups.get(relative_directory)
+            prior_directory = cached.get(relative_directory)
+            if (shared and not dirs and group and prior_directory
+                    and set(files) == {Path(row['path']).name for row in group}
+                    and prior_directory['source_mtime_ns'] == Path(directory).stat().st_mtime_ns
+                    and prior_directory['manifest'] == self.raw_manifest(group)):
+                # Policy changes still apply to every original document clock;
+                # a completed run does not remain ACTIVE because it was cached.
+                for row in group:
+                    relative = row['path']
+                    policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
+                    ttl = RETENTION_DAYS[policy]
+                    expires = row['source_mtime_ns'] // 1000000 + ttl * DAY if ttl else None
+                    if row['retention_class'] != policy or row['expires_ms'] != expires:
+                        self.db.execute('UPDATE documents SET retention_class=%s,expires_ms=%s WHERE document_key=%s',
+                                        (policy, expires, row['document_key']))
+                        self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (row['document_key'],))
+                    seen.add(relative)
+                candidates[relative_directory] = (set(files), prior_directory['source_mtime_ns'])
+                reused += 1
+                reused_files += len(group)
+                continue
             for name in list(dirs):
                 if (Path(directory) / name).is_symlink():
                     files.append(name); dirs.remove(name)
@@ -220,13 +269,33 @@ class Catalog:
                 if hardlink and kind == 'FILE' and policy != 'CACHE':
                     # Do not link arbitrary mutable binaries to immutable content.
                     self.share_original(path, digest)
+            if shared and Path(directory).name == 'raw' and not dirs:
+                candidates[relative_directory] = (set(files), Path(directory).stat().st_mtime_ns)
         missing = (set(existing) | existing_databases) - seen
         for relative in missing:
             self.remove_sqlite(identity(namespace,relative))
             self.db.execute('DELETE FROM documents WHERE document_key=%s', (identity(namespace, relative),))
             self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (identity(namespace, relative),))
         self.db.metadata('namespace:' + namespace, {'root': str(root), 'checked_ms': millis()}, write=True)
-        return {'namespace': namespace, 'changed': changed, 'removed': sorted(missing), 'sqlite': databases}
+        if shared:
+            final_groups = self.raw_directories(self.db.rows('SELECT * FROM documents WHERE namespace=%s', (namespace,)))
+            directories = {}
+            for name, (filenames, clock) in candidates.items():
+                group = final_groups.get(name)
+                if not group or filenames != {Path(row['path']).name for row in group}:
+                    continue
+                # First entry requires actual inode verification. Subsequent
+                # unchanged entries reuse that result; a dirty directory is
+                # always scanned and verified again.
+                if name not in cached or cached[name].get('source_mtime_ns') != clock:
+                    if not all(self.db.blobs.path(row['digest']).samefile(root / row['path']) for row in group):
+                        continue
+                directories[name] = {'source_mtime_ns': clock, 'manifest': self.raw_manifest(group)}
+            value = {'root': str(root), 'directories': directories}
+            if value != cache:
+                self.db.metadata(cache_key, value, write=True)
+        return {'namespace': namespace, 'changed': changed, 'removed': sorted(missing), 'sqlite': databases,
+                'immutable_directories_reused': reused, 'immutable_files_reused': reused_files}
 
     def remove_sqlite(self, database_key):
         for table in ('legacy_row_identity','legacy_row_blobs','legacy_rows','legacy_databases'):

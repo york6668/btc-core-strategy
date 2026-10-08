@@ -28,6 +28,8 @@ reader 使用独立 namespace 导入与对比。校验包括原字节/hash、路
 
 reader bridge 在单次 Telegram 轮询前后保存 reader checkpoint；前一次 offset 持久化后才允许下次 getUpdates 确认。Keychain token 经 stdin 注入一次性容器，不落入镜像、环境文件或日志。collector 在其原节点暂停旧进程并持有原 writer locks，按实际 state_paths 获取 SQLite backup 与字节快照；核对队列及游标后按原周期启动容器，保留原传输和 UNKNOWN 语义。
 
+已核验共享 inode 的 hash 原文目录保存文件集合、目录时钟和文档摘要索引。目录与索引均未变化时复用原核验，避免每次分析重新逐个检查历史原文；新增、删除、恢复或目录变化仍完整核对，可变文件始终按原规则检查。活动保护和保留期限仍逐份按原逻辑时钟更新。正常写入结果记录命令、归档和投影耗时，便于定位写锁占用；只读引用和 help 的返回值保持原契约。
+
 reader 的 SQLite 兼容挂载允许共享内存协调文件写入，catalog 连接仍使用 `mode=ro`；WAL 模式数据库在 reader 退出后可能需要重新创建 `-shm`，不能将整个目录挂成只读。
 
 reader 检查点和分析投影增量处理原频道已收到的附件价格历史，每批最多 32 份；复用实际 reader 的解码与辅助证据校验。原附件、接收时间、产品及单位进入统一序列，模型冻结时间另存。`project` 返回 `reader_receipts.remaining` 与 `gaps`；迁移时在可恢复边界重复 project 直到积压为零，核对实际缺口，不触发 Telegram 轮询。无效旧附件仅保留原文及缺口，最新附件无效也不能回退旧材料作为当前分析。

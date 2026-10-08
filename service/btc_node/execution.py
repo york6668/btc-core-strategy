@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from time import monotonic
 
 from .catalog import Catalog
 from .codec import Conflict, encode, fingerprint, millis, sync_directory
@@ -89,6 +90,7 @@ def execute(settings, request):
     db = Database(settings)
     try:
         with db.writer(timeout=600):
+            admitted = monotonic()
             pending = db.rows("SELECT operation_id FROM operations WHERE status IN ('EXECUTING','RECOVERY_REQUIRED')")
             previous = db.one('SELECT * FROM operations WHERE operation_id=%s', (operation,))
             if previous:
@@ -123,8 +125,10 @@ def execute(settings, request):
                                BTC_SERVICE_CONFIG=settings['_path'], BTC_RELEASE=str(release), BTC_PROJECT=str(project),
                                BTC_PYTHON=sys.executable, PYTHONPATH='/opt/btc')
             command = [sys.executable, str(release / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *argv]
+            command_started = monotonic()
             process = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True)
             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr}
+            timings = {'command_ms': round((monotonic()-command_started)*1000)}
             atomic(journal, {**journal_state, 'status': 'EXECUTED', 'result': result})
             with db.transaction():
                 if not readonly and not mysql_native and Path(settings['observation_db']).exists():
@@ -139,9 +143,17 @@ def execute(settings, request):
                 # commit still use the same writer and operation identity.
                 if not readonly:
                     catalog = Catalog(db)
-                    catalog.sync('strategy', project / '.strategy', hardlink=True,
-                                 protect=settings.get('protected_paths', []))
+                    began = monotonic()
+                    imported = catalog.sync('strategy', project / '.strategy', hardlink=True,
+                                            protect=settings.get('protected_paths', []))
+                    timings.update(catalog_ms=round((monotonic()-began)*1000),
+                                   immutable_files_reused=imported['immutable_files_reused'])
+                    began = monotonic()
                     result['continuity'] = project_state(db, settings, release, argv)
+                    timings['projection_ms'] = round((monotonic()-began)*1000)
+                if not readonly:
+                    timings['writer_ms_before_commit'] = round((monotonic()-admitted)*1000)
+                    result['service_timings'] = timings
                 result_digest = db.put_blob(encode(result))
                 db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",
                            (millis(), result_digest, operation))

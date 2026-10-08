@@ -714,6 +714,62 @@ class NodeContract(unittest.TestCase):
             self.assertEqual(self.db.blobs.get(fingerprint(raw)),raw)
             self.assertEqual(path.read_bytes(),b'{"value":18}\n')
 
+    def test_immutable_directory_reuse_preserves_clocks_and_completed_run_policy(self):
+        with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as directory:
+            root=Path(directory); run=root/'run-generated'; raw=run/'raw'
+            raw.mkdir(parents=True); (run/'run.json').write_text('{"status":"RUNNING"}')
+            body=encode({'generated':self.id}); digest=fingerprint(body)
+            source=raw/(digest+'.json'); source.write_bytes(body)
+            mutable=run/'answers.json'; mutable.write_text('{"value":1}')
+            catalog=Catalog(self.db)
+            with patch.dict(self.db.settings,require_shared_evidence=True):
+                catalog.sync(self.id,root,hardlink=True)
+                before=self.db.one('SELECT * FROM documents WHERE namespace=%s AND path=%s',(self.id,str(source.relative_to(root))))
+                self.assertEqual(before['retention_class'],'ACTIVE')
+                mutable.write_text('{"value":2}')
+                reads=[]; original=Path.lstat
+                def counted(path,*args,**kwargs):
+                    reads.append(path);return original(path,*args,**kwargs)
+                with patch.object(Path,'lstat',counted):
+                    second=catalog.sync(self.id,root,hardlink=True)
+                self.assertEqual(second['immutable_files_reused'],1)
+                self.assertNotIn(source,reads)
+                self.assertIn(str(mutable.relative_to(root)),second['changed'])
+                (run/'run.json').write_text('{"status":"COMPLETED"}')
+                third=catalog.sync(self.id,root,hardlink=True)
+                after=self.db.one('SELECT * FROM documents WHERE namespace=%s AND path=%s',(self.id,str(source.relative_to(root))))
+                self.assertEqual(third['immutable_files_reused'],1)
+                self.assertEqual(after['retention_class'],'RUN')
+                self.assertEqual(after['expires_ms'],before['source_mtime_ns']//1000000+7*86400000)
+                for field in ['digest','source_mtime_ns','recorded_ms']:
+                    self.assertEqual(before[field],after[field])
+                self.assertTrue(self.db.blobs.path(digest).samefile(source))
+
+    def test_immutable_directory_changes_and_recovery_are_not_hidden(self):
+        with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as directory:
+            root=Path(directory);raw=root/'raw';raw.mkdir()
+            one=encode({'first':self.id});a=raw/(fingerprint(one)+'.json');a.write_bytes(one)
+            catalog=Catalog(self.db)
+            with patch.dict(self.db.settings,require_shared_evidence=True):
+                catalog.sync(self.id,root,hardlink=True)
+                two=encode({'second':self.id});b=raw/(fingerprint(two)+'.json');b.write_bytes(two)
+                changed=catalog.sync(self.id,root,hardlink=True)
+                self.assertIn(str(b.relative_to(root)),changed['changed'])
+                self.assertTrue(self.db.blobs.path(fingerprint(two)).samefile(b))
+                a.unlink()
+                removed=catalog.sync(self.id,root,hardlink=True)
+                self.assertIn(str(a.relative_to(root)),removed['removed'])
+                b.unlink();b.write_bytes(two)
+                restored=catalog.sync(self.id,root,hardlink=True)
+                self.assertEqual(restored['immutable_files_reused'],0)
+                self.assertTrue(self.db.blobs.path(fingerprint(two)).samefile(b))
+                mutable=raw/'ordinary.json';mutable.write_text('{"mutable":1}')
+                catalog.sync(self.id,root,hardlink=True)
+                mutable.write_text('{"mutable":2}')
+                result=catalog.sync(self.id,root,hardlink=True)
+                self.assertIn('raw/ordinary.json',result['changed'])
+                self.assertEqual(result['immutable_files_reused'],0)
+
     def test_catalog_roundtrip_preserves_bytes_sqlite_blobs_cursor_and_unknown(self):
         with tempfile.TemporaryDirectory() as folder:
             source, restored = Path(folder)/'source', Path(folder)/'restored'
