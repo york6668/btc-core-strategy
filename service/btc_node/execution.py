@@ -46,6 +46,20 @@ def value_reference_only(argv):
     return False
 
 
+def help_only(argv):
+    """An exact command help request cannot execute a business mutation."""
+    index = 0
+    while index < len(argv):
+        if argv[index] in ('--project', '--root') and index + 1 < len(argv):
+            index += 2
+        elif argv[index] == '--full':
+            index += 1
+        else:
+            return (len(argv) - index == 2 and not argv[index].startswith('-')
+                    and argv[index + 1] in ('--help', '-h'))
+    return False
+
+
 def execute(settings, request):
     params = request['params']
     release = Path(params['release']).resolve()
@@ -57,6 +71,7 @@ def execute(settings, request):
     if not isinstance(argv, list) or not all(isinstance(v, str) for v in argv):
         raise ValueError('argument vector required')
     reference_only = value_reference_only(argv)
+    readonly = reference_only or help_only(argv)
     def project_path(value):
         path = Path(value).expanduser()
         return (path if path.is_absolute() else project / path).resolve()
@@ -88,7 +103,7 @@ def execute(settings, request):
                 raise Conflict('comparison mode does not execute legacy commands')
             mysql_native = 'connect_if_configured' in (release / 'skill/btc-core-strategy/scripts/market_observation.py').read_text()
             original = Path(settings['observation_db'])
-            if not reference_only and not mysql_native and not original.exists() and db.one('SELECT 1 FROM mo_evidence LIMIT 1'):
+            if not readonly and not mysql_native and not original.exists() and db.one('SELECT 1 FROM mo_evidence LIMIT 1'):
                 raise Conflict('restore the compatibility observation schema before resuming an old pinned release')
             with db.transaction():
                 db.put_blob(encode(params))
@@ -96,9 +111,9 @@ def execute(settings, request):
                            'VALUES(%s,%s,%s,%s,%s)', (operation, request_digest, 'EXECUTING', millis(), release.name))
             journal_state = {'operation_id': operation, 'request': params, 'status': 'EXECUTING',
                              'mysql_native': mysql_native, 'sqlite_prepared': False,
-                             'value_reference_only': reference_only}
+                             'value_reference_only': reference_only, 'help_only': help_only(argv)}
             atomic(journal, journal_state)
-            if not reference_only and not mysql_native:
+            if not readonly and not mysql_native:
                 from .market_store import export_sqlite
                 if original.exists():
                     export_sqlite(db, original)
@@ -112,17 +127,17 @@ def execute(settings, request):
             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr}
             atomic(journal, {**journal_state, 'status': 'EXECUTED', 'result': result})
             with db.transaction():
-                if not reference_only and not mysql_native and Path(settings['observation_db']).exists():
+                if not readonly and not mysql_native and Path(settings['observation_db']).exists():
                     from .market_store import import_sqlite
                     import_sqlite(db, settings['observation_db'])
                 # Rows in the hourly market store already use MySQL. Remaining
                 # immutable files and pointer changes become a recovery manifest.
-                # A scalar reference creates no strategy state. Re-archiving
+                # Scalar references and exact help create no strategy state. Re-archiving
                 # every run and rebuilding all projections here kept the writer
                 # busy for longer than the reader's checkpoint admission.
                 # Admission, immutable inputs, journal and idempotent result
                 # commit still use the same writer and operation identity.
-                if not reference_only:
+                if not readonly:
                     catalog = Catalog(db)
                     catalog.sync('strategy', project / '.strategy', hardlink=True,
                                  protect=settings.get('protected_paths', []))
@@ -220,14 +235,15 @@ def recover(settings, operation):
             if value.get('mysql_native') is False and value.get('sqlite_prepared') and Path(settings['observation_db']).exists():
                 from .market_store import import_sqlite
                 import_sqlite(db, settings['observation_db'])
-            reference_only = (value.get('value_reference_only') is True and
-                              value_reference_only(value['request']['argv']))
-            if not reference_only:
+            readonly = ((value.get('value_reference_only') is True and
+                         value_reference_only(value['request']['argv'])) or
+                        (value.get('help_only') is True and help_only(value['request']['argv'])))
+            if not readonly:
                 Catalog(db).sync('strategy', Path(settings['project']) / '.strategy', hardlink=True)
                 continuity = project_state(db, settings, value['request']['release'])
             result = value.get('result') or {'returncode': 75, 'stdout': '', 'stderr':
                 'Execution was interrupted. State preserved. Inspect the original run and delivery before a new operation.'}
-            if not reference_only:
+            if not readonly:
                 result['continuity'] = continuity
             result['recovery'] = 'STATE_PRESERVED_NO_REPLAY'
             digest = db.put_blob(encode(result))

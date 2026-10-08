@@ -74,16 +74,43 @@ class Catalog:
         self.db = db
 
     def share_original(self, path, digest):
-        """Only hash-named originals are immutable; ordinary JSON stays writable."""
-        if path.parent.name != 'raw' or path.stem != digest:
+        """Share originals and verified frozen inputs; ordinary JSON stays writable."""
+        named_original = path.parent.name == 'raw' and path.stem == digest
+        if not named_original and path.name not in ('collector.json', 'market.json'):
             return
         target = self.db.blobs.path(digest)
         if target.is_file() and target.samefile(path):
+            return
+        if not named_original and not self.frozen_input(path):
             return
         if fingerprint(path.read_bytes()) != digest:
             raise Conflict('immutable original changed before sharing: ' + str(path))
         self.db.blobs.materialize(digest, path,
             require_link=self.db.settings.get('require_shared_evidence', False))
+
+    @staticmethod
+    def frozen_input(path):
+        """Use the existing run/evidence hash contract, never a filename alone."""
+        try:
+            run = json.loads((path.parent / 'run.json').read_bytes())
+            if run.get('schema') != 'BTC_RUN_MATERIAL_V1':
+                return False
+            field = 'market' if path.name == 'market.json' else 'collector'
+            if not run.get(field) or Path(run[field]).resolve() != path.resolve():
+                return False
+            raw = path.read_bytes()
+            value = json.loads(raw)
+            bound = 'sha256:' + fingerprint(encode(value))
+            if field == 'market':
+                return bound == run.get('market_hash')
+            evidence = json.loads((Path(run['evidence']) / 'evidence.json').read_bytes())
+            binding = evidence.get('collector', {})
+            source = next((v for v in evidence.get('sources', []) if v['id'] == binding.get('source_id')), {})
+            return (evidence.get('evidence_id') == run.get('evidence_id') ==
+                    'sha256:' + fingerprint(encode({k:v for k,v in evidence.items() if k != 'evidence_id'}))
+                    and binding.get('snapshot_id') == bound and source.get('raw_hash') == 'sha256:' + fingerprint(raw))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def sync(self, namespace, root, *, hardlink=False, protect=(), default_retention=None):
         root = Path(root).resolve()
@@ -120,6 +147,10 @@ class Catalog:
                 # the original document clock, not that physical inode clock.
                 immutable = (prior and prior['kind'] == 'FILE' and path.parent.name == 'raw'
                              and path.stem == prior['digest'] and stat.st_size == prior['byte_length'])
+                if (prior and prior['kind'] == 'FILE' and path.name in ('collector.json', 'market.json')
+                        and stat.st_size == prior['byte_length']):
+                    original = self.db.blobs.path(prior['digest'])
+                    immutable = immutable or (original.is_file() and original.samefile(path))
                 source_mtime_ns = prior['source_mtime_ns'] if immutable else stat.st_mtime_ns
                 policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
                 ttl = RETENTION_DAYS[policy]
@@ -165,7 +196,7 @@ class Catalog:
                             self.db.execute('DELETE FROM document_recycling WHERE document_key=%s',(identity(namespace,relative),))
                         continue
                     prior = existing.get(relative)
-                    if prior and prior['kind'] == 'FILE' and prior['byte_length'] == stat.st_size and (prior['source_mtime_ns'] == stat.st_mtime_ns or (path.parent.name == 'raw' and path.stem == prior['digest'])):
+                    if prior and prior['kind'] == 'FILE' and prior['byte_length'] == stat.st_size and (prior['source_mtime_ns'] == stat.st_mtime_ns or immutable):
                         if hardlink and policy != 'CACHE':
                             self.share_original(path, prior['digest'])
                         continue

@@ -634,6 +634,41 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(self.db.blobs.get(digest), raw)
             finally:self.db.settings.pop('require_shared_evidence',None)
 
+    def test_frozen_run_inputs_share_only_verified_bindings_and_keep_original_clocks(self):
+        with tempfile.TemporaryDirectory(dir=self.db.settings['objects']) as folder:
+            root = Path(folder)
+            collector = root/'collector.json'; collector.write_bytes(encode({'generated':self.id}))
+            market = root/'market.json'; market.write_bytes(encode({'generated_market':self.id}))
+            evidence = root/'evidence'; evidence.mkdir()
+            package = {'collector':{'source_id':'generated','snapshot_id':'sha256:'+fingerprint(encode(json.loads(collector.read_bytes())))},
+                       'sources':[{'id':'generated','raw_hash':'sha256:'+fingerprint(collector.read_bytes())}]}
+            package['evidence_id'] = 'sha256:'+fingerprint(encode(package))
+            (evidence/'evidence.json').write_bytes(encode(package))
+            run = {'schema':'BTC_RUN_MATERIAL_V1','collector':str(collector),'market':str(market),
+                   'market_hash':'sha256:'+fingerprint(encode(json.loads(market.read_bytes()))),
+                   'evidence':str(evidence),'evidence_id':package['evidence_id']}
+            (root/'run.json').write_bytes(encode(run))
+            catalog = Catalog(self.db)
+            with self.db.transaction():
+                catalog.sync(self.id,root)
+            before = self.db.rows('SELECT * FROM documents WHERE namespace=%s ORDER BY path',(self.id,))
+            for path in (collector,market):
+                cas=self.db.blobs.path(fingerprint(path.read_bytes()))
+                os.utime(cas,(self.now.timestamp()-20*86400,)*2)
+            with self.db.transaction():
+                self.assertEqual(catalog.sync(self.id,root,hardlink=True)['changed'],[])
+                self.assertEqual(catalog.sync(self.id,root,hardlink=True)['changed'],[])
+            self.assertEqual(self.db.rows('SELECT * FROM documents WHERE namespace=%s ORDER BY path',(self.id,)),before)
+            for path in (collector,market):
+                self.assertTrue(path.samefile(self.db.blobs.path(fingerprint(path.read_bytes()))))
+            unrelated = root/'unbound'; unrelated.mkdir()
+            (unrelated/'collector.json').write_bytes(collector.read_bytes())
+            (unrelated/'run.json').write_bytes(encode({**run,'collector':str(unrelated/'collector.json'),
+                                                       'evidence_id':'sha256:'+'0'*64}))
+            with self.db.transaction():
+                catalog.sync(self.id,root,hardlink=True)
+            self.assertFalse((unrelated/'collector.json').samefile(collector))
+
     def test_required_shared_original_rejects_cross_mount_copy_and_preserves_original(self):
         with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as folder:
             root = Path(folder);raw = b'{"generated":true}\n'

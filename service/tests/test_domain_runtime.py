@@ -15,7 +15,7 @@ from btc_node.catalog import Catalog
 from btc_node.api import dispatch
 from btc_node.codec import Conflict, encode, fingerprint
 from btc_node.database import Database
-from btc_node.execution import execute, recover, value_reference_only
+from btc_node.execution import execute, recover, value_reference_only, help_only
 from btc_node.market_store import import_sqlite
 
 
@@ -27,6 +27,11 @@ class DomainRuntime(unittest.TestCase):
                      ['--project','/p','--root','/r','--unknown','run-value-ref'],
                      ['--project']):
             self.assertFalse(value_reference_only(argv))
+        self.assertTrue(help_only(['--project','/p','--root','/p/.strategy/v4','freeze-evidence','--help']))
+        for argv in (['--project','--help','--root','/r','run-advance','--input','file'],
+                     ['--project','/p','--root','/r','run-advance','--input','--help'],
+                     ['--project','/p','--root','/r','--unknown','--help']):
+            self.assertFalse(help_only(argv))
 
     def test_actual_prepare_observe_and_interrupted_result_recovery(self):
         source = Path(os.environ['BTC_TEST_SOURCE'])
@@ -160,6 +165,25 @@ class DomainRuntime(unittest.TestCase):
                         bad=deepcopy(reference_request);bad['operation_id']+='-bad'
                         bad['params']['argv'][-1]='/missing'
                         self.assertNotEqual(execute(settings,bad)['returncode'],0)
+                    self.assertEqual({p:p.read_bytes() for p in sample.d.rglob('*') if p.is_file()},frozen_before)
+                    help_request=deepcopy(reference_request)
+                    help_request['operation_id']=folder.name+'-help'
+                    help_request['params']['argv']=['--project',str(project),'--root',str(sample.f.store),
+                                                   'freeze-evidence','--help']
+                    with patch('btc_node.execution.Catalog.sync',side_effect=AssertionError('help must not archive')), \
+                         patch('btc_node.execution.project_state',side_effect=AssertionError('help must not project')):
+                        help_result=execute(settings,help_request)
+                        self.assertEqual(help_result['returncode'],0,help_result['stderr'])
+                        self.assertIn('usage:',help_result['stdout'])
+                        self.assertNotIn('continuity',help_result)
+                        self.assertEqual(execute(settings,help_request),help_result)
+                        lost_help=deepcopy(help_request);lost_help['operation_id']+='-lost'
+                        with patch('btc_node.execution.atomic',side_effect=interrupt):
+                            with self.assertRaisesRegex(RuntimeError,'lost scalar'):execute(settings,lost_help)
+                        with patch('btc_node.execution.subprocess.run',side_effect=AssertionError('must not replay')):
+                            restored_help=recover(settings,lost_help['operation_id'])
+                        self.assertEqual(restored_help['stdout'],help_result['stdout'])
+                        self.assertEqual(restored_help['recovery'],'STATE_PRESERVED_NO_REPLAY')
                     self.assertEqual({p:p.read_bytes() for p in sample.d.rglob('*') if p.is_file()},frozen_before)
                     self.assertNotIn('continuity',reference_result)
                     self.assertEqual(reference_result['returncode'],0,reference_result['stderr'])
