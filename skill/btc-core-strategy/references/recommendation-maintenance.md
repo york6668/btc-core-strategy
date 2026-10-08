@@ -6,6 +6,10 @@
 
 建议承接[核心策略的价值背离与时间优势判断](core-strategy.md#价值背离与时间优势)，在既有rationale、impact、amount_basis与validity中解释其对位置、规模、等待代价和有效性的影响。沿用旧建议也须确认当前前景与等待安排仍适用，不能仅以结构锚未迁移续期；不要求预测兑现周期；分析期限、建议有效期和报告复核期限各有用途。时间优势暂无法判断时仍给出经过组合评估的保守安排及理由，不机械归零或把某一方向判断当作入场资格。
 
+规划沿用[事实、判断与规划前提](core-strategy.md#事实、判断与规划前提)。在现有 rationale、risk_assessment.basis、strategy_advice.decision 及相应公开引用中保留依据和推断边界。已观察到历史需求不等于当前值得投入，局部反弹不保证继续上涨，未知净补偿不等于已证明不足；不能把这些假设写成无条件安排，也不能默认持有安全。
+
+条件方案明确所依赖的可观察支持、失效依据、影响的决定和原窗口，分别放入 forward、review_conditions 或 reentry_conditions；validity 沿原稳定概念，由 rationale 解释实际条件，无需新建状态或重复整份研究。资料未齐、条件未发生和实际失败分别记录，条件核验不自动生成交易。若假设尚未验证，仅暂缓依赖它的决定，保留独立有据的风险结论及其他安排。映射审阅实际核对事实→判断→方案之间的联系，不以补上“可能”“如果”替代证据或完整判断。
+
 ## 正式契约
 
 AssessmentDraft保持BTC_ASSESSMENT_DRAFT_V4；revision 3沿用recommendations与maintenance_binding，新增主结论与专项吸收。旧revision 1/2保持可读，旧部署write-policy可保持原值；新入口使用revision 7，正式状态经真实评估采纳，cycle_review_required=true继续核验真实研究来源。历史文件与报告不转换、不重写。新的portfolio_analysis.semantic仅含protection_purpose、amount_basis，禁止继续写scenario_budget；旧domain.trade_candidates仅供历史资格不变量兼容，不能覆盖建议金额。未来建议不声称已获得当前入场资格，不改变position_fact。

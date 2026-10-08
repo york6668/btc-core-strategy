@@ -13,6 +13,9 @@ SCOPES = ('MARKET', 'PORTFOLIO')
 INSTRUCTIONS = (
     '完整闭环先形成独立市场结论，再由模型评估个人资产风险是否值得且能够继续承担。'
     '公开事实、历史假设、个人事实分开；先从原始公开证据研判，再检验历史观点，历史预测和候选价不自证。'
+    'rationale、risk_assessment.basis与strategy_advice.decision承接有据判断及其限制；未证实假设不能作为无条件规划前提，不能因写了“可能”就据此生成动作。'
+    '条件情景在forward.conditions/invalidations及review_conditions中说明所需可观察证据、失效依据与原检验窗口；建议validity沿原稳定概念，由rationale解释其实际条件。区分尚待观察、已支持、已失败或缺证；触发后由模型核验，不自动转成交易。'
+    '同一事实可以支持有边界判断，但历史买入、容量、趋势或未知回报不能直接推出当前投资价值及个人动作；推断不足只暂缓依赖它的决定，不撤销其他有独立依据的风险评估。'
     '研究覆盖周期、价格结构、资金与融资、盈利、未来价值和当前定价；内部完成冲突取舍。'
     '观察窗口、判断期限、预期兑现窗口分别记录；期限届满检查兑现，不随报告时钟续期。'
     '冻结市场结果后才读取个人材料；组合和成稿不能改写它，需要修正返回市场研究。'
@@ -46,8 +49,8 @@ REPORT_INSTRUCTIONS = (
     '研究和维护材料继续完整保存；来源绑定与逐字交付不改变正文，也不代表实际成交。'
 )
 
-from .market_state import MOMENTUM_REPORT_REVIEW
-REPORT_INSTRUCTIONS += MOMENTUM_REPORT_REVIEW
+from .market_state import CYCLE_EXPRESSION_REVIEW, MOMENTUM_REPORT_REVIEW, EVIDENCE_REPORT_REVIEW
+REPORT_INSTRUCTIONS += CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
 
 
 def strings(value, name, nonempty=False):

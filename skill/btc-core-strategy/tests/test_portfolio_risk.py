@@ -349,6 +349,45 @@ class ReportTests(unittest.TestCase):
         spec['layout']['bindings'][1]['refs'] = ['/allocation_decision/summary']
         with self.assertRaises(Invalid): self.f.f.source(spec)
 
+    def test_current_state_and_window_preserve_prose_and_conditional_forecast(self):
+        # The model separates meaning; the journal must preserve the result,
+        # including a genuinely forward-looking clause rather than banning dates.
+        for direction, state, forecast in (
+                ('NEUTRAL', 'BTC当前处于中性整固，需求尚不足以支持扩张。', ''),
+                ('BEARISH', 'BTC当前向下，持续卖压仍占主导，局部承接尚不足以确认转向。', ''),
+                ('BULLISH', '持续需求支持BTC当前向上，信心仍受融资反证限制。',
+                 '若持续需求和价格接受保持，预计上行在该窗口内延续；需求撤退则失效。')):
+            with self.subTest(direction=direction):
+                ctx = self.context(self.root)
+                assessed = deepcopy(self.core['outlook']['market_assessment'])
+                btc = next(m for m in assessed['markets'] if m['id'] == 'BTC')
+                horizon = btc['horizons'][0]
+                horizon.update(direction=direction, structure=state)
+                until = horizon['forward']['judgement_window']['end']
+                window = '原需求检验窗口保留至' + until + '。'
+                assessed['summary'] = state + window + forecast
+                ctx['observation']['review'].update(market_assessment=assessed, dispute_zones=[])
+                before = deepcopy(ctx)
+                brief = run_flow.report_brief(ctx)
+                self.assertIn(market_state.CYCLE_EXPRESSION_REVIEW, brief['result_instructions'])
+                self.assertIn(market_state.CYCLE_EXPRESSION_REVIEW, cycle.REPORT_SCOPE_REVIEW)
+                spec = self.spec()
+                personal = loop.risk(self.core)['summary']
+                market = state + ('\n\n' if not forecast else ' ') + window + forecast
+                spec['layout']['body'] = market + '\n\n' + personal
+                spec['layout']['bindings'][0]['text'] = market
+                spec['information']['market'] = market
+                spec['result_binding'] = brief['result_binding']
+                prior_artifacts = {p: p.read_bytes() for p in (self.root/'outbox').glob('*/artifact.json')}
+                with mock.patch('v4.reporting.context', return_value=ctx):
+                    identity, source = self.f.f.queue(spec)
+                    self.f.f.begin(identity, source)
+                    delivery.transition(self.root, identity, 'CONFIRM', self.f.f.receipt(identity))
+                    self.assertEqual(reporting.reported(self.root)['display'], spec['layout']['body'])
+                self.assertEqual(ctx, before)
+                self.assertEqual(horizon['forward']['judgement_window']['end'], until)
+                self.assertEqual(prior_artifacts, {p: p.read_bytes() for p in prior_artifacts})
+
     def test_observation_selection_preserves_fact_and_expiry_limits(self):
         for baseline in ('current', 'previous'):
             for changed in ('facts', 'expiry'):
