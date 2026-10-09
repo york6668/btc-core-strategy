@@ -38,6 +38,22 @@ def scenario(kind):
         trigger = '取得独立资本部署资料并核对可比跨所价格反应。'
         invalidation = '若实际部署不足或吸收没有留存，不能以单所差额确认整体需求。'
         bad = '单所主动净买证明全市场资金进入，所以立即增加风险。'
+    elif kind == 'mixed_scope':
+        raw.update(price_changes={'TEST_SPOT_A': -2, 'TEST_SPOT_B': -3,
+                                  'TEST_SPOT_C': -1},
+                   active_balance={'TEST_SPOT_A': -8, 'TEST_SPOT_B': None,
+                                   'TEST_SPOT_C': None},
+                   perpetual_oi_change={'venue': 'TEST_SPOT_A',
+                                        'product': 'TESTBTC-USD-PERP', 'value': -4},
+                   comparison_window={'start': '2026-01-01T00:00:00Z',
+                                      'end': '2026-01-01T01:00:00Z'})
+        fact = '合成同一完整小时内三所现货价格均跌；其中甲所现货主动卖出占优，甲所永续持仓减少。'
+        boundary = '其他两所的主动成交及持仓未知，跨所价格证据不能扩大后两项单所证据的覆盖。'
+        trigger = '沿原窗口核对各场所各产品的实际覆盖及后续价格响应。'
+        invalidation = '跨所成交或持仓缺证时，不能将甲所结果描述为三所共有状态。'
+        # This ambiguous compression has no capital-flow or reversal claim.
+        # Its expected rejection belongs to the model review, not a keyword gate.
+        bad = '合成三所现货同步下跌，主动卖出占优，合约同时减仓。'
     elif kind == 'historical_demand':
         raw.update(prior_fund_flow=120, new_fund_flow=None,
                    same_horizon_terminal_value=None, net_cost=None)
@@ -83,7 +99,7 @@ def scenario(kind):
     return raw, fact, boundary, trigger, invalidation, bad
 
 
-CASES = ('correlation', 'single_venue', 'historical_demand', 'low_volume',
+CASES = ('correlation', 'single_venue', 'mixed_scope', 'historical_demand', 'low_volume',
          'missing_chain', 'compression', 'non_price_mechanism')
 
 
