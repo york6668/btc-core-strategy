@@ -312,6 +312,46 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertEqual(read(path), damaged)
         self.assertFalse(list(self.f.d.glob('portfolio-context*')))
 
+
+    def test_old_unfrozen_prepare_can_freeze_current_candidate_and_retry_immutably(self):
+        prior_instructions = market_state.INSTRUCTIONS.replace(market_state.PUBLIC_RESULT_REVIEW, '')
+        with mock.patch.object(market_state, 'INSTRUCTIONS', prior_instructions):
+            p = self.prepare(); public = self.public(p)
+        original_context = Path(p['context']).read_bytes()
+        original_id = read(p['context'])['market_context_id']
+        current_id = market_state.market_projection(read(self.f.d / 'sensing-context.json'))['market_context_id']
+        self.assertNotEqual(original_id, current_id)
+        candidate = run_flow.advance(p['run'], 'market', self.f.file(public), check_only=True)
+        self.assertEqual(read(candidate['market_candidate'])['market_context_id'], current_id)
+        frozen = run_flow.advance(p['run'], 'market', candidate['market_candidate'])
+        original = Path(frozen['market_result']).read_bytes()
+        self.assertEqual(original, Path(candidate['market_candidate']).read_bytes())
+        with (self.f.f.project / '资产配置.md').open('a') as stream:
+            stream.write('\nSynthetic facts-only update after the first current-candidate freeze.\n')
+        for arguments in ({'input_path': candidate['market_candidate']},
+                          {'input_path': self.f.file(public)},
+                          {'template_path': p['market_template'], 'answers_path': self.f.file(public)}):
+            repeated = run_flow.advance(p['run'], 'market', **arguments)
+            self.assertEqual(read(repeated['portfolio_context'])['market_result'], read(frozen['market_result']))
+            self.assertEqual(read(repeated['portfolio_context'])['fact_version'], facts(self.f.f.project))
+            self.assertEqual(Path(frozen['market_result']).read_bytes(), original)
+            self.assertEqual(Path(p['context']).read_bytes(), original_context)
+        # The alternate recovery proof is the exact immutable candidate, not
+        # merely a candidate filename or a self-authored replacement envelope.
+        proof = Path(candidate['market_candidate'])
+        proof_bytes = proof.read_bytes()
+        damaged = dict(read(proof), market_context_id=digest('different candidate context'))
+        replace(proof, damaged)
+        with self.assertRaisesRegex(Invalid, 'frozen public context differs'):
+            run_flow.advance(p['run'], 'market', self.f.file(public))
+        proof.unlink()
+        with self.assertRaisesRegex(Invalid, 'frozen public context differs'):
+            run_flow.advance(p['run'], 'market', self.f.file(public))
+        proof.write_bytes(proof_bytes)
+        repeated = run_flow.advance(p['run'], 'market', candidate['market_candidate'])
+        self.assertEqual(Path(repeated['market_result']).read_bytes(), original)
+        self.assertEqual(Path(p['context']).read_bytes(), original_context)
+
     def test_market_check_only_cli_exposes_candidate_and_other_stages_keep_their_boundaries(self):
         import strategy_v4
         p = self.prepare(); public = self.public(p)

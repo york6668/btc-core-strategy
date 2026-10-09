@@ -561,8 +561,10 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         exact(existing, 'payload result_hash market_context_id', 'frozen public market result')
         require(existing['result_hash'] == digest(existing['payload']), 'frozen public result hash changed')
         require(existing['payload'] == authored, 'cannot change an already frozen public result')
-        require(existing['market_context_id'] == read(d / 'context.json').get('market_context_id'),
-                'frozen public context differs from original run material')
+        original_candidate = d / ('market-candidate-' + digest(existing)[7:] + '.json')
+        require(existing['market_context_id'] == read(d / 'context.json').get('market_context_id')
+                or (original_candidate.is_file() and read(original_candidate) == existing),
+                'frozen public context differs from original run material or candidate')
         # Instruction updates change a new projection's hash. Recovery retains
         # the original freeze and its bound run material, never rebinds history.
         frozen = existing
