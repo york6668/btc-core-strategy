@@ -46,6 +46,52 @@ class ResearchArgumentTests(unittest.TestCase):
         self.assertNotIn('current_strategy', actual)
         self.assertEqual(ctx['cycle_baseline']['market_report'], public['market_report'])
 
+    def test_direction_cause_and_decided_vs_undetermined_choices_survive_report_consumption(self):
+        from v4.common import digest
+        from test_closed_loop import allocation
+        actions = []
+        for scope, choice, gap, arrangement in (
+                ('SYNTHETIC_CORE', 'UNDETERMINED', 'ACTION', 'Current coverage prevents choosing which side to change.'),
+                ('SYNTHETIC_INCREMENT', 'PAUSE', 'NONE', 'Wait for independently supported value compensation.'),
+                ('SYNTHETIC_PROGRAMME', 'HOLD', 'QUANTITY_ONLY', 'Preserve participation purpose; executable size remains limited.')):
+            item = deepcopy(allocation(self.f.core, self.f.stamp)['actions'][0])
+            item.update(id=scope, scope=scope, decision=choice, gap_impact=gap,
+                status='UNDETERMINED' if gap == 'ACTION' else 'DECIDED', arrangement=arrangement,
+                execution={'status': 'UNDETERMINED' if gap == 'ACTION' else ('LIMITED' if gap == 'QUANTITY_ONLY' else 'READY'),
+                           'limits': [arrangement] if gap != 'NONE' else []},
+                reentry_conditions=['Credible value or coverage evidence changes this choice.'] if choice == 'PAUSE' else [])
+            actions.append(item)
+        portfolio = self.f.core['recommendations']['portfolio']
+        portfolio['strategy_advice'] = actions
+        portfolio['risk_assessment']['response_needed'] = None
+        portfolio['risk_assessment']['valid_until'] = self.f.stamp
+        ctx = self.f.context(self.f.root); ctx['report_contract_revision'] = 2
+        assessed = deepcopy(self.f.core['outlook']['market_assessment'])
+        assessed['summary'] = 'Synthetic downward correction has structural support; its dominant cause remains unidentified.'
+        btc = next(m for m in assessed['markets'] if m['id'] == 'BTC')
+        for horizon in btc['horizons']:
+            horizon.update(direction='BEARISH', confirmation='PARTIAL',
+                basis='Several lower-price acceptances persist; the local recovery reduces immediate downside advantage.')
+        btc['conflicts'] = 'Flow and leverage causes remain compatible; no dominant cause is identified.'
+        ctx['observation']['review']['market_assessment'] = assessed
+        review = ctx['observation']['review']['allocation_review']
+        review.update(fact_version=ctx['identity']['fact_version'], strategy_advice_hash=digest(actions),
+            explanation='Core side changes remain undecided; incremental waiting and the participation purpose remain explicit choices.',
+            limitations=['Preserving a purpose does not validate the current whole position.'])
+        basis = ctx.setdefault('cycle_baseline', {})
+        basis.update(result_id='SYNTHETIC_ORIGINAL_STUDY', market_cutoff=self.f.stamp,
+            market_report='Original pure-market structural argument with competing causal explanations.')
+        before = deepcopy(ctx)
+        brief = run_flow.report_brief(ctx)
+        self.assertEqual(brief['market_result']['market_assessment'], assessed)
+        self.assertEqual(brief['market_result']['research_basis']['market_report'], basis['market_report'])
+        self.assertEqual(brief['strategy_advice'], actions)
+        self.assertEqual(brief['strategy_advice'][0]['decision'], 'UNDETERMINED')
+        self.assertEqual(brief['applicability']['portfolio']['explanation'], review['explanation'])
+        self.assertEqual(brief['applicability']['portfolio']['outcome'], 'REVISE')
+        self.assertEqual(brief['portfolio_risk']['valid_until'], self.f.stamp)
+        self.assertEqual(ctx, before)
+
     def test_expiry_preserves_actual_bounded_reassessment_and_keeps_old_advice_unrenewed(self):
         risk = closed_loop.risk(self.f.core)
         risk['valid_until'] = self.f.stamp

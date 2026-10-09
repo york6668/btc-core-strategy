@@ -94,13 +94,40 @@ def scenario(kind):
         trigger = '核验融资入口恢复及新真实资本部署是否改变该风险。'
         invalidation = '融资恢复并有已执行部署时重评机制受损判断。'
         bad = '没有指定量价指标就不能分析融资风险。'
+    elif kind == 'direction_attribution':
+        raw = {'observations': ['Synthetic lower accepted prices persist across several attempts.',
+                                'Public flow and leverage mechanisms remain observationally compatible.']}
+        fact = '较低价格结构得到持续验证，但现有资料尚不能识别主因。'
+        boundary = '方向有结构支持且确认受限；归因未知不抹去方向，也不保证后续延续或推出追空。'
+        trigger = '若较高结构重新接受并留住，复核当前向下修正。'
+        invalidation = '若较低接受延续，反向修复解释受到削弱。'
+        bad = '主因尚未识别，所以当前方向和所有参与选择都未知。'
+    elif kind == 'partial_recovery':
+        raw = {'observations': ['The later recovery repairs the last local decline.',
+                                'Earlier higher acceptance remains lost.',
+                                'All timestamps retain their original first-known ordering.']}
+        fact = '局部跌幅已回收，较早失去的较高结构仍未恢复。'
+        boundary = '恢复限制继续下跌的优势，但不证明全部修正消失；长窗口也不天然压过这项反证。'
+        trigger = '若较高结构恢复且回撤留存，重评原方向和延续。'
+        invalidation = '若恢复失去且较低接受持续，削弱反向趋势解释。'
+        bad = '较长窗口权重更高，所以局部恢复可以直接忽略。'
+    elif kind == 'mechanism_response':
+        raw = {'observations': ['The synthetic flow shock precedes the price response.',
+                                'Prices retain recovery despite continuing flow withdrawal.',
+                                'A leverage explanation remains observationally compatible.']}
+        fact = '资金退出仍在，但价格恢复后继续留存。'
+        boundary = '实际响应削弱持续承接不足的主因解释；先后和共现不足以排除竞争机制或证明未来延续。'
+        trigger = '若同口径退出延续且恢复失去，重新检验承接不足解释。'
+        invalidation = '若退出仍在而价格接受继续留住，该主因解释应继续削弱。'
+        bad = '资金退出与价格先前下降同现，所以已确认退出主导当前趋势。'
     else:
         raise AssertionError(kind)
     return raw, fact, boundary, trigger, invalidation, bad
 
 
 CASES = ('correlation', 'single_venue', 'mixed_scope', 'historical_demand', 'low_volume',
-         'missing_chain', 'compression', 'non_price_mechanism')
+         'missing_chain', 'compression', 'non_price_mechanism',
+         'direction_attribution', 'partial_recovery', 'mechanism_response')
 
 
 class EvidenceReasoningWorkflowTests(unittest.TestCase):
@@ -168,7 +195,7 @@ class EvidenceReasoningWorkflowTests(unittest.TestCase):
         assessed = draft['outlook']['market_assessment']
         assessed['summary'] = summary
         btc = next(m for m in assessed['markets'] if m['id'] == 'BTC')
-        direction = 'BEARISH' if kind == 'non_price_mechanism' else 'UNKNOWN'
+        direction = 'BEARISH' if kind in ('non_price_mechanism', 'direction_attribution', 'partial_recovery') else 'UNKNOWN'
         for horizon in btc['horizons']:
             horizon.update(direction=direction, confirmation='PARTIAL' if direction == 'BEARISH' else 'UNKNOWN',
                            basis=fact + boundary, structure=boundary,
