@@ -134,6 +134,7 @@
     "skill/btc-core-strategy/tests/test_multi_asset_pipeline.py",
     "skill/btc-core-strategy/tests/test_node_bridge_paths.py",
     "skill/btc-core-strategy/tests/test_pattern_integration.py",
+    "skill/btc-core-strategy/tests/test_primary_thesis_continuity.py",
     "skill/btc-core-strategy/tests/test_production_strategy.py",
     "skill/btc-core-strategy/tests/test_recommendation_maintenance.py",
     "skill/btc-core-strategy/tests/test_report_care.py",
