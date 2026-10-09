@@ -52,6 +52,7 @@ class ResearchArgumentTests(unittest.TestCase):
         ctx = self.f.context(self.f.root)
         ctx['report_contract_revision'] = 2
         review = ctx['observation']['review']['allocation_review']
+        review['fact_version'] = ctx['identity']['fact_version']
         review['explanation'] = 'Public downside path remains assessable; exact hedge resizing needs current coverage.'
         review['limitations'] = ['Exact hedge quantity is unavailable.']
         result = closed_loop.report_inputs(ctx)
@@ -64,6 +65,58 @@ class ResearchArgumentTests(unittest.TestCase):
         old = closed_loop.report_inputs(legacy)
         self.assertNotIn('research_basis', old['market_result'])
         self.assertNotIn('explanation', old['applicability']['portfolio'])
+
+
+    def test_changed_facts_and_expiry_preserve_current_fact_review_without_validating_old_actions(self):
+        from v4.common import digest
+        risk = closed_loop.risk(self.f.core)
+        risk['valid_until'] = self.f.stamp
+        ctx = self.f.context(self.f.root); ctx['report_contract_revision'] = 2
+        old_risk = deepcopy(risk)
+        current_facts = digest({'synthetic_account_facts':'updated'})
+        ctx['identity']['fact_version'] = current_facts
+        review = ctx['observation']['review']['allocation_review']
+        review.update(fact_version=current_facts, outcome='EVIDENCE_LIMITED',
+            explanation='Updated public-to-personal assessment is useful; actual hedge sizing remains locally constrained.',
+            limitations=['The new facts do not confirm current hedge coverage.'])
+        before = deepcopy(ctx)
+        result = closed_loop.report_inputs(ctx)
+        personal = result['applicability']['portfolio']
+        self.assertEqual(personal['explanation'], review['explanation'])
+        self.assertEqual(personal['fact_version'], current_facts)
+        self.assertIn(review['limitations'][0], personal['limitations'])
+        self.assertTrue(any('Local asset facts changed' in item for item in personal['limitations']))
+        self.assertTrue(any('Allocation expired' in item for item in personal['limitations']))
+        self.assertEqual(personal['outcome'], 'REVISE')
+        self.assertEqual(result['portfolio_risk'], old_risk)
+        self.assertNotEqual(result['portfolio_risk']['fact_version'], current_facts)
+        self.assertEqual(result['portfolio_risk']['valid_until'], self.f.stamp)
+        self.assertEqual(result['result_binding']['portfolio_risk_hash'], digest(old_risk))
+        self.assertEqual(result['result_binding']['applicability_hash'], digest(result['applicability']))
+        self.assertEqual(ctx, before)
+        legacy = deepcopy(ctx); legacy.pop('report_contract_revision')
+        self.assertNotIn('explanation', closed_loop.report_inputs(legacy)['applicability']['portfolio'])
+
+    def test_wrong_fact_binding_cannot_be_preserved_as_current_reassessment(self):
+        from v4.common import digest
+        risk = closed_loop.risk(self.f.core); risk['valid_until'] = self.f.stamp
+        for facts_changed in (True, False):
+            with self.subTest(facts_changed=facts_changed):
+                ctx = self.f.context(self.f.root); ctx['report_contract_revision'] = 2
+                review = ctx['observation']['review']['allocation_review']
+                if facts_changed:
+                    ctx['identity']['fact_version'] = digest({'synthetic_account_facts':'new'})
+                    review['fact_version'] = risk['fact_version']
+                else:
+                    review['fact_version'] = digest({'synthetic_account_facts':'another'})
+                review.update(outcome='VALID', explanation='WRONG_FACT_REVIEW_SENTINEL', limitations=[])
+                result = closed_loop.report_inputs(ctx)
+                personal = result['applicability']['portfolio']
+                self.assertNotEqual(personal['outcome'], 'VALID')
+                self.assertNotIn('WRONG_FACT_REVIEW_SENTINEL', str(personal))
+                self.assertNotIn('explanation', personal)
+                self.assertEqual(result['portfolio_risk']['valid_until'], self.f.stamp)
+
 
 
 class NotificationBoundaryTests(unittest.TestCase):

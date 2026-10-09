@@ -239,6 +239,8 @@ def report_inputs(ctx):
         personal = None  # A just-published arrangement needs its own applicability check.
     if revision >= 7 and personal and personal.get('strategy_advice_hash') != (digest(advice) if advice is not None else None):
         personal = None
+    if current_contract and personal and personal.get('fact_version') != ctx['identity']['fact_version']:
+        personal = None  # A prior/other fact review is not a current reassessment.
     result = {'market_result': market, result_key: deepcopy(decision),
               'execution_plans': {s: {k: deepcopy(strategy['recommendations'][s][k]) for k in
                   ('status', 'unit', 'tiers', 'validity', 'allocation_percent')} for s in ('upper_short', 'lower_spot')},
@@ -248,7 +250,16 @@ def report_inputs(ctx):
     if revision >= 7 and decision is None:
         result['applicability']['portfolio'] = {'outcome': 'EVIDENCE_LIMITED', 'limitations': ['A revision 7 asset risk assessment has not been formed; legacy actions are not a new risk conclusion.']}
     if decision and decision['fact_version'] != ctx['identity']['fact_version']:
-        result['applicability']['portfolio'] = {'outcome': 'REVISE', 'limitations': ['Local asset facts changed; the previous arrangement is not a current decision.']}
+        changed = {'outcome': 'REVISE', 'limitations': ['Local asset facts changed; the previous arrangement is not a current decision.']}
+        if current_contract and personal:
+            # The old arrangement is invalid on new facts, but a matching
+            # current-fact review can still carry useful bounded analysis.
+            actual = deepcopy(result['applicability']['portfolio'])
+            actual['outcome'] = 'REVISE'
+            actual['limitations'] = actual.get('limitations', []) + changed['limitations']
+            result['applicability']['portfolio'] = actual
+        else:
+            result['applicability']['portfolio'] = changed
     if decision and instant(decision['valid_until']) <= instant(ctx['evaluated_at']):
         expired = {'outcome': 'REVISE', 'limitations': ['Allocation expired; the report clock cannot extend it.']}
         if current_contract:
