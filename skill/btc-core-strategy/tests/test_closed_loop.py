@@ -253,6 +253,65 @@ class HourlyClosedLoopTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'new public result requires'):
             run_flow.advance(following['run'], 'market', self.f.file(reused))
 
+
+    def legacy_freeze(self):
+        # Removing exactly the added review component reproduces the 835
+        # instruction composition, rather than minting history with new hashes.
+        prior_instructions = market_state.INSTRUCTIONS.replace(market_state.PUBLIC_RESULT_REVIEW, '')
+        self.assertNotEqual(prior_instructions, market_state.INSTRUCTIONS)
+        with mock.patch.object(market_state, 'INSTRUCTIONS', prior_instructions):
+            p = self.prepare(); public = self.public(p)
+            frozen = {'payload': public, 'result_hash': digest(public),
+                'market_context_id': market_state.market_projection(read(self.f.d / 'sensing-context.json'))['market_context_id']}
+            create(self.f.d / 'market-result.json', frozen)
+            self.assertEqual(read(p['context'])['market_context_id'], frozen['market_context_id'])
+        current = market_state.market_projection(read(self.f.d / 'sensing-context.json'))['market_context_id']
+        self.assertNotEqual(current, frozen['market_context_id'])
+        return p, public, frozen, current
+
+    def test_frozen_public_recovery_keeps_identity_across_instruction_versions(self):
+        p, public, frozen, current = self.legacy_freeze()
+        original = (self.f.d / 'market-result.json').read_bytes()
+        with (self.f.f.project / '资产配置.md').open('a') as stream:
+            stream.write('\nSynthetic confirmed facts-only edit after code upgrade.\n')
+        for arguments in ({'input_path': self.f.file(public)},
+                          {'input_path': self.f.file(frozen)},
+                          {'template_path': p['market_template'], 'answers_path': self.f.file(public)}):
+            recovered = run_flow.advance(p['run'], 'market', **arguments)
+            self.assertEqual(read(recovered['portfolio_context'])['market_result'], frozen)
+            self.assertEqual(recovered['market_result_hash'], frozen['result_hash'])
+            self.assertEqual((self.f.d / 'market-result.json').read_bytes(), original)
+            self.assertEqual(read(recovered['portfolio_context'])['fact_version'], facts(self.f.f.project))
+        # Precheck is a current candidate, not a retroactive rebind of history.
+        preview = run_flow.advance(p['run'], 'market', self.f.file(public), check_only=True)
+        candidate = read(preview['market_candidate'])
+        self.assertEqual(candidate['market_context_id'], current)
+        self.assertEqual(candidate['payload'], frozen['payload'])
+        with self.assertRaisesRegex(Invalid, 'recovery differs from frozen result'):
+            run_flow.advance(p['run'], 'market', preview['market_candidate'])
+        with self.assertRaisesRegex(Invalid, 'candidate context changed'):
+            run_flow.advance(p['run'], 'market', self.f.file(frozen), check_only=True)
+        changed = deepcopy(public)
+        changed['market_review']['assessment_summary'] = 'Changed after the original freeze.'
+        with self.assertRaisesRegex(Invalid, 'already frozen public result'):
+            run_flow.advance(p['run'], 'market', self.f.file(changed))
+        self.assertEqual((self.f.d / 'market-result.json').read_bytes(), original)
+
+    def test_legacy_freeze_checks_own_hash_and_original_run_context(self):
+        p, public, frozen, current = self.legacy_freeze()
+        path = self.f.d / 'market-result.json'
+        damaged = dict(frozen, result_hash=digest('wrong result hash'))
+        replace(path, damaged)
+        with self.assertRaisesRegex(Invalid, 'frozen public result hash changed'):
+            run_flow.advance(p['run'], 'market', self.f.file(public))
+        self.assertEqual(read(path), damaged)
+        damaged = dict(frozen, market_context_id=current)
+        replace(path, damaged)
+        with self.assertRaisesRegex(Invalid, 'frozen public context differs'):
+            run_flow.advance(p['run'], 'market', self.f.file(public))
+        self.assertEqual(read(path), damaged)
+        self.assertFalse(list(self.f.d.glob('portfolio-context*')))
+
     def test_market_check_only_cli_exposes_candidate_and_other_stages_keep_their_boundaries(self):
         import strategy_v4
         p = self.prepare(); public = self.public(p)

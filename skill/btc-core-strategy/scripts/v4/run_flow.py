@@ -555,14 +555,29 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
     package = evidence.validate(read(Path(run['evidence']) / 'evidence.json'), run['evidence'])
     resolve = lambda ref: evidence.resolve(package, run['evidence'], ref, verified=True)
     sensing.validate_public(root, ctx, raw, authored, run['evidence'])
-    frozen = {'payload': authored, 'result_hash': digest(authored),
-              'market_context_id': market_state.market_projection(ctx)['market_context_id']}
+    frozen_path = d / 'market-result.json'
+    existing = read(frozen_path) if not check_only and frozen_path.is_file() else None
+    if existing is not None:
+        exact(existing, 'payload result_hash market_context_id', 'frozen public market result')
+        require(existing['result_hash'] == digest(existing['payload']), 'frozen public result hash changed')
+        require(existing['payload'] == authored, 'cannot change an already frozen public result')
+        require(existing['market_context_id'] == read(d / 'context.json').get('market_context_id'),
+                'frozen public context differs from original run material')
+        # Instruction updates change a new projection's hash. Recovery retains
+        # the original freeze and its bound run material, never rebinds history.
+        frozen = existing
+    else:
+        frozen = {'payload': authored, 'result_hash': digest(authored),
+                  'market_context_id': market_state.market_projection(ctx)['market_context_id']}
     candidate_path = d / ('market-candidate-' + digest(frozen)[7:] + '.json')
     if candidate is not None:
-        require(candidate['market_context_id'] == frozen['market_context_id'],
-                'public market candidate context changed')
-        require(candidate_path.is_file() and read(candidate_path) == frozen,
-                'use the actual prechecked public market candidate')
+        if existing is not None:
+            require(candidate == existing, 'public market recovery differs from frozen result')
+        else:
+            require(candidate['market_context_id'] == frozen['market_context_id'],
+                    'public market candidate context changed')
+            require(candidate_path.is_file() and read(candidate_path) == frozen,
+                    'use the actual prechecked public market candidate')
     if check_only:
         with locked(d):
             path = save(candidate_path, frozen)
