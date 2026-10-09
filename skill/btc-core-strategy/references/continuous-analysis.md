@@ -16,6 +16,8 @@
 
 查询 PERSONAL 的 object.get/list/history 或 conditions.due 同样提供已冻结的 market_binding；不能通过直接对象查询提前读取个人材料。
 
+`object.get` 的身份参数是 `kind`、`object_id`、`scope`，可加 `version` 或 `as_of`；例如 `{"method":"object.get","params":{"kind":"FACTOR","object_id":"已登记的对象ID","scope":"PUBLIC","version":1}}`。`product` 是 `object.list` 的筛选参数，不是 `object.get` 的身份参数；不能省略 kind 或从产品猜测对象种类。`object.history` 使用 kind/object_id，PERSONAL 历史也必须带本轮 market_binding。缺字段、类型错误和不支持的参数返回具体方法和字段；修正该次读取后继续原冻结阶段，不自动改绑、重建对象或放宽个人阶段限制。
+
 CLI `continuity.market_binding` 仅表示本轮已冻结市场结果，与 `continuous-personal.json` 一致；尚未冻结时为 null。`formal_market_binding` 是旧正式核心基线，不能代替本轮个人阶段绑定。
 
 1. `prices.products` 发现实际产品；`prices.query` 指定产品、序列、事件窗口和 as_of。不同来源、现货、指数、合约、代理、单位均保留身份，首次获知时间和事件时间分开。辅助采集仍是 UNTRUSTED_LEAD，需要独立当前来源核验；无产品、单位或接收时间的旧材料留原文并暴露投影缺口，不猜测补齐。

@@ -1182,6 +1182,45 @@ class NodeContract(unittest.TestCase):
             response = json.loads(mcp.stdout)['result']
             self.assertFalse(response['isError'])
             self.assertEqual(json.loads(response['content'][0]['text'])['result']['version'], 1)
+            # The real socket CLI and stdio MCP must report the same field
+            # errors, then continue reading the original committed version.
+            invalid = [
+                ('object.get', {k:v for k,v in params.items() if k != 'kind'}, 'kind'),
+                ('object.get', {k:v for k,v in params.items() if k != 'scope'}, 'scope'),
+                ('object.get', dict(params, product='BTC'), 'product'),
+                ('object.get', dict(params, scope='UNKNOWN'), 'scope'),
+                ('object.get', dict(params, kind=[]), 'kind'),
+                ('object.get', dict(params, version=True), 'version'),
+                ('object.get', dict(params, market_binding={'object_id':'x','version':1}), 'market_binding.digest'),
+                ('object.history', {'object_id':params['object_id']}, 'kind'),
+                ('object.list', {'scope':'PUBLIC','limit':True}, 'limit'),
+                ('conditions.due', {'scope':None}, 'scope'),
+                ('context.personal', {'market_binding':'x'}, 'market_binding'),
+            ]
+            calls = [{'jsonrpc':'2.0','id':n,'method':'tools/call',
+                      'params':{'name':method.replace('.', '_'),'arguments':{'params':values}}}
+                     for n,(method,values,field) in enumerate(invalid, 10)]
+            calls += [{'jsonrpc':'2.0','id':100,'method':'tools/list'},
+                      {'jsonrpc':'2.0','id':101,'method':'tools/call',
+                       'params':{'name':'object_get','arguments':{'params':params}}}]
+            output = subprocess.run(command + ['mcp'],
+                input=''.join(json.dumps(x)+'\n' for x in calls), text=True, capture_output=True, check=True)
+            answers = [json.loads(line) for line in output.stdout.splitlines()]
+            for (method,values,field),answer in zip(invalid,answers):
+                result = answer['result']
+                self.assertTrue(result['isError'])
+                mcp_error = json.loads(result['content'][0]['text'])
+                self.assertEqual(mcp_error['error'], 'ValueError')
+                self.assertIn(method+'.params.'+field, mcp_error['message'])
+                failed = subprocess.run(command + ['request'],
+                    input=json.dumps({'method':method,'params':values}), text=True, capture_output=True)
+                self.assertEqual(failed.returncode, 1)
+                self.assertEqual(json.loads(failed.stdout), mcp_error)
+            tools = {t['name']:t for t in answers[-2]['result']['tools']}
+            self.assertIn('prices_repair_seller_references', tools)
+            self.assertEqual(tools['object_get']['inputSchema']['properties']['params']['required'],
+                             ['kind','object_id','scope'])
+            self.assertEqual(json.loads(answers[-1]['result']['content'][0]['text'])['result']['version'], 1)
 
 
 if __name__ == '__main__':

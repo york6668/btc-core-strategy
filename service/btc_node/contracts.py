@@ -54,6 +54,7 @@ PARAMETERS = {
                           'after':obj({'observed_ms':{'type':'integer'},'item_key':TEXT}, ['observed_ms','item_key']),
                           'limit':{'type':'integer','minimum':1,'maximum':10000}}, ['product','series','start','end','as_of']),
     'prices.products': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
+    'prices.repair_seller_references': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
     'context.public': obj({'kind':TEXT,'product':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500},'after':TEXT}),
     'context.personal': obj({'market_binding':obj({'object_id':TEXT,'version':VERSION,'digest':TEXT}, ['object_id','version','digest'])}, ['market_binding']),
     'evidence.put': obj({'base64':TEXT}, ['base64']),
@@ -66,3 +67,36 @@ PARAMETERS = {
                 'line_end':{'type':'integer','minimum':1},'quote':TEXT}, ['file','line_start','line_end','quote'])}},
             ['object_id','category','fields','source_refs'])}}, ['market_binding','fact_version','items']),
 }
+
+
+def validate_object_read(method, params):
+    """Enforce the advertised read shapes before phase checks or Python calls."""
+    if method not in {'object.get', 'object.list', 'object.history', 'conditions.due', 'context.personal'}:
+        return
+
+    def check(value, schema, path):
+        expected = schema['type']
+        types = expected if isinstance(expected, list) else [expected]
+        matches = {'object': isinstance(value, dict), 'string': isinstance(value, str),
+                   'integer': type(value) is int, 'boolean': type(value) is bool,
+                   'null': value is None}
+        if not any(matches[t] for t in types):
+            raise ValueError(path + ': expected ' + ' or '.join(types))
+        if 'enum' in schema and value not in schema['enum']:
+            raise ValueError(path + ': expected ' + ' or '.join(schema['enum']))
+        if isinstance(value, str) and len(value) < schema.get('minLength', 0):
+            raise ValueError(path + ': expected non-empty string')
+        if type(value) is int:
+            if ('minimum' in schema and value < schema['minimum']) or ('maximum' in schema and value > schema['maximum']):
+                raise ValueError(path + ': integer outside allowed bounds')
+        if isinstance(value, dict):
+            properties = schema['properties']
+            for name in schema['required']:
+                if name not in value:
+                    raise ValueError(path + '.' + name + ': required ' + properties[name]['type'])
+            for name, field in value.items():
+                if name not in properties:
+                    raise ValueError(path + '.' + name + ': unsupported field; allowed: ' + ', '.join(properties))
+                check(field, properties[name], path + '.' + name)
+
+    check(params, PARAMETERS[method], method + '.params')

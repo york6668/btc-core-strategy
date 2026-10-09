@@ -5,6 +5,7 @@ import base64
 
 from .codec import Conflict, encode, fingerprint, millis
 from .database import Database
+from .contracts import validate_object_read
 from .entities import Entities
 from .series import Series
 
@@ -18,6 +19,7 @@ HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capac
 
 
 def invoke(database, method, params):
+    validate_object_read(method, params)
     objects, series = Entities(database), Series(database)
     params = dict(params)
     if method in {'object.get','object.list','object.history','conditions.due'}:
