@@ -414,12 +414,18 @@ def resolve_answers(run, answers):
         read(Path(run['evidence']) / 'evidence.json'), run['evidence'])
 
 
-def read_run(path, root=None, project=None):
+def read_run(path, root=None, project=None, *, resolve_aliases=False):
     run = read(path)
     require(run['schema'] == 'BTC_RUN_MATERIAL_V1', 'invalid run material')
-    require(Path(path).resolve() == Path(run['directory']) / 'run.json', 'run directory binding differs')
-    if root is not None: require(Path(root).resolve() == Path(run['root']), 'CLI root does not match run')
-    if project is not None: require(Path(project).resolve() == Path(run['project']), 'CLI project does not match run')
+    def bound(actual, expected):
+        # Native immutable reads can see the same mounted store through its
+        # logical project symlink. Preserve the stored identity and bytes;
+        # both aliases must still resolve to exactly the same owner.
+        target = Path(expected).resolve() if resolve_aliases else Path(expected)
+        return Path(actual).resolve() == target
+    require(bound(path, Path(run['directory']) / 'run.json'), 'run directory binding differs')
+    if root is not None: require(bound(root, run['root']), 'CLI root does not match run')
+    if project is not None: require(bound(project, run['project']), 'CLI project does not match run')
     raw = read(run['market'])
     require(digest(raw) == run['market_hash'], 'run raw material changed')
     package = evidence.validate(read(Path(run['evidence']) / 'evidence.json'), run['evidence'])

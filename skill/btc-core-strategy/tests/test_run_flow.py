@@ -124,6 +124,36 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(before, run_flow.anchors(self.f.store, self.f.project))
         self.assertFalse((self.d / 'market-result.json').exists())
 
+    def test_native_reread_resolves_same_store_alias_and_rejects_another_run(self):
+        import io
+        from contextlib import redirect_stdout
+        import strategy_v4
+        prepared = self.prep()
+        alias = self.f.base / 'logical-store'
+        alias.symlink_to(self.f.base, target_is_directory=True)
+        run = read(prepared['run'])
+        for name in ('directory', 'root', 'project'):
+            run[name] = str(alias / Path(run[name]).resolve().relative_to(self.f.base.resolve()))
+        Path(prepared['run']).write_text(json.dumps(run))
+        original = Path(prepared['run']).read_bytes()
+        before = run_flow.anchors(self.f.store, self.f.project)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = strategy_v4.main(['--project', str(self.f.project), '--root', str(self.f.store),
+                'run-read', '--run', prepared['run'], '--read-set', prepared['read_set']['observe'],
+                '--max-characters', '29'])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stream.getvalue())['next_cursor'], 29)
+        self.assertEqual(Path(prepared['run']).read_bytes(), original)
+        self.assertEqual(before, run_flow.anchors(self.f.store, self.f.project))
+        # Mutation consumers retain their original logical binding contract.
+        with self.assertRaisesRegex(Invalid, 'run directory binding differs'):
+            run_flow.read_run(prepared['run'], self.f.store, self.f.project)
+        other = self.f.base / 'other-run'; other.mkdir()
+        (other / 'run.json').write_bytes(original)
+        with self.assertRaisesRegex(Invalid, 'run directory binding differs'):
+            run_flow.read_run(other / 'run.json', self.f.store, self.f.project, resolve_aliases=True)
+
     def observe(self):
         prepared=self.prep();p=self.file(self.authored(prepared))
         return run_flow.advance(prepared['run'],'observe',p),p

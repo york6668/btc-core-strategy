@@ -181,7 +181,7 @@ def main(argv=None):
                 [run['directory'], Path(run['root']) / 'research', Path(run['root']) / 'versions'])
         elif args.command == 'run-read':
             from v4 import run_flow, material_reads
-            run = run_flow.read_run(args.run, args.root, args.project)
+            run = run_flow.read_run(args.run, args.root, args.project, resolve_aliases=True)
             result = material_reads.read_page(args.read_set, args.cursor, args.max_characters,
                                              allowed_directory=Path(run['directory']) / 'reading')
         elif args.command == 'run-material':
