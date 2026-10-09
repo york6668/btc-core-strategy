@@ -76,7 +76,7 @@ class MarketStateTests(unittest.TestCase):
                       dispute_zones=[zone(raw['cutoff'],[ref])] if zones is None else zones)
         if patterns is not None:
             public['market_review']['patterns']=patterns
-        result=run_flow.advance(prepared['run'],'market',self.f.file(public))
+        result=self.f.freeze_market(prepared['run'],public)
         return prepared,result,authored,public,ctx
 
     def observe(self, directory=None, zones=None, patterns=None):

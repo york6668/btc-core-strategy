@@ -123,7 +123,7 @@ class HourlyClosedLoopTests(unittest.TestCase):
 
     def freeze(self):
         p = self.prepare(); public = self.public(p)
-        return p, run_flow.advance(p['run'], 'market', self.f.file(public)), public
+        return p, self.f.freeze_market(p['run'], public), public
 
     def personal(self, frozen):
         value = read(frozen['portfolio_context'])
@@ -181,6 +181,8 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertEqual(fact_version, facts(self.f.f.project))
         # A model correction creates a new candidate, retaining the original.
         public['market_review']['changes_since_deep'] = [scoped]
+        with self.assertRaisesRegex(Invalid, 'new public result requires'):
+            run_flow.advance(p['run'], 'market', self.f.file(public))
         reviewed = run_flow.advance(p['run'], 'market', self.f.file(public), check_only=True)
         frozen = run_flow.advance(p['run'], 'market', reviewed['market_candidate'])
         self.assertEqual(Path(frozen['market_result']).read_bytes(), Path(reviewed['market_candidate']).read_bytes())
@@ -215,6 +217,41 @@ class HourlyClosedLoopTests(unittest.TestCase):
                 run_flow.advance(p['run'], 'market', result['market_candidate'])
         self.assertFalse((self.f.d / 'market-result.json').exists())
         self.assertFalse(list(self.f.d.glob('portfolio-context*')))
+
+    def test_first_freeze_requires_candidate_and_old_frozen_summaries_keep_their_bytes(self):
+        p = self.prepare(); public = self.public(p)
+        historical = '多所价格回升；成交差额为负。'
+        public['market_review']['changes_since_deep'] = [historical]
+        for arguments in ({'input_path': self.f.file(public)},
+                          {'template_path': p['market_template'], 'answers_path': self.f.file(public)}):
+            with self.assertRaisesRegex(Invalid, 'new public result requires'):
+                run_flow.advance(p['run'], 'market', **arguments)
+        self.assertFalse((self.f.d / 'market-result.json').exists())
+        self.assertFalse(list(self.f.d.glob('portfolio-context*')))
+        # Simulate an older valid freeze without a candidate artifact. An
+        # ambiguous historical sentence remains readable, not retroactively
+        # rejected by a semantic filter or rewritten by this code upgrade.
+        frozen = {'payload': public, 'result_hash': digest(public),
+            'market_context_id': market_state.market_projection(read(self.f.d / 'sensing-context.json'))['market_context_id']}
+        create(self.f.d / 'market-result.json', frozen)
+        original = (self.f.d / 'market-result.json').read_bytes()
+        refreshed = run_flow.advance(p['run'], 'market', self.f.file(public))
+        self.assertEqual(read(refreshed['portfolio_context'])['market_result'], frozen)
+        self.assertEqual((self.f.d / 'market-result.json').read_bytes(), original)
+        result = run_flow.advance(p['run'], 'observe', template_path=refreshed['observation_template'],
+            answers_path=self.f.file(self.personal(refreshed)))
+        self.assertEqual(sensing.observation(self.root, result['observation_id'])['review']['market_review']['changes_since_deep'], [historical])
+        following = self.prepare(self.f.f.base / 'legacy-following')
+        inherited = read(following['context'])['historical_hypotheses']['previous_market_observation']
+        self.assertEqual(inherited['market_review']['changes_since_deep'], [historical])
+        reused = deepcopy(public)
+        for item in reused['market_assessment']['markets']:
+            for horizon in item['horizons']:
+                horizon['forward']['prior_check'] = {'outcome': 'PENDING',
+                    'explanation': 'Synthetic original thesis remains pending in its existing window.', 'refs': []}
+        reused['market_review']['changes_since_deep'] = inherited['market_review']['changes_since_deep']
+        with self.assertRaisesRegex(Invalid, 'new public result requires'):
+            run_flow.advance(following['run'], 'market', self.f.file(reused))
 
     def test_market_check_only_cli_exposes_candidate_and_other_stages_keep_their_boundaries(self):
         import strategy_v4
@@ -273,7 +310,7 @@ class HourlyClosedLoopTests(unittest.TestCase):
                         assessed[relation]['periods'] = [hourly['id'], primary['id']]
                     assessed['resonance']['status'] = 'UNKNOWN' if direction == 'UNKNOWN' else 'CONFLICTED'
                 expected = deepcopy(public['market_assessment'])
-                frozen = run_flow.advance(prepared['run'], 'market', self.f.file(public))
+                frozen = self.f.freeze_market(prepared['run'], public)
                 portfolio = read(frozen['portfolio_context'])
                 self.assertEqual(portfolio['market_result']['payload']['market_assessment'], expected)
                 result = run_flow.advance(prepared['run'], 'observe',

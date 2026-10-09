@@ -88,6 +88,12 @@ class RunFlowTests(unittest.TestCase):
     def file(self, value):
         self.seq += 1; p = self.f.base / ('authored-'+str(self.seq)+'.json');create(p,value);return p
 
+    def freeze_market(self, run, public):
+        # Synthetic authored results exercise the same candidate binding as
+        # production; this helper does not simulate model semantic review.
+        candidate = run_flow.advance(run, 'market', self.file(public), check_only=True)
+        return run_flow.advance(run, 'market', candidate['market_candidate'])
+
     def authored(self, output):
         value = read(output['observation_template'])
         ctx = read(self.d / 'sensing-context.json')

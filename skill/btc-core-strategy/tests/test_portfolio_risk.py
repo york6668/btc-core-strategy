@@ -106,7 +106,7 @@ class MomentumContinuityTests(unittest.TestCase):
                     observed_public['applicability_review'].update(outcome='EVIDENCE_LIMITED',refs=[],
                         explanation='The synthetic prior decision has no adopted momentum review.',
                         limitations='The actual new study is still required.')
-                    frozen_observation=run_flow.advance(prepared['run'],'market',adapter.file(observed_public))
+                    frozen_observation=adapter.freeze_market(prepared['run'],observed_public)
                     private={k:authored[k] for k in ('recommendation_checks','main_evaluation')}
                     private['allocation_review']={'market_result_hash':frozen_observation['market_result_hash'],
                         'portfolio_risk_hash':None,'strategy_advice_hash':None,
@@ -223,7 +223,7 @@ class PublicationTests(unittest.TestCase):
             public['applicability_review'].update(outcome='EVIDENCE_LIMITED',
                 explanation='Synthetic public thesis check retains an explicit evidence gap.',
                 refs=[], limitations='Synthetic independent confirmation remains incomplete.')
-            frozen = run_flow.advance(prepared['run'], 'market', adapter.file(public))
+            frozen = adapter.freeze_market(prepared['run'], public)
             core = storage.current(root)['assessment']; current = loop.risk(core)
             private = {key: authored[key] for key in ('recommendation_checks', 'main_evaluation')}
             private['allocation_review'] = {
@@ -286,7 +286,7 @@ class HourlyTests(unittest.TestCase):
         p = run_flow.prepare(f.root, f.f.f.project, 'SYNTHETIC_R7', f.f.d,
                             f.f.raw_file, agent_id='SYNTHETIC_MAIN', workflow_revision=7)
         public = f.public(p)
-        frozen = run_flow.advance(p['run'], 'market', f.f.file(public))
+        frozen = f.f.freeze_market(p['run'], public)
         context = read(frozen['portfolio_context'])
         self.assertIn('portfolio_risk', context)
         self.assertIsNone(context['portfolio_risk'])

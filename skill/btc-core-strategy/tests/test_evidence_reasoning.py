@@ -218,7 +218,7 @@ class EvidenceReasoningWorkflowTests(unittest.TestCase):
         public['applicability_review'].update(outcome='EVIDENCE_LIMITED', refs=[],
             explanation='Synthetic independent confirmation remains incomplete.',
             limitations='Await the actual independent assessment.')
-        frozen = run_flow.advance(prepared['run'], 'market', adapter.file(public))
+        frozen = adapter.freeze_market(prepared['run'], public)
         private = {k: authored[k] for k in ('recommendation_checks', 'main_evaluation')}
         private['allocation_review'] = {
             'market_result_hash': frozen['market_result_hash'],

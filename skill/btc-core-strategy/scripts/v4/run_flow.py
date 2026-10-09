@@ -579,6 +579,11 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                 'next': 'Read all required candidate material and review its actual evidence scope; '
                         'after corrections and review, freeze this same candidate with --stage market --input <market_candidate>.'}
     with locked(d):
+        # Existing freezes retain their identity and legacy recovery path.
+        # A new freeze must use the exact exported public candidate, not a
+        # freshly composed or copied judgment that bypasses the review step.
+        require(candidate is not None or (d / 'market-result.json').is_file(),
+                'new public result requires --check-only, actual candidate reread, then --input <market_candidate>')
         path = save(d / 'market-result.json', frozen)
         core = storage.current(root)['assessment']
         portfolio = {'market_result': frozen, 'recommendations': core.get('recommendations'),
