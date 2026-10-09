@@ -56,6 +56,59 @@ class DynamicFactorEvidenceTests(unittest.TestCase):
                            'counter_refs': [] if counter_refs is None else counter_refs}],
                 'summary': '这是模型当前采用的解释，未规定指标数量或权重。'}
 
+    def test_freeze_names_missing_fields_and_allows_corrected_retry(self):
+        spec = {k: deepcopy(v) for k, v in self.bundle.items() if k not in ('schema', 'evidence_id')}
+        files = {'historical_anchor': self.base / 'base-source.json'}
+        original = (self.directory / 'evidence.json').read_bytes()
+        for field in ('parent_id', 'cutoff', 'raw_hash', 'id'):
+            broken = deepcopy(spec)
+            del (broken['sources'][0] if field in ('raw_hash', 'id') else broken)[field]
+            target = self.base / ('retry-' + field)
+            with self.subTest(field=field), self.assertRaisesRegex(Invalid, 'missing=.*' + field):
+                evidence.freeze(broken, files, target)
+            self.assertFalse(target.exists())
+            recovered = evidence.freeze(spec, files, target)
+            self.assertEqual(evidence.resolve(recovered, target, self.ref), '108')
+            with self.assertRaisesRegex(Invalid, 'already exists'):
+                evidence.freeze(spec, files, target)
+        with self.assertRaisesRegex(Invalid, 'raw file missing for source: historical_anchor'):
+            evidence.freeze(spec, {}, self.base / 'missing-file')
+        self.assertEqual((self.directory / 'evidence.json').read_bytes(), original)
+
+    def test_invalid_claim_does_not_leave_a_published_bundle(self):
+        spec = {k: deepcopy(v) for k, v in self.bundle.items() if k not in ('schema', 'evidence_id')}
+        spec['verified_facts'] = [{'id': 'claim', 'statement': 'Synthetic monthly value',
+                                   'refs': [dict(self.ref, value_hash=digest('invented'))]}]
+        target = self.base / 'retry-claim'
+        files = {'historical_anchor': self.base / 'base-source.json'}
+        with self.assertRaisesRegex(Invalid, 'raw value reference mismatch'):
+            evidence.freeze(spec, files, target)
+        self.assertFalse(target.exists())
+        self.assertEqual(list(self.base.glob('.retry-claim.freeze-*')), [])
+        spec['verified_facts'][0]['refs'] = [self.ref]
+        recovered = evidence.freeze(spec, files, target)
+        self.assertEqual(evidence.resolve(recovered, target, self.ref, verified=True), '108')
+
+    def test_write_failure_can_retry_without_replacing_existing_evidence(self):
+        spec = {k: deepcopy(v) for k, v in self.bundle.items() if k not in ('schema', 'evidence_id')}
+        target = self.base / 'retry-write'
+        files = {'historical_anchor': self.base / 'base-source.json'}
+        original_create = evidence.create
+        def fail_metadata(path, value):
+            if Path(path).name == 'evidence.json':
+                raise OSError('synthetic disk write failure')
+            return original_create(path, value)
+        with mock.patch.object(evidence, 'create', side_effect=fail_metadata):
+            with self.assertRaisesRegex(OSError, 'disk write failure'):
+                evidence.freeze(spec, files, target)
+        self.assertFalse(target.exists())
+        recovered = evidence.freeze(spec, files, target)
+        original = (target / 'evidence.json').read_bytes()
+        with self.assertRaisesRegex(Invalid, 'already exists'):
+            evidence.freeze(spec, files, target)
+        self.assertEqual((target / 'evidence.json').read_bytes(), original)
+        self.assertEqual(evidence.resolve(recovered, target, self.ref), '108')
+
     def test_open_factor_names_and_empty_selection_are_valid_without_a_catalogue(self):
         value = self.assessment()
         self.assertIs(factors.validate(value, self.bundle, self.directory), value)

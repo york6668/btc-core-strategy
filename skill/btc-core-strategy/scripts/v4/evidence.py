@@ -6,9 +6,28 @@ from urllib.parse import urlsplit
 import ipaddress
 import json
 import re
+import tempfile
 from datetime import timedelta
 
-from .common import create, digest, exact, instant, now, numbered, pointer, read, require, text
+from .common import create, digest, exact, fsync_dir, instant, now, numbered, pointer, read, require, text
+
+
+def _fields(value, fields, name, optional=()):
+    require(isinstance(value, dict), name + ' must be an object')
+    missing = set(fields.split()) - value.keys()
+    extra = value.keys() - set(fields.split()) - set(optional)
+    require(not missing and not extra, name + ': invalid fields; missing=' +
+            ','.join(sorted(missing)) + '; unexpected=' + ','.join(sorted(extra)))
+
+
+def _source_fields(sources):
+    require(isinstance(sources, list) and sources, 'raw sources required')
+    for index, source in enumerate(sources):
+        _fields(source, 'id origin url trust published_at retrieved_at start end raw_hash',
+                'source[' + str(index) + ']')
+        text(source['id'], 'source id')
+        require(isinstance(source['raw_hash'], str) and
+                re.fullmatch(r'sha256:[a-f0-9]{64}', source['raw_hash']), 'raw hash invalid')
 
 
 def canonical_origin(url):
@@ -26,16 +45,15 @@ def canonical_origin(url):
 
 
 def validate(bundle, directory):
-    exact(bundle, 'schema evidence_id parent_id cutoff sources measurements verified_facts candidates gaps handoff'+(' report_products' if 'report_products' in bundle else '')+(' collector' if 'collector' in bundle else ''), 'EvidenceBundle')
+    _fields(bundle, 'schema evidence_id parent_id cutoff sources measurements verified_facts candidates gaps handoff',
+            'EvidenceBundle', ('report_products', 'collector'))
     require(bundle['schema'] == 'BTC_EVIDENCE_V4', 'wrong evidence schema')
     require(bundle['evidence_id'] == digest({k: v for k, v in bundle.items() if k != 'evidence_id'}), 'evidence identity mismatch')
     cutoff = instant(bundle['cutoff'])
     require(cutoff <= instant(now()) + timedelta(seconds=5), 'assessment cutoff is in the future')
-    require(isinstance(bundle['sources'], list) and bundle['sources'], 'raw sources required')
+    _source_fields(bundle['sources'])
     ids = set()
     for source in bundle['sources']:
-        exact(source, 'id origin url trust published_at retrieved_at start end raw_hash', 'source')
-        text(source['id'], 'source id')
         require(source['id'] not in ids, 'duplicate source id')
         ids.add(source['id'])
         text(source['origin'], 'canonical origin')
@@ -59,7 +77,6 @@ def validate(bundle, directory):
         require(start <= end <= retrieved <= cutoff and (published is None or published <= retrieved),
                 'source exceeds assessment time boundary')
         raw_hash = source['raw_hash']
-        require(isinstance(raw_hash, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', raw_hash), 'raw hash invalid')
         payload = Path(directory) / 'raw' / (raw_hash[7:] + '.json')
         require(payload.is_file() and digest(payload.read_bytes()) == raw_hash, 'missing or changed raw evidence')
     for group in ('measurements', 'verified_facts'):
@@ -120,6 +137,10 @@ def origins(bundle, refs):
 def freeze(spec, raw_files, directory, parent=None):
     directory = Path(directory)
     require(not directory.exists(), 'evidence directory already exists')
+    _fields(spec, 'parent_id cutoff sources measurements verified_facts candidates gaps handoff',
+            'evidence specification', ('schema', 'evidence_id', 'report_products', 'collector'))
+    _source_fields(spec['sources'])
+    require(isinstance(raw_files, dict), 'raw files must be a source id to path object')
     if parent:
         old = validate(read(Path(parent) / 'evidence.json'), parent)
         require(spec['parent_id'] == old['evidence_id'], 'supplement parent mismatch')
@@ -131,16 +152,28 @@ def freeze(spec, raw_files, directory, parent=None):
     else:
         require(spec['parent_id'] is None, 'missing parent evidence')
     for source in spec['sources']:
-        payload = Path(raw_files[source['id']]).read_bytes()
-        require(digest(payload) == source['raw_hash'], 'source bytes mismatch')
-        target = directory / 'raw' / (source['raw_hash'][7:] + '.json')
-        if not target.exists():
-            create(target, payload)
+        require(source['id'] in raw_files, 'raw file missing for source: ' + source['id'])
+        require(isinstance(raw_files[source['id']], (str, Path)),
+                'raw file path invalid for source: ' + source['id'])
     bundle = dict(spec, schema='BTC_EVIDENCE_V4')
     bundle.pop('evidence_id', None)
     bundle['evidence_id'] = digest(bundle)
-    validate(bundle, directory)
-    create(directory / 'evidence.json', bundle)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    # Invalid claims or interrupted writes must not publish a partial bundle
+    # that prevents retrying this same evidence preparation.
+    with tempfile.TemporaryDirectory(prefix='.' + directory.name + '.freeze-', dir=directory.parent) as temporary:
+        stage = Path(temporary)
+        for source in spec['sources']:
+            payload = Path(raw_files[source['id']]).read_bytes()
+            require(digest(payload) == source['raw_hash'], 'source bytes mismatch')
+            target = stage / 'raw' / (source['raw_hash'][7:] + '.json')
+            if not target.exists():
+                create(target, payload)
+        validate(bundle, stage)
+        create(stage / 'evidence.json', bundle)
+        require(not directory.exists(), 'evidence directory already exists')
+        stage.rename(directory)
+        fsync_dir(directory.parent)
     return bundle
 
 
