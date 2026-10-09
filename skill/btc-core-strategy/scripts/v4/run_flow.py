@@ -526,15 +526,21 @@ def _already_completed(run, stage, intent):
     return None
 
 
-def advance_market(run_path, input_path=None, root=None, project=None, template_path=None, answers_path=None):
-    """Freeze the public result before exposing any portfolio material."""
+def advance_market(run_path, input_path=None, root=None, project=None, template_path=None, answers_path=None, *, check_only=False):
+    """Expose the actual public candidate for review, then freeze its contents."""
     run = read_run(run_path, root, project)
     d, root = Path(run['directory']), Path(run['root'])
     ctx, raw = read(d / 'sensing-context.json'), read(run['market'])
     require(ctx.get('revision', 1) >= 5, 'separate market phase requires revision 5')
+    candidate = None
     if input_path is not None:
         require(template_path is None and answers_path is None, 'use input or template/answers')
         authored = read(input_path)
+        if isinstance(authored, dict) and 'payload' in authored:
+            candidate = authored
+            exact(candidate, 'payload result_hash market_context_id', 'public market candidate')
+            require(candidate['result_hash'] == digest(candidate['payload']), 'public market candidate changed')
+            authored = candidate['payload']
     else:
         require(template_path is not None and answers_path is not None, 'market template and answers required')
         require(Path(template_path).resolve() == d / 'market-template.json', 'use this run market template')
@@ -551,6 +557,27 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
     sensing.validate_public(root, ctx, raw, authored, run['evidence'])
     frozen = {'payload': authored, 'result_hash': digest(authored),
               'market_context_id': market_state.market_projection(ctx)['market_context_id']}
+    candidate_path = d / ('market-candidate-' + digest(frozen)[7:] + '.json')
+    if candidate is not None:
+        require(candidate['market_context_id'] == frozen['market_context_id'],
+                'public market candidate context changed')
+        require(candidate_path.is_file() and read(candidate_path) == frozen,
+                'use the actual prechecked public market candidate')
+    if check_only:
+        with locked(d):
+            path = save(candidate_path, frozen)
+            material = save(d / ('market-review-' + digest(frozen)[7:] + '.json'),
+                {'market_candidate': frozen,
+                 'instructions': market_state.EVIDENCE_REASONING_REVIEW + market_state.PUBLIC_RESULT_REVIEW})
+            reads = material_reads.make(d, 'market-review', material,
+                on_demand={'public_context': str(d / 'context.json'),
+                           'reference_index': str(d / 'reference-index.json'),
+                           'raw_market': run['market']})
+        return {'valid': True, 'status': 'MARKET_CANDIDATE_READY', 'market_candidate': path,
+                'market_result_hash': frozen['result_hash'], 'review_material': material,
+                'read_set': {'market_review': reads}, 'scope': 'structure_and_bindings_only',
+                'next': 'Read all required candidate material and review its actual evidence scope; '
+                        'after corrections and review, freeze this same candidate with --stage market --input <market_candidate>.'}
     with locked(d):
         path = save(d / 'market-result.json', frozen)
         core = storage.current(root)['assessment']
@@ -592,9 +619,9 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
 
 
 def advance(run_path, stage, input_path=None, root=None, project=None, template_path=None, answers_path=None, *, check_only=False):
-    require(not check_only or stage == 'main', 'check-only applies to the main stage')
+    require(not check_only or stage in ('market', 'main'), 'check-only applies to the market or main stage')
     if stage == 'market':
-        return advance_market(run_path, input_path, root, project, template_path, answers_path)
+        return advance_market(run_path, input_path, root, project, template_path, answers_path, check_only=check_only)
     require(stage in ('observe', 'main', 'report'), 'invalid run stage')
     run = read_run(run_path, root, project)
     d, root = Path(run['directory']), Path(run['root'])

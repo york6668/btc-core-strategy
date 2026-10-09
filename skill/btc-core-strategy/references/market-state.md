@@ -47,7 +47,7 @@ summary 给已经完成取舍的综合方向、适用周期及主导理由，说
 
 ## 小时与研究入口
 
-revision 5 的 run-prepare 首先返回纯市场 context、market_template 和原始引用入口。`run-advance --stage market` 冻结市场结果后才返回 portfolio_context。按原 observation_template 填仓位 recommendation_checks 与 main_evaluation，再 `--stage observe`；市场字段由冻结结果承接，不重新生成。完整 sensing-context 仅供确定性校验，不作为市场阶段模型材料。
+revision 5 及以后的 run-prepare 首先返回纯市场 context、market_template 和原始引用入口。填写后先用 `run-advance --stage market --check-only` 导出实际合成候选，完整回读 read_set.market_review 的 required，再按证据审阅所有公开字段。assessment_summary、changes_since_hour/deep 及适用性等摘要可能独立进入下一轮，其分句范围在自身明确上下文中成立，不能靠旁边详细依据或原始引用补足限定。历史摘要对照原证据核验；范围含混时在本轮结果澄清，保留旧记录及原研究身份，不据含混输入形成无条件规划。修正后重新预检并回读；完成模型审阅后另行用 `run-advance --stage market --input <market_candidate>` 冻结同一候选，才返回 portfolio_context。预检仅检查结构与绑定，不证明语义通过，不增加关键词判断或已审阅标签。按原 observation_template 填仓位 recommendation_checks 与 main_evaluation，再 `--stage observe`；市场字段由冻结结果承接，不重新生成。完整 sensing-context 仅供确定性校验，不作为市场阶段模型材料。
 
 独立 Astra 通过 `research-read --phase independent` 读取公开包并先完成上述 JSON；登记真实独立结果后，通过 `--phase portfolio --independent-id <id>` 读取事实，追加个人应对。Sol 映射的 outlook、factor_assessment 和市场正文必须与冻结结果一致，再交同一 Astra 审阅完整候选。公开证据需要修正时，在同一研究中由同一 Astra 返回修正后的纯市场 JSON，用 `research-market-amendment --independent <id> --rollout <真实父运行> --dispatch <followup调用> --returned <真实返回> [--additional <冻结补证目录>]` 记录为续研修正；保留原独立来源，不能把已见过仓位的续研重标为全新独立研究。原生代理运行用 `--rollout <代理真实运行> --turn <已完成轮次>` 替代 `--dispatch/--returned`，同样校验实际 Astra/max 回复。随后重新映射并审阅。
 

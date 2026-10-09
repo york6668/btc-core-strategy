@@ -51,7 +51,7 @@ BTC 回踩后的卖压与需求研判，以及持续下跌、筑底等相关问�
 
 节点启用 Docker 后，每轮同时按[持续分析契约](references/continuous-analysis.md)读取返回的 continuous-public；独立市场冻结后再读 continuous-personal。通过 BTC MCP 或 `btc-core data` 接续所有有效对象和未决条件，维护未出现在报告中的对象，提交实际复核并保留原期限、事实版本及未知。新增数据层不改变研究模型、市场优先顺序或真实发送协议。
 
-生产使用 `$BTC_PYTHON` 和 `scripts/strategy_v4.py`。 精确承接使用固定版本 `run-value-ref` 返回的摘要，引用类型按本轮 vocabulary 填写；准备失败按运行入口显式复用冻结输入，不重新采集或自动重绑冲突。按运行入口执行 `run-prepare`，新入口 revision 7 先 market 再 observe；分阶段 `run-advance --template <原模板> --answers <本轮判断JSON>`；旧 --input 完整稿兼容。只写判断及受影响内容，原始引用和已写源稿的精确承接由程序完成，接口见运行入口。`run-material` 默认只提供报告必要性材料；主评估用 `--stage main`，决定报告后用 `--stage report-body`。研究或绑定变化只刷新并复核受影响部分，失效模板不静默重绑；映射与正式写入使用同一校验的无写入预检。
+生产使用 `$BTC_PYTHON` 和 `scripts/strategy_v4.py`。 精确承接使用固定版本 `run-value-ref` 返回的摘要，引用类型按本轮 vocabulary 填写；准备失败按运行入口显式复用冻结输入，不重新采集或自动重绑冲突。按运行入口执行 `run-prepare`，新入口 revision 7 先 market 再 observe；市场填写先用 `--stage market --check-only` 导出实际候选并完整回读审阅，再以 `--input <market_candidate>` 冻结同一内容，不能写判断后同次调用直接冻结；分阶段 `run-advance --template <原模板> --answers <本轮判断JSON>`；旧 --input 完整稿兼容。只写判断及受影响内容，原始引用和已写源稿的精确承接由程序完成，接口见运行入口。`run-material` 默认只提供报告必要性材料；主评估用 `--stage main`，决定报告后用 `--stage report-body`。研究或绑定变化只刷新并复核受影响部分，失效模板不静默重绑；映射与正式写入使用同一校验的无写入预检。
 
 验收沿真实材料进入研究、独立报告、映射批准、正式采纳、后续嗅探和实际报告逐段检查；指出具体输入输出如何支持判断，无法观察的环节保留未验证。程序测试仅证明接口与恢复行为。方法升级后的完整重评继续原研究与当前指针，不另建策略或常驻代理。
 

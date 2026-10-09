@@ -50,7 +50,7 @@ def main(argv=None):
     choice.add_argument('--input', help='complete authored input; legacy interface')
     choice.add_argument('--answers', help='authored judgment JSON, merged with --template')
     p.add_argument('--template', help='unchanged stage template from this run, required with --answers')
-    p.add_argument('--check-only', action='store_true', help='main stage: validate without writing any artifact or strategy state')
+    p.add_argument('--check-only', action='store_true', help='market: export a public candidate for review without freezing or exposing portfolio material; main: validate without writing artifacts or strategy state')
     p.add_argument('--receipt', help='write the result to <run directory>/<stage>-stage-receipt.json; never redirect stdout into program-owned artifacts')
     p = sub.add_parser('migrate')
     p.add_argument('--state', required=True)

@@ -156,6 +156,81 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertFalse((self.f.d / 'market-result.json').exists())
         self.assertFalse(list(self.f.d.glob('portfolio-context*')))
 
+    def test_actual_public_candidate_is_readable_before_freeze_and_preserves_reviewed_scope(self):
+        p = self.prepare(); public = self.public(p)
+        ambiguous = '甲所与乙所价格回升；主动成交差额为负，持仓量下降。'
+        scoped = '甲所与乙所价格回升；甲所现货与永续主动成交差额为负，甲所永续持仓量下降。'
+        public['market_review']['changes_since_deep'] = [ambiguous]
+        owners = {str(f): f.read_bytes() for f in self.root.rglob('*') if f.is_file()}
+        fact_version = facts(self.f.f.project)
+        candidate = run_flow.advance(p['run'], 'market', template_path=p['market_template'],
+            answers_path=self.f.file(public), check_only=True)
+        # The program exposes the real ambiguity; it does not claim to judge it.
+        self.assertEqual(candidate['scope'], 'structure_and_bindings_only')
+        original = Path(candidate['market_candidate']).read_bytes()
+        self.assertEqual(read(candidate['market_candidate'])['payload'], public)
+        material = read(candidate['review_material'])
+        self.assertEqual(material['market_candidate'], read(candidate['market_candidate']))
+        self.assertIn(market_state.PUBLIC_RESULT_REVIEW, material['instructions'])
+        view = read(candidate['read_set']['market_review'])
+        parts = ''.join(Path(part).read_text() for item in view['required'] for part in item['parts'])
+        self.assertIn(ambiguous, parts)
+        self.assertFalse((self.f.d / 'market-result.json').exists())
+        self.assertFalse(list(self.f.d.glob('portfolio-*')))
+        self.assertEqual(owners, {str(f): f.read_bytes() for f in self.root.rglob('*') if f.is_file()})
+        self.assertEqual(fact_version, facts(self.f.f.project))
+        # A model correction creates a new candidate, retaining the original.
+        public['market_review']['changes_since_deep'] = [scoped]
+        reviewed = run_flow.advance(p['run'], 'market', self.f.file(public), check_only=True)
+        frozen = run_flow.advance(p['run'], 'market', reviewed['market_candidate'])
+        self.assertEqual(Path(frozen['market_result']).read_bytes(), Path(reviewed['market_candidate']).read_bytes())
+        self.assertEqual(original, Path(candidate['market_candidate']).read_bytes())
+        result = run_flow.advance(p['run'], 'observe', template_path=frozen['observation_template'],
+            answers_path=self.f.file(self.personal(frozen)))
+        saved = sensing.observation(self.root, result['observation_id'])['review']
+        self.assertEqual(saved['market_review']['changes_since_deep'], [scoped])
+        following = self.prepare(self.f.f.base / 'following')
+        history = read(following['context'])['historical_hypotheses']['previous_market_observation']
+        self.assertEqual(history['market_review']['changes_since_deep'], [scoped])
+
+    def test_candidate_damage_and_stale_public_context_cannot_freeze(self):
+        p = self.prepare(); public = self.public(p)
+        result = run_flow.advance(p['run'], 'market', self.f.file(public), check_only=True)
+        candidate = read(result['market_candidate'])
+        changed = deepcopy(candidate)
+        changed['payload']['market_review']['assessment_summary'] = 'Changed after review.'
+        with self.assertRaisesRegex(Invalid, 'candidate changed'):
+            run_flow.advance(p['run'], 'market', self.f.file(changed))
+        changed['result_hash'] = digest(changed['payload'])
+        with self.assertRaisesRegex(Invalid, 'actual prechecked'):
+            run_flow.advance(p['run'], 'market', self.f.file(changed))
+        changed = dict(candidate, market_context_id=digest('different public context'))
+        with self.assertRaisesRegex(Invalid, 'candidate context changed'):
+            run_flow.advance(p['run'], 'market', self.f.file(changed))
+        latest = sensing.context(self.root, self.f.f.project / '.strategy/market_observation.sqlite3',
+            self.f.f.project, read(read(p['run'])['market']), evidence_dir=read(p['run'])['evidence'], workflow_revision=6)
+        latest['accumulation'] = {'changed': 'New public observation after candidate review.'}
+        with mock.patch('v4.sensing.context', return_value=latest):
+            with self.assertRaisesRegex(Invalid, 'public market inputs changed'):
+                run_flow.advance(p['run'], 'market', result['market_candidate'])
+        self.assertFalse((self.f.d / 'market-result.json').exists())
+        self.assertFalse(list(self.f.d.glob('portfolio-context*')))
+
+    def test_market_check_only_cli_exposes_candidate_and_other_stages_keep_their_boundaries(self):
+        import strategy_v4
+        p = self.prepare(); public = self.public(p)
+        receipt = self.f.d.resolve() / 'market-stage-receipt.json'
+        with mock.patch('sys.stdout'):
+            code = strategy_v4.main(['--root', str(self.root), '--project', str(self.f.f.project),
+                'run-advance', '--run', p['run'], '--stage', 'market', '--template', p['market_template'],
+                '--answers', str(self.f.file(public)), '--check-only', '--receipt', str(receipt)])
+        self.assertEqual(code, 0)
+        self.assertEqual(read(receipt)['status'], 'MARKET_CANDIDATE_READY')
+        self.assertFalse((self.f.d / 'market-result.json').exists())
+        for stage in ('observe', 'report'):
+            with self.assertRaisesRegex(Invalid, 'market or main stage'):
+                run_flow.advance(p['run'], stage, check_only=True)
+
     def test_completed_report_material_contains_results_not_internal_factor_and_module_prose(self):
         p, frozen, public = self.freeze()
         result = run_flow.advance(p['run'], 'observe', template_path=frozen['observation_template'], answers_path=self.f.file(self.personal(frozen)))
