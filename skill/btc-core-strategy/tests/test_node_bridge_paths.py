@@ -46,6 +46,21 @@ class NativePaths(unittest.TestCase):
         self.assertEqual(node_bridge.subcommand(['--project','run-advance','--root','/r','run-value-ref']),'run-value-ref')
         self.assertEqual(node_bridge.subcommand(['--project','/p','--root','/r','--full','report-care']),'report-care')
 
+    def test_read_set_path_keeps_native_caller_meaning_before_container_dispatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = ['--project','project','--root','store','run-read','--run','work/run.json',
+                    '--read-set','work/reading/market/read-set.json']
+            actual = node_bridge.absolute_paths(args, folder)
+            self.assertEqual(actual[actual.index('--read-set')+1], str(Path(folder)/'work/reading/market/read-set.json'))
+            self.assertEqual(node_bridge.subcommand(actual), 'run-read')
+
+    def test_reading_immutable_material_does_not_enter_service_writer_or_sync_facts(self):
+        with mock.patch('node_config.load', side_effect=AssertionError('no service lookup')), \
+             mock.patch.object(node_bridge,'sync_facts',side_effect=AssertionError('no fact sync')), \
+             mock.patch.object(node_bridge.subprocess,'run',side_effect=AssertionError('no subprocess')):
+            self.assertIsNone(node_bridge.forward_if_enabled(['--project','/p','--root','/p/.strategy/v4',
+                'run-read','--run','/p/run/run.json','--read-set','/p/run/reading/view/read-set.json']))
+
     def test_delivery_receipt_remains_an_input_through_native_bridge(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);receipt=root/'receipt.json';receipt.write_text('{"synthetic":"INPUT_RECEIPT"}')

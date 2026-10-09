@@ -586,14 +586,18 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
             material = save(d / ('market-review-' + digest(frozen)[7:] + '.json'),
                 {'market_candidate': frozen,
                  'instructions': market_state.EVIDENCE_REASONING_REVIEW + market_state.PUBLIC_RESULT_REVIEW})
-            reads = material_reads.make(d, 'market-review', material,
+            reads = material_reads.make(d, 'market-review', material, compact=True,
                 on_demand={'public_context': str(d / 'context.json'),
                            'reference_index': str(d / 'reference-index.json'),
                            'raw_market': run['market']})
         return {'valid': True, 'status': 'MARKET_CANDIDATE_READY', 'market_candidate': path,
                 'market_result_hash': frozen['result_hash'], 'review_material': material,
                 'read_set': {'market_review': reads}, 'scope': 'structure_and_bindings_only',
-                'next': 'Read all required candidate material and review its actual evidence scope; '
+                'review_read': {'arguments': ['run-read', '--run', str(run_path), '--read-set', reads, '--cursor', '0'],
+                                'max_output_tokens': 16000},
+                'next': 'Use review_read to return actual bounded content; follow next_cursor until complete. '
+                        'Do not replace complete reread with selected fields or file parsing. '
+                        'Review all candidate fields in their owning object and actual downstream scope; '
                         'after corrections and review, freeze this same candidate with --stage market --input <market_candidate>.'}
     with locked(d):
         # Existing freezes retain their identity and legacy recovery path.

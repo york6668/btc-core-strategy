@@ -46,7 +46,7 @@ def _walk(value, path=''):
             yield from _walk(child, path + '/' + str(i))
 
 
-def make(directory, stage, material, base=None, required=None, on_demand=None):
+def make(directory, stage, material, base=None, required=None, on_demand=None, *, compact=False):
     """Reference exact unchanged subtrees of this run's initial reading set.
 
     A new conversation reads the base first. Existing readers can read only the
@@ -67,7 +67,8 @@ def make(directory, stage, material, base=None, required=None, on_demand=None):
                 known.setdefault(digest(child), {'read_set': str(cursor), 'material': prior['material'],
                                                 'pointer': path})
         cursor = prior.get('base_read_set')
-    identity = {'view_revision': 2, 'value': value, 'material': str(material), 'base': base,
+    revision = 3 if compact else 2
+    identity = {'view_revision': revision, 'value': value, 'material': str(material), 'base': base,
                 'required': {k: digest(Path(p).read_bytes()) for k, p in (required or {}).items()},
                 'on_demand': on_demand or {}}
     target = directory / 'reading' / (stage + '-' + digest(identity)[7:23])
@@ -79,11 +80,16 @@ def make(directory, stage, material, base=None, required=None, on_demand=None):
         key = digest(child)
         if key in known:
             return {'$read_ref': known[key]}
-        if isinstance(child, (dict, list)) and len(json.dumps(child, ensure_ascii=False)) >= 800:
+        reusable = isinstance(child, (dict, list, str)) if compact else isinstance(child, (dict, list))
+        if reusable and len(json.dumps(child, ensure_ascii=False)) >= (120 if compact else 800):
             if key in seen:
-                return {'$read_ref': seen[key]}
-            seen[key] = {'read_set': str(target / 'read-set.json'),
-                         'material': origin, 'pointer': path}
+                reference = {'$read_ref': seen[key]}
+                # Only exact repeated bytes are reused. Short local pointers
+                # retain every parent object and all differing conditions.
+                if not compact or len(json.dumps(child, ensure_ascii=False)) > len(json.dumps(reference, ensure_ascii=False)) + 32:
+                    return reference
+            seen.setdefault(key, {'pointer': path} if compact and origin == str(material) else
+                {'read_set': str(target / 'read-set.json'), 'material': origin, 'pointer': path})
         if isinstance(child, str) and (path.endswith('/conclusion/narrative') or path.endswith('/report_narrative')) and child:
             report_dir = directory / 'reading' / 'reports' / key[7:]
             full = _save(report_dir / 'full.txt', child.encode('utf-8'))
@@ -98,23 +104,79 @@ def make(directory, stage, material, base=None, required=None, on_demand=None):
             return [view(v, path + '/' + str(i), origin) for i, v in enumerate(child)]
         return child
 
-    body = json.dumps(view(value), ensure_ascii=False, indent=2) + '\n'
+    formatting = {'separators': (',', ':')} if compact else {'indent': 2}
+    body = json.dumps(view(value), ensure_ascii=False, **formatting) + '\n'
     reads = [{'role': 'stage_context', 'parts': _parts(target, 'context', body), 'characters': len(body)}]
+    if compact:
+        reads[0]['content_hash'] = digest(body.encode('utf-8'))
     required_reads = []
     for role, path in (required or {}).items():
-        content = (json.dumps(view(read(path), origin=str(path)), ensure_ascii=False, indent=2) + '\n'
+        content = (json.dumps(view(read(path), origin=str(path)), ensure_ascii=False, **formatting) + '\n'
                    if Path(path).suffix == '.json' else Path(path).read_text(encoding='utf-8'))
         required_reads.append({'role': role, 'parts': _parts(target, role, content), 'characters': len(content)})
+        if compact:
+            required_reads[-1]['content_hash'] = digest(content.encode('utf-8'))
     reads.extend(report_reads.values())
     reads.extend(required_reads)
-    result = {'schema': 'BTC_STAGE_READ_SET_V1', 'view_revision': 2, 'stage': stage,
+    result = {'schema': 'BTC_STAGE_READ_SET_V1', 'view_revision': revision, 'stage': stage,
               'material': str(material), 'material_hash': digest(value), 'base_read_set': base,
               'instructions': 'Read all required parts in order, batching only within output limits. '
                   'Parts concatenate exactly; a part is not a complete document. '
                   'References reuse exact content, not prior judgments. '
-                  'In a new conversation read the base read_set first. Paths do not prove review.',
+                  'In a new conversation read the base read_set first. Paths do not prove review.' +
+                  (' A pointer-only $read_ref reuses the exact earlier value in this material; '
+                   'retain its owning object when interpreting or extracting it. Use run-read and '
+                   'follow next_cursor until complete; complete means all content emitted, not semantic approval.' if compact else ''),
               'required': reads, 'on_demand': on_demand or {}}
     return _save(target / 'read-set.json', result)
+
+
+def read_page(read_set, cursor=0, max_characters=12000, *, allowed_directory=None):
+    """Return bounded actual content, not selected judgments or a read receipt.
+
+    Cursor covers all required documents and parts, including final fragments.
+    No persistent state is changed; output completion cannot approve semantics.
+    """
+    read_set = Path(read_set).resolve()
+    allowed = Path(allowed_directory).resolve() if allowed_directory else read_set.parent.parent
+    require(allowed in read_set.parents, 'read set escapes run reading directory')
+    index = read(read_set)
+    require(index.get('schema') == 'BTC_STAGE_READ_SET_V1', 'invalid read set')
+    material = Path(index['material']).resolve()
+    require(allowed.parent in material.parents, 'reading material escapes run directory')
+    require(digest(read(material)) == index['material_hash'], 'reading material changed')
+    require(isinstance(cursor, int) and cursor >= 0, 'invalid reading cursor')
+    require(isinstance(max_characters, int) and 0 < max_characters <= 12000, 'reading output budget must be 1..12000 characters')
+    entries, total = [], 0
+    for document in index['required']:
+        texts = []
+        for name in document['parts']:
+            path = Path(name).resolve()
+            require(allowed in path.parents, 'reading part escapes run reading directory')
+            content = path.read_text(encoding='utf-8')
+            texts.append(content)
+            entries.append((document['role'], str(path), total, content))
+            total += len(content)
+        joined = ''.join(texts)
+        require(len(joined) == document['characters'], 'reading part length changed')
+        if document.get('content_hash'):
+            actual_hash = digest(joined) if document['role'] == 'complete_report' else digest(joined.encode('utf-8'))
+            require(actual_hash == document['content_hash'], 'reading part content changed')
+    require(cursor <= total, 'reading cursor exceeds required material')
+    end = min(total, cursor + max_characters)
+    segments = []
+    for role, path, start, content in entries:
+        left, right = max(cursor, start), min(end, start + len(content))
+        if left < right:
+            segments.append({'role': role, 'part': path, 'start': left-start, 'end': right-start,
+                             'content': content[left-start:right-start]})
+    return {'read_set': str(read_set), 'material': str(material), 'material_hash': index['material_hash'],
+            'base_read_set': index.get('base_read_set'), 'cursor': cursor,
+            'next_cursor': end if end < total else None, 'complete': end == total,
+            'total_characters': total, 'segments': segments,
+            'recommended_max_output_tokens': 16000,
+            'next': 'Read the returned content. If tool output was truncated, repeat this cursor with a smaller budget. '
+                    'Follow next_cursor until complete, then perform the actual candidate review; output completion is not approval.'}
 
 
 def compose(template, answers):

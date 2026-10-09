@@ -1,6 +1,7 @@
 """Frozen adapter scenarios; all stores and account text are synthetic and isolated."""
 from copy import deepcopy
 from pathlib import Path
+import json
 import sys
 import unittest
 from unittest import mock
@@ -103,6 +104,25 @@ class RunFlowTests(unittest.TestCase):
             'refs':['windows.4h.binance_spot_1h'],'explanation':'Synthetic evidence leaves the current advice applicable.'} for side in ('upper_short','lower_spot')],
             main_evaluation={'required':False,'reasons':[]},factor_checks={'items':[], 'summary':'Synthetic open factor selection, evidence remains limited.'})
         return value
+
+    def test_run_read_cli_returns_content_and_next_cursor_without_completing_a_stage(self):
+        import io
+        from contextlib import redirect_stdout
+        import strategy_v4
+        prepared = self.prep()
+        before = run_flow.anchors(self.f.store, self.f.project)
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            code = strategy_v4.main(['--project', str(self.f.project), '--root', str(self.f.store),
+                'run-read', '--run', str(prepared['run']), '--read-set', prepared['read_set']['observe'],
+                '--max-characters', '29'])
+        self.assertEqual(code, 0)
+        packet = json.loads(stream.getvalue())
+        self.assertEqual(sum(len(v['content']) for v in packet['segments']), 29)
+        self.assertEqual(packet['next_cursor'], 29)
+        self.assertFalse(packet['complete'])
+        self.assertEqual(before, run_flow.anchors(self.f.store, self.f.project))
+        self.assertFalse((self.d / 'market-result.json').exists())
 
     def observe(self):
         prepared=self.prep();p=self.file(self.authored(prepared))

@@ -173,8 +173,18 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertEqual(material['market_candidate'], read(candidate['market_candidate']))
         self.assertIn(market_state.PUBLIC_RESULT_REVIEW, material['instructions'])
         view = read(candidate['read_set']['market_review'])
+        self.assertEqual(view['view_revision'], 3)
+        self.assertEqual(candidate['review_read']['arguments'][:3], ['run-read', '--run', str(p['run'])])
         parts = ''.join(Path(part).read_text() for item in view['required'] for part in item['parts'])
         self.assertIn(ambiguous, parts)
+        from v4 import material_reads
+        cursor, returned = 0, ''
+        while True:
+            page = material_reads.read_page(candidate['read_set']['market_review'], cursor, 400)
+            returned += ''.join(segment['content'] for segment in page['segments'])
+            if page['complete']: break
+            cursor = page['next_cursor']
+        self.assertEqual(returned, parts)
         self.assertFalse((self.f.d / 'market-result.json').exists())
         self.assertFalse(list(self.f.d.glob('portfolio-*')))
         self.assertEqual(owners, {str(f): f.read_bytes() for f in self.root.rglob('*') if f.is_file()})

@@ -14,7 +14,7 @@ import stat
 PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--answers',
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
-                '--retained-source-bindings', '--file', '--receipt', '--runtime-schedule')
+                '--retained-source-bindings', '--file', '--read-set', '--receipt', '--runtime-schedule')
 
 
 def receipt_path(argv, output):
@@ -83,6 +83,10 @@ def subcommand(argv):
 
 def forward_if_enabled(argv, *, requested_release=None):
     if os.environ.get('BTC_IN_CONTAINER') == '1':
+        return
+    if subcommand(argv) == 'run-read':
+        # Reading already materialized immutable files stays on the native
+        # node. No facts sync, service writer admission or projection rebuild.
         return
     import node_config
     config = node_config.load()

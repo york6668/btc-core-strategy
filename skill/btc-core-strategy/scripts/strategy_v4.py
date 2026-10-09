@@ -43,6 +43,11 @@ def main(argv=None):
     p.add_argument('--run', required=True)
     p.add_argument('--file', required=True)
     p.add_argument('--pointer', required=True)
+    p = sub.add_parser('run-read')
+    p.add_argument('--run', required=True)
+    p.add_argument('--read-set', required=True)
+    p.add_argument('--cursor', type=int, default=0)
+    p.add_argument('--max-characters', type=int, default=12000)
     p = sub.add_parser('run-advance')
     p.add_argument('--run', required=True)
     p.add_argument('--stage', choices=('market','observe','main','report'), required=True)
@@ -174,6 +179,11 @@ def main(argv=None):
             run = run_flow.read_run(args.run, args.root, args.project)
             result = material_reads.value_reference(args.file, args.pointer,
                 [run['directory'], Path(run['root']) / 'research', Path(run['root']) / 'versions'])
+        elif args.command == 'run-read':
+            from v4 import run_flow, material_reads
+            run = run_flow.read_run(args.run, args.root, args.project)
+            result = material_reads.read_page(args.read_set, args.cursor, args.max_characters,
+                                             allowed_directory=Path(run['directory']) / 'reading')
         elif args.command == 'run-material':
             from v4 import run_flow
             run = run_flow.read_run(args.run, args.root, args.project)
