@@ -5,6 +5,7 @@ from copy import deepcopy
 from .common import read,require,text,exact,instant,now,pointer
 JST=timezone(timedelta(hours=9))
 AUTHORING = {
+    'significance': 'Maintain the original cycle argument and compare decisive new evidence, mechanism, counterevidence and current participation value with the actual last display. material means an unreported substantive change in this meaning, an important factual correction or actual portfolio danger. Internal REVISE, expiry, data freshness or a short price/risk change does not by itself require notification. Explain why a move is noise or why it weakens/replaces the thesis; do not lock the old thesis or its recognition conditions.',
     'reason': 'maintenance.triggers[i].reason must explain which existing judgment the condition would change and why. At least 12 stripped characters is only an input floor, not proof of meaningful analysis; do not pad or repeat text.',
     'continuity': 'Retain unchanged trigger explanations; checked still requires fresh actual evidence for every prior condition. UNKNOWN is not NOT_MET.',
     'timing': 'Read report_care.execution_window. Select a meaningful review deadline no earlier than the verified next execution plus observed execution allowance. This feasibility floor is not an automatic new deadline or an extension of research/advice validity. Preserve missed deadlines and assess their actual impact.'}
@@ -98,6 +99,7 @@ def validate(root,spec,ctx):
     if not required and 'maintenance' not in spec:return
     require('maintenance' in spec,'report analysis and follow-up obligations required')
     scoped = ctx.get('market_revision', 0) >= 6
+    independent_notification = scoped and ctx.get('report_contract_revision', 1) >= 2
     m=spec['maintenance'];exact(m,'kind thesis support unresolved triggers recheck_at daily checked'+(' retired' if ctx.get('market_revision', 0) >= 5 else ''),'report maintenance')
     require(m['kind'] in ('MARKET_REVIEW','PORTFOLIO_REVIEW','DEEP_REVIEW','EXPRESSION_ONLY'),'invalid assessment kind')
     for k in ('thesis','support','unresolved'):text(m[k],k);require(len(m[k].strip())>=12,k+' needs actual analysis')
@@ -184,16 +186,20 @@ def validate(root,spec,ctx):
         if personal.get('material'):
             require(spec['action'] == 'REPORT', 'important portfolio review cannot be hidden as no change')
     if spec['action']=='SILENT':
-        if scoped:
+        if scoped and not independent_notification:
             require(check['outcomes']['MARKET'] == 'VALID' and check['outcomes']['PORTFOLIO'] != 'REVISE', 'silence needs valid market and no unreported allocation revision')
-        else:
+        elif not independent_notification:
             require(check['outcome']=='VALID','silence must establish why the previous analysis still holds')
             require(all(r['state']!='UNKNOWN' for r in check['trigger_results']),'unknown trigger evidence is not market silence')
         require(not care.get('daily_due') and (care.get('fulfilled') or instant(daily['report_by'])>instant(current_time)),'daily feedback is due; unchanged conclusions do not authorize silence')
         # This judges new market meaning only. Delivery obligations have their
         # own recovery state and survive an otherwise valid quiet observation.
-    if check['outcome']=='REVISE':require(spec['action']=='REPORT','changed report analysis must be reported')
-    if spec['action']=='EVIDENCE_LIMITED':require(check['outcome']=='EVIDENCE_LIMITED','limited evidence must be recorded separately')
+    # REVISE is an internal review result, not a delivery verdict. Actual
+    # unreported significance still uses material above; daily feedback and
+    # immutable delivery obligations retain their separate protections.
+    if not independent_notification:
+        if check['outcome']=='REVISE':require(spec['action']=='REPORT','changed report analysis must be reported')
+        if spec['action']=='EVIDENCE_LIMITED':require(check['outcome']=='EVIDENCE_LIMITED','limited evidence must be recorded separately')
     if care.get('daily_due') and spec['action']=='REPORT':require(m['kind']!='EXPRESSION_ONLY','format changes do not satisfy daily feedback')
 
 def daily_override(root,value,stamp=None):

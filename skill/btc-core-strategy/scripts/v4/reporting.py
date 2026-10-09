@@ -197,7 +197,11 @@ def context(root):
             identity['deep_report_policy_revision'] = 1
             identity['cycle_report_hash'] = basis['report_hash']
     if care['enabled']:identity['report_day']=care['day']
+    current_report_contract = separated and max(observed.get('revision', 5), decision['assessment'].get('revision', 5)) >= 6
+    if current_report_contract:
+        identity['report_contract_revision'] = 2
     return {'schema':'BTC_REPORT_CONTEXT_V1', 'context_id':digest(identity), 'identity':identity,
+            **({'report_contract_revision': 2} if current_report_contract else {}),
             **cycle_context, **({'market_revision':max(5, observed.get('revision', 5), decision['assessment'].get('revision', 5))} if separated else {}), 'evaluated_at':stamp, 'reported':prior, 'report_care':care, 'coverage':{'start':start or raw['observed_hour'],'end':raw['cutoff']},
             'coverage_display_revision':3,
             'knowledge_cutoff':max([x['retrieved_at'] for x in raw['retrievals'].values()] + ([supplementary['cutoff']] if supplementary else []), key=instant),

@@ -23,6 +23,13 @@ EVIDENCE_REASONING_REVIEW = (
     '每项依赖未来条件的判断保留可观察支持、失效依据和原检验窗口；证据缺失不默认为条件成立。未证实假设只指导取证或条件情景，不能作无条件规划前提，加上“可能”也不能代替补证。'
     '将缺口定位到采集、研究、判断、规划或表达，先复用可核验资料；核心依据缺失回原研究接续，不改写市场结论来满足案例，也不以延期或免责声明替代论证。'
 )
+CYCLE_THESIS_REVIEW = (
+    '从已采纳研究的原主论点出发，沿背景、驱动传导、价格结构及其效果、重要反证形成当前周期主线；主线和识别条件由真实证据持续检验，不固定为宏观、净需求、ETF或某个指标。'
+    '证据权重取决于对主因果链和现价参与价值的影响，不按新鲜度、短线涨跌或信号数量排优先。短期运动是否为噪音也需论证：原机制未变且没有新的参与含义可过滤；结构、动量或融资等独立持续反证可削弱、证伪或替代原主线。'
+    'adopted_research是带原时点的已采纳论证，previous_market_observation是本轮待核验的后继判断，二者均不自动证明当前正确。changes_since_deep和applicability_review.explanation承接原论点、本次决定性证据、竞争解释和保留或修正原因，不以最新小时摘要自由替换原研究。'
+    '原方向推动力衰减与反向趋势形成分别判断；突破后的动能变化、成交与持仓、费率等只是可选证据，不设固定阈值或必查清单。识别条件新增、改变或退出须有当期来源及理由，不能事后改标准维持旧结论。'
+    '从现价比较参与、防守与等待；主线偏弱时降价仍可能改善补偿，不能要求需求先反转才研究价值。分歧区、结构风险区与价值区分别论证，历史支撑不自动成为价值。核心遗漏或实质反证沿原研究补评，不只改摘要或风险声明。'
+)
 PUBLIC_RESULT_REVIEW = (
     '市场填写完成后，先用run-advance --stage market --check-only导出实际合成候选，用返回的review_read执行run-read，按next_cursor读至complete；完整理解required材料后才审阅冻结。不能用文件解析、路径或抽取少数字段代替完整回读。输出截断时在同一cursor减小max-characters重读，不跳过余段；输出完成仅证明内容已提供，不证明语义审阅。不能在同一次调用中写判断并直接冻结。结构与引用预检不证明语义已通过。'
     '审阅实际候选的全部公开字段，尤其market_review.assessment_summary、changes_since_hour、changes_since_deep、factor_checks、applicability_review及market_assessment，不能只读详细basis或最后报告。'
@@ -326,6 +333,17 @@ def market_projection(ctx):
         'market_report': (ctx.get('cycle_baseline') or {}).get('market_report'),
         'previous_market_observation': previous_public,
         'accumulation': deepcopy(ctx.get('accumulation')), 'instructions': INSTRUCTIONS}
+    core = ctx.get('current_core') or {}
+    outlook = core.get('outlook') or {}
+    if outlook.get('market_assessment') is not None:
+        # Keep the actual adopted argument separate from the latest hourly
+        # overlay. This is provenance, not a program verdict on its validity.
+        value['adopted_research'] = {
+            'decision_id': core.get('decision_id'), 'market_cutoff': core.get('market_cutoff'),
+            'result_id': (ctx.get('cycle_baseline') or {}).get('result_id'),
+            'semantic': deepcopy(outlook.get('semantic')),
+            'market_assessment': deepcopy(outlook['market_assessment'])}
+        value['thesis_review_instructions'] = CYCLE_THESIS_REVIEW
     basis = ctx.get('cycle_baseline') or {}
     value['comparison_baselines'] = {
         'research': {key: basis.get(key) for key in ('result_id', 'market_cutoff', 'knowledge_cutoff')},

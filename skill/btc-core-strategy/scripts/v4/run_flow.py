@@ -141,7 +141,7 @@ def report_brief(ctx):
     # Retain every previous condition and actual display; omit duplicated full reviews.
     brief = {k: ctx.get(k) for k in ('current_strategy', 'cycle_policy_revision', 'deep_report_policy_revision', 'cycle_baseline', 'context_id', 'evaluated_at', 'reported', 'report_care', 'coverage',
         'knowledge_cutoff', 'silent_hours', 'unreported', 'unreported_total', 'unreported_truncated',
-        'pending_delivery', 'pending_report_reviews', 'delivery_obligations', 'required_report_events', 'previous_silence', 'observation', 'public_evidence', 'market_revision', 'report_subjects', 'report_quote_policy', 'collector_observations')}
+        'pending_delivery', 'pending_report_reviews', 'delivery_obligations', 'required_report_events', 'previous_silence', 'observation', 'public_evidence', 'market_revision', 'report_contract_revision', 'report_subjects', 'report_quote_policy', 'collector_observations')}
     brief = deepcopy(brief)
     basis = brief.get('cycle_baseline') or {}
     if basis.get('report_narrative') == (brief.get('current_strategy', {}).get('conclusion') or {}).get('narrative'):
@@ -613,7 +613,7 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                      'confirmed_account_facts': core.get('domain', {}).get('account_facts'),
                      'fact_files': {name: str(Path(run['project']) / name) for name in facts(run['project'])},
                      'facts_match_current': core['fact_version'] == facts(run['project']),
-                     'instructions': '仅完成仓位适配及建议核验；不得改写已冻结市场结果。未知数量与覆盖保持未知，不阻断市场报告。'}
+                     'instructions': '围绕已冻结周期主线和现价价值，完成参与、防守、等待及现货与空头各自的条件含义；不得改写市场结果。账户缺口只约束依赖它的数量、覆盖或实际净动作，仍完成有独立依据的分项判断。内部到期触发实质重新分析，不以到期或未知结案、不自动续期；正式建议改变沿原研究审阅。'}
         if not portfolio['facts_match_current']:
             portfolio['confirmed_account_facts'] = None
         if package.get('collector') and ctx.get('revision', 1) < 6:

@@ -1,0 +1,148 @@
+"""Synthetic transport/notification contracts; no model-semantic acceptance."""
+from copy import deepcopy
+import unittest
+from unittest import mock
+
+import test_portfolio_risk as risk_fixture
+import test_report_care as care_fixture
+from v4 import closed_loop, market_state, reporting, report_care, run_flow
+from v4.common import Invalid
+
+
+class ResearchArgumentTests(unittest.TestCase):
+    def setUp(self):
+        self.f = risk_fixture.ReportTests()
+        self.f.setUp(); self.addCleanup(self.f.doCleanups)
+
+    def test_adopted_argument_survives_hourly_overlay_without_locking_new_evidence(self):
+        ctx = self.f.context(self.f.root)
+        formal = deepcopy(self.f.core['outlook']['market_assessment'])
+        latest = deepcopy(formal)
+        latest['summary'] = 'Synthetic new evidence weakens the old driver; actual review remains necessary.'
+        ctx.update(revision=5, current_core={'decision_id':'SYNTHETIC_ADOPTED',
+            'market_cutoff':self.f.stamp, 'outlook':deepcopy(self.f.core['outlook'])},
+            previous_hour={'review':{'market_assessment':latest,'dispute_zones':[]}})
+        view = market_state.market_projection(ctx)
+        self.assertEqual(view['adopted_research']['market_assessment'], formal)
+        self.assertEqual(view['previous_market_observation']['market_assessment'], latest)
+        self.assertNotEqual(formal, latest)
+        self.assertEqual(ctx['current_core']['outlook']['market_assessment'], formal)
+
+    def test_report_restores_exact_public_argument_without_mixed_personal_research(self):
+        ctx = self.f.context(self.f.root)
+        ctx['report_contract_revision'] = 2
+        basis = ctx.setdefault('cycle_baseline', {})
+        basis.update(result_id='SYNTHETIC_RESEARCH', market_cutoff=self.f.stamp,
+            market_report='Verified public structure, pricing rationale and counterevidence.',
+            report_narrative='PRIVATE_MIXED_REPORT_SENTINEL')
+        ctx['current_strategy']['portfolio_analysis']['private'] = 'PRIVATE_ACCOUNT_SENTINEL'
+        actual = run_flow.report_brief(ctx)
+        public = actual['market_result']['research_basis']
+        self.assertEqual(public['market_report'], basis['market_report'])
+        self.assertEqual(public['market_cutoff'], self.f.stamp)
+        self.assertEqual(public['factor_assessment'], ctx['current_strategy']['factor_assessment'])
+        self.assertNotIn('PRIVATE_MIXED_REPORT_SENTINEL', str(actual))
+        self.assertNotIn('PRIVATE_ACCOUNT_SENTINEL', str(actual))
+        self.assertNotIn('current_strategy', actual)
+        self.assertEqual(ctx['cycle_baseline']['market_report'], public['market_report'])
+
+    def test_expiry_preserves_actual_bounded_reassessment_and_keeps_old_advice_unrenewed(self):
+        risk = closed_loop.risk(self.f.core)
+        risk['valid_until'] = self.f.stamp
+        ctx = self.f.context(self.f.root)
+        ctx['report_contract_revision'] = 2
+        review = ctx['observation']['review']['allocation_review']
+        review['explanation'] = 'Public downside path remains assessable; exact hedge resizing needs current coverage.'
+        review['limitations'] = ['Exact hedge quantity is unavailable.']
+        result = closed_loop.report_inputs(ctx)
+        self.assertEqual(result['applicability']['portfolio']['explanation'], review['explanation'])
+        self.assertIn(review['limitations'][0], result['applicability']['portfolio']['limitations'])
+        self.assertEqual(result['applicability']['portfolio']['outcome'], 'REVISE')
+        self.assertEqual(result['portfolio_risk']['valid_until'], self.f.stamp)
+        self.assertEqual(risk['valid_until'], self.f.stamp)
+        legacy = deepcopy(ctx); legacy.pop('report_contract_revision')
+        old = closed_loop.report_inputs(legacy)
+        self.assertNotIn('research_basis', old['market_result'])
+        self.assertNotIn('explanation', old['applicability']['portfolio'])
+
+
+class NotificationBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.f = care_fixture.ReportCareTests()
+        self.f.setUp(); self.addCleanup(self.f.doCleanups)
+        original = self.f.context
+        def context(root):
+            ctx = original(root)
+            ctx.update(market_revision=6, report_contract_revision=2,
+                       current_strategy=self.f.f.f.f.decision['assessment'])
+            return ctx
+        self.f.context = context
+        patch = mock.patch('v4.reporting.context', side_effect=context)
+        patch.start(); self.addCleanup(patch.stop)
+
+    def spec(self, outcome='VALID'):
+        spec = self.f.spec('SILENT')
+        m = spec['maintenance']; m['retired'] = []
+        for item in m['triggers']:
+            item['scope'] = 'MARKET'
+        check = m['checked']
+        check.update(outcome=outcome, outcomes={'MARKET':outcome,'PORTFOLIO':'VALID'})
+        for item in check['trigger_results']:
+            item.update(scope='MARKET', material=False)
+        spec['result_binding'] = closed_loop.report_inputs(self.f.context(self.f.root))['result_binding']
+        return spec
+
+    def test_internal_revision_can_be_recorded_without_creating_delivery_obligation(self):
+        result = reporting.record(self.f.root, self.spec('REVISE'))
+        saved = reporting.review(self.f.root, result['review_id'])
+        self.assertEqual(saved['maintenance']['checked']['outcome'], 'REVISE')
+        self.assertEqual(saved['action'], 'SILENT')
+        self.assertEqual(reporting.obligations(self.f.root), [])
+
+    def test_new_material_counterevidence_or_actual_danger_still_requires_feedback(self):
+        reporting.record(self.f.root, self.spec())
+        for state in ('MET', 'UNKNOWN'):
+            with self.subTest(state=state):
+                spec = self.spec('REVISE')
+                spec['maintenance']['checked']['trigger_results'][0].update(state=state, material=True,
+                    evidence='Synthetic independently verified thesis impact or actual portfolio danger, not a price tick.')
+                with self.assertRaisesRegex(Invalid, 'material change or unresolved risk'):
+                    reporting.record(self.f.root, spec)
+
+    def test_actual_material_personal_danger_still_requires_feedback(self):
+        spec = self.spec('REVISE'); ctx = self.f.context(self.f.root)
+        ctx['observation'] = {'review':{'allocation_review':{
+            'material':True, 'explanation':'Synthetic actual portfolio danger requires a useful response.'}}}
+        with self.assertRaisesRegex(Invalid, 'important portfolio review'):
+            report_care.validate(self.f.root, spec, ctx)
+
+    def test_old_unscoped_context_does_not_relax_from_a_new_flag(self):
+        spec = self.f.spec('SILENT')
+        spec['maintenance']['retired'] = []
+        spec['maintenance']['checked']['outcome'] = 'REVISE'
+        ctx = self.f.context(self.f.root); ctx['market_revision'] = 5
+        with self.assertRaisesRegex(Invalid, 'silence must establish'):
+            report_care.validate(self.f.root, spec, ctx)
+
+    def test_existing_delivery_duty_survives_a_quiet_internal_revision(self):
+        legacy = self.f.context(self.f.root)
+        legacy.pop('report_contract_revision'); legacy['market_revision'] = 4
+        with mock.patch('v4.reporting.context', return_value=legacy):
+            first = reporting.record(self.f.root, self.f.spec('REPORT'))
+        before = reporting.obligations(self.f.root)
+        self.assertEqual([v['review_id'] for v in before], [first['review_id']])
+        reporting.record(self.f.root, self.spec('REVISE'))
+        self.assertEqual(reporting.obligations(self.f.root), before)
+
+    def test_daily_feedback_and_legacy_revision_protections_remain(self):
+        spec = self.spec('REVISE'); ctx = self.f.context(self.f.root)
+        ctx['report_care']['daily_due'] = True
+        with self.assertRaisesRegex(Invalid, 'daily feedback is due'):
+            report_care.validate(self.f.root, spec, ctx)
+        ctx = self.f.context(self.f.root); ctx.pop('report_contract_revision')
+        with self.assertRaisesRegex(Invalid, 'silence needs valid market'):
+            report_care.validate(self.f.root, spec, ctx)
+
+
+if __name__ == '__main__':
+    unittest.main()
