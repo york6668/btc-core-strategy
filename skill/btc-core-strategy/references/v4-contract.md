@@ -236,3 +236,5 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 ## 内容 revision 6/7
 
 外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 revision 7 的 risk_assessment、可选风险应对及独立 strategy_advice，风险结论不要求操作清单。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。
+
+新报告 report_contract_revision=3 要求首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings，并增加 quality_review.market_independence；允许忠实改写冻结判断，旧冻结契约继续原验证。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。

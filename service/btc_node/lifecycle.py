@@ -159,7 +159,16 @@ def _maintain(db, *, apply, now):
         if apply:
             from .backup import reap_pins
             reap_pins(db)
-            db.execute('DELETE FROM series_retrievals WHERE known_ms<%s', (now_ms-30*DAY,))
+            from .series import Series
+            Series(db).backfill_originals()
+            # A cited unchanged re-fetch is a source bridge even without its
+            # own observation row. Retain its small provenance mapping with
+            # the analytical dependency, rather than losing it after 30 days.
+            db.execute('DELETE r FROM series_retrievals r WHERE r.known_ms<%s '
+                'AND NOT EXISTS(SELECT 1 FROM dependencies d '
+                "WHERE d.target_type='BLOB' AND (d.target_key=r.source_digest OR "
+                'EXISTS(SELECT 1 FROM series_originals o WHERE o.source_digest=r.source_digest '
+                'AND o.original_digest=d.target_key)))', (now_ms-30*DAY,))
         # A measurement referenced by an analytical object remains queryable,
         # including its revisions. Age alone cannot retire that object.
         candidates = db.rows('SELECT observation_key,product,series,item_key FROM observations '

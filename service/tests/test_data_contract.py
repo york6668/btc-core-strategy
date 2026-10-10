@@ -332,6 +332,152 @@ class NodeContract(unittest.TestCase):
         self.assertIn(review['object_id'],[item['object_id'] for item in
                       self.objects.list(scope='PUBLIC',kind='REVIEW',active=None,limit=500)['objects']])
 
+    def test_as_known_context_preserves_version_and_retirement_history(self):
+        from btc_node.execution import full_context
+        value=self.spec('CYCLE', observed_at=self.at(6),known_at=self.at(5),payload={'direction':'BULLISH'})
+        self.objects.put(value,expected_version=0)
+        original=self.objects.get('CYCLE',value['object_id'])
+        changed=deepcopy(value);changed.update(observed_at=self.at(2),known_at=self.at(1),active=False)
+        changed['payload']={'direction':'UNKNOWN','reason':'Original interpretation withdrawn by new evidence.'}
+        self.objects.put(changed,expected_version=1)
+        past=full_context(self.db,'PUBLIC',as_of=self.at(3))
+        prior=next(v for v in past['objects'] if v['object_id']==value['object_id'])
+        self.assertEqual(prior['version'],1)
+        self.assertEqual(prior['digest'],original['digest'])
+        self.assertNotIn(value['object_id'],{v['object_id'] for v in full_context(self.db,'PUBLIC')['objects']})
+        self.assertEqual(self.db.value(original['digest'])['payload'],{'direction':'BULLISH'})
+        self.assertEqual(past['role'],'HISTORICAL_JUDGEMENT_CONTEXT_NOT_NEW_EXTERNAL_EVIDENCE')
+
+    def test_legacy_dynamic_context_preserves_bytes_and_recovers_omitted_history(self):
+        from btc_node.execution import project_state
+        value=self.spec('CYCLE',observed_at=self.at(6),known_at=self.at(5))
+        self.objects.put(value,expected_version=0)
+        retired=deepcopy(value);retired.update(observed_at=self.at(2),known_at=self.at(1),active=False)
+        self.objects.put(retired,expected_version=1)
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder);(path/'run.json').write_bytes(encode({'created_at':self.at(3)}))
+            legacy=encode({'scope':'PUBLIC','objects':[],'requirements':[]})
+            (path/'continuous-public.json').write_bytes(legacy)
+            with patch('btc_node.execution.Projection.refresh',return_value={}):
+                result=project_state(self.db,{'project':folder},os.environ['BTC_TEST_SOURCE'],['--run',str(path/'run.json')])
+            self.assertEqual((path/'continuous-public.json').read_bytes(),legacy)
+            self.assertEqual(result['public_context_binding']['origin'],'LEGACY_RECONSTRUCTED_AS_KNOWN')
+            bounded=json.loads(Path(result['public_context']).read_bytes())
+            self.assertIn(value['object_id'],{v['object_id'] for v in bounded['objects']})
+
+    def test_original_package_revision_reaches_consumer_through_historical_decision(self):
+        product=self.id+'-product'
+        self.prices.instrument(product,{'market':'SYNTHETIC','symbol':'TEST','product_type':'SPOT',
+            'quote_unit':'TEST','source_identity':'generated-only'})
+        original=self.db.put_blob(encode({'synthetic_raw':'first observation'}))
+        row={'item_key':'bar','observed_at':self.at(6),'known_at':self.at(5),'payload':{'price':'100'}}
+        self.prices.ingest(product,'quotes',[row],{'original_digest':original,'source':'generated-only'},interval_ms=3600000)
+        decision=self.spec('DECISION',active=False,dependencies=[{'type':'BLOB','digest':original}])
+        self.objects.put(decision,expected_version=0)
+        frozen=self.objects.get('DECISION',decision['object_id'])
+        cycle=self.spec('CYCLE',known_at=self.at(2),dependencies=[{'type':'ENTITY','kind':'DECISION','object_id':decision['object_id']}])
+        self.objects.put(cycle,expected_version=0)
+        unrelated=self.spec('FACTOR',object_id=self.id+'-unrelated')
+        self.objects.put(unrelated,expected_version=0)
+        newer=self.db.put_blob(encode({'synthetic_raw':'corrected observation'}))
+        row.update(known_at=self.at(1),payload={'price':'90'})
+        self.prices.ingest(product,'quotes',[row],{'original_digest':newer,'source':'generated-only'},interval_ms=3600000)
+        due={v['object_id'] for v in self.objects.due(scope='PUBLIC',limit=500)['objects']}
+        self.assertIn(cycle['object_id'],due)
+        self.assertNotIn(unrelated['object_id'],due)
+        self.assertNotIn(decision['object_id'],due)
+        self.assertEqual(self.objects.get('DECISION',decision['object_id'])['digest'],frozen['digest'])
+        self.assertEqual(self.db.value(original),{'synthetic_raw':'first observation'})
+
+    def test_explicit_factor_and_horizon_exit_is_not_reversed_by_projection(self):
+        from btc_node.projection import Projection
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'source.json';path.write_text('{"synthetic_source":true}')
+            for kind in ('FACTOR','HYPOTHESIS'):
+                value=self.spec(kind,observed_at=self.at(6),known_at=self.at(5))
+                self.objects.put(value,expected_version=0)
+                retired=deepcopy(value);retired.update(observed_at=self.at(2),known_at=self.at(1),active=False,
+                    change_reason='Explicit evidence-bound withdrawal; omission alone is not a retirement.')
+                self.objects.put(retired,expected_version=1)
+                prior=self.objects.get(kind,value['object_id'])
+                projected=Projection(self.db,'synthetic-method').put(kind,value['object_id'],value['payload'],path,self.at())
+                self.assertFalse(projected['active'])
+                self.assertEqual(projected['digest'],prior['digest'])
+                self.assertEqual(len(self.objects.history(kind,value['object_id'])['versions']),2)
+
+    def test_same_value_retrieval_remains_a_cited_revision_bridge_after_retention(self):
+        product = self.id + '-reverified'
+        self.prices.instrument(product, {'market': 'SYNTHETIC', 'symbol': 'TEST',
+            'product_type': 'SPOT', 'quote_unit': 'TEST', 'source_identity': 'generated'})
+        original_a = self.db.put_blob(encode({'synthetic_raw': 'A100'}))
+        original_b = self.db.put_blob(encode({'synthetic_raw': 'B100 unchanged reacquisition'}))
+        original_c = self.db.put_blob(encode({'synthetic_raw': 'C90'}))
+        row = {'item_key': 'bar', 'observed_at': self.at(50*24),
+               'known_at': self.at(49*24), 'payload': {'price': '100'}}
+        self.assertEqual(self.prices.ingest(product, 'quotes', [row],
+            {'original_digest': original_a, 'source': 'generated'}, interval_ms=3600000)['inserted'], 1)
+        row['known_at'] = self.at(48*24)
+        self.assertEqual(self.prices.ingest(product, 'quotes', [row],
+            {'original_digest': original_b, 'source': 'generated'}, interval_ms=3600000),
+            {'inserted': 0, 'unchanged': 1})
+        decision = self.spec('DECISION', active=False, observed_at=self.at(47*24),
+            known_at=self.at(47*24), dependencies=[{'type': 'BLOB', 'digest': original_b}])
+        self.objects.put(decision, expected_version=0)
+        cycle = self.spec('CYCLE', observed_at=self.at(47*24), known_at=self.at(47*24),
+            dependencies=[{'type': 'ENTITY', 'kind': 'DECISION', 'object_id': decision['object_id']}])
+        self.objects.put(cycle, expected_version=0)
+        unrelated = self.spec('HYPOTHESIS')
+        self.objects.put(unrelated, expected_version=0)
+        original_bytes = self.db.blobs.get(original_b)
+        self.db.connection.commit()  # Maintenance opens its own writer transaction.
+        maintain(self.db, apply=True, now=self.at())
+        self.assertIsNotNone(self.db.one('SELECT r.source_digest FROM series_retrievals r '
+            'JOIN series_originals o USING(source_digest) WHERE o.original_digest=%s', (original_b,)))
+        row.update(known_at=self.at(1), payload={'price': '90'})
+        self.prices.ingest(product, 'quotes', [row],
+            {'original_digest': original_c, 'source': 'generated'}, interval_ms=3600000)
+        due = {v['object_id'] for v in self.objects.due(scope='PUBLIC', limit=500)['objects']}
+        self.assertIn(cycle['object_id'], due)
+        self.assertNotIn(decision['object_id'], due)
+        self.assertNotIn(unrelated['object_id'], due)
+        self.assertEqual(self.db.blobs.get(original_b), original_bytes)
+        self.assertEqual(self.db.one('SELECT COUNT(*) AS n FROM observations '
+            'WHERE product=%s AND series=%s', (product, 'quotes'))['n'], 2)
+
+    def test_historical_context_masks_a_later_review_resolution(self):
+        from btc_node.execution import full_context
+        actual_millis = millis
+        factor = self.spec('FACTOR', observed_at=self.at(6), known_at=self.at(5))
+        self.objects.put(factor, expected_version=0)
+        cycle = self.spec('CYCLE', observed_at=self.at(6), known_at=self.at(5),
+            dependencies=[{'type': 'ENTITY', 'kind': 'FACTOR', 'object_id': factor['object_id']}])
+        self.objects.put(cycle, expected_version=0)
+        factor.update(observed_at=self.at(4), known_at=self.at(4))
+        factor['payload']['revision'] = 'new observation'
+        with patch('btc_node.entities.millis', side_effect=lambda value=None:
+                   actual_millis(self.at(4) if value is None else value)):
+            self.objects.put(factor, expected_version=1)
+        owner = self.objects.get('CYCLE', cycle['object_id'])
+        requirement = self.db.one('SELECT requirement_key FROM review_requirements '
+            'WHERE entity_key=%s', (owner['entity_key'],))['requirement_key']
+        review = self.spec('REVIEW', active=False, observed_at=self.at(2), known_at=self.at(1),
+            payload={'subject': {'kind': 'CYCLE', 'object_id': cycle['object_id'], 'version': 1},
+                'outcome': 'REVISE', 'explanation': 'Later generated review.',
+                'requirements': [requirement]},
+            dependencies=[{'type': 'ENTITY', 'kind': 'CYCLE', 'object_id': cycle['object_id']}])
+        self.objects.put(review, expected_version=0)
+        self.objects.resolve(requirement, review['object_id'])
+        historical = next(v for v in full_context(self.db, 'PUBLIC', as_of=self.at(3))['requirements']
+                          if v['requirement_key'] == requirement)
+        self.assertIsNone(historical['resolved_ms'])
+        self.assertIsNone(historical['resolution_ref'])
+        current = self.db.one('SELECT resolved_ms,resolution_ref FROM review_requirements '
+            'WHERE requirement_key=%s', (requirement,))
+        self.assertIsNotNone(current['resolved_ms'])
+        self.assertEqual(current['resolution_ref'], review['object_id'])
+        self.assertNotIn(requirement, {v['requirement_key'] for v in
+            full_context(self.db, 'PUBLIC')['requirements']})
+
     def test_unresolved_review_cannot_clear_subject_dependency(self):
         hypothesis=self.spec('HYPOTHESIS')
         self.objects.put(hypothesis,expected_version=0)
@@ -551,7 +697,7 @@ class NodeContract(unittest.TestCase):
     def test_frozen_run_binding_is_returned_and_formal_binding_stays_separate(self):
         from btc_node.execution import project_state
         with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder);(path/'run.json').write_text('{}')
+            path=Path(folder);(path/'run.json').write_bytes(encode({'created_at':self.at(1)}))
             frozen={'result_hash':self.id,'created_at':self.at(1),'outlook':{'generated':True}}
             (path/'market-result.json').write_bytes(encode(frozen))
             formal={'object_id':'old-formal','version':1,'digest':'old'}

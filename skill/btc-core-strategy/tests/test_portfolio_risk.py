@@ -131,6 +131,8 @@ class MomentumContinuityTests(unittest.TestCase):
                     self.assertIn(market_state.MOMENTUM_REPORT_REVIEW,brief['result_instructions'])
                     baseline=ctx['cycle_baseline'];body=summary+'\n\n'+personal
                     quality=authored_report.QUALITY|cycle.REPORT_CHECKS|cycle.SUMMARY_CHECKS
+                    if ctx.get('report_contract_revision', 1) >= 3:
+                        quality |= {'market_independence'}
                     spec={'context':ctx,'result_binding':brief['result_binding'],
                           'report_basis':{'result_id':baseline['result_id'],'report_hash':baseline['report_hash'],
                               'mode':'CYCLE_SUMMARY' if baseline['status']=='CURRENT' else 'LIMITED_FEEDBACK',

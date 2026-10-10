@@ -59,6 +59,8 @@ class Series:
         self.db.execute('INSERT IGNORE INTO series_retrievals(retrieval_key,product,series,known_ms,source_digest) VALUES(%s,%s,%s,%s,%s)',
                         (identity(product,series,source_digest),product,series,max(millis(row['known_at']) for row in rows),source_digest))
         changed, unchanged = 0, 0
+        revised_sources = {}
+        revised_from, revised_until = [], []
         for item in rows:
             observed, known = millis(item['observed_at']), millis(item['known_at'])
             if observed > known or observed < 0 or known > millis():
@@ -104,6 +106,34 @@ class Series:
                                        (observation_key,))['sequence']
                 Entities(self.db).invalidate(identity(product, series, item_key), 'OBSERVATION', sequence,
                                              'source observation revised; reassess affected conclusions')
+                # Native projections cite original packages, not necessarily a
+                # per-row OBSERVATION dependency. Bridge a later correction to
+                # consumers of the earlier source without changing its bytes.
+                revised_sources[current['source_digest']] = sequence
+                revised_from.append(current['known_ms'])
+                revised_until.append(known)
+
+        if revised_sources:
+            # Unchanged re-fetches have no new observation row. Their cited
+            # packages still need review when the same product/series changes.
+            # Preserve numerical deduplication and do not alias every hourly
+            # row to every later package. Only cited retrievals in the affected
+            # knowledge interval are added to this package-level review.
+            packages = self.db.rows('SELECT DISTINCT r.source_digest,o.original_digest '
+                'FROM series_retrievals r LEFT JOIN series_originals o USING(source_digest) '
+                'WHERE r.product=%s AND r.series=%s AND r.known_ms>=%s AND r.known_ms<=%s '
+                'AND r.source_digest<>%s AND EXISTS(SELECT 1 FROM dependencies d '
+                "WHERE d.target_type='BLOB' AND d.target_key IN (r.source_digest,o.original_digest))",
+                (product, series, min(revised_from), max(revised_until), source_digest))
+            sequence = max(revised_sources.values())
+            for row in packages:
+                revised_sources[row['source_digest']] = sequence
+
+        for source, sequence in revised_sources.items():
+            originals = self.db.rows('SELECT original_digest FROM series_originals WHERE source_digest=%s', (source,))
+            for digest in {source, *(row['original_digest'] for row in originals)}:
+                Entities(self.db).invalidate(digest, 'BLOB', sequence,
+                    'cited package predates a product/series revision; reassess affected evidence and consumers')
         return {'inserted': changed, 'unchanged': unchanged}
 
     def products(self, *, after='', limit=100):

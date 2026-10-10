@@ -44,7 +44,7 @@ ANALYSIS_FOCUS_REVIEW = (
     + OPPORTUNITY_COST_REVIEW
 )
 MAPPING_REVIEW = (
-    '审阅实际 candidate、补充证据及事实版本，核对七个 section 与独立正文一致，市场判断与个人应对归属清楚。'
+    '审阅实际 candidate、补充证据及事实版本，核对七个 section 与独立正文一致，并对照冻结公共命题与最终全文检查个人输入是否反向改变市场方向、同尺度拐点、依据、公开价值或验证关系；市场和个人归属标签不能代替依赖核验。'
     '按 report_boundary 区分内部完整分析与用户正文；映射和汇报不重新排序因子或另立解释，正文呈现已经形成的综合判断。'
     '继承旧版本的假设、证据缺口、宏观字段、建议目的与期限也须回到本轮来源和作者判断；正文修订同步更新全部受影响映射，不只替换摘要，历史依据保留其日期而不冒充当前结论。'
     'coverage 六项实际核验：cycle_structure/value_pricing/downside_paths/price_levels/portfolio_waiting/verification；cycle_structure须核对三个核心市场的评级、期限、结构变化及确认级别。'
@@ -89,7 +89,7 @@ CORE_REPORT_REVIEW += (market_state.CYCLE_FOCUS_REVIEW + market_state.MOMENTUM_R
                        + market_state.EVIDENCE_REASONING_REVIEW + CLOSED_LOOP_REVIEW)
 APPLICABILITY_REVIEW += market_state.MOMENTUM_REVIEW + market_state.EVIDENCE_REASONING_REVIEW
 MAPPING_REVIEW += (
-    'cycle_structure逐项对照独立研究对原推动力衰减、反向趋势延续、反证及确认程度的实际结论；'
+    'cycle_structure逐项对照独立研究的原周期论点、同尺度应有与实际响应及历次推进/回收、原动力衰减、相反结构变化、反证和确认程度，核对方向、拐点进展及参与价值影响；方向未变不省略有据进展或不足。'
     '核对horizons/reversal、semantic、business_meaning与正文是否同义，不能把枯竭映射成反转、把反弹映射成趋势或把未知映射成中性。'
     'value_pricing、portfolio_waiting继续独立核验现价风险收益与个人风险，verification说明相较上次变化及下一鉴别证据。'
     'coverage沿原六项说明实际证据链及推断边界：cycle_structure核对主证据和重要反证，price_levels核对形成与测试时钟，'
@@ -97,7 +97,7 @@ MAPPING_REVIEW += (
     '发现实质缺口时approved=false并指出受影响原句及上游证据，返回同一研究修正；不能以字段齐全或笼统“已检查”批准。'
 ) + market_state.CYCLE_EXPRESSION_REVIEW + market_state.EVIDENCE_REASONING_REVIEW + CLOSED_LOOP_REVIEW
 REPORT_SCOPE_REVIEW += (market_state.CYCLE_EXPRESSION_REVIEW + market_state.MOMENTUM_REPORT_REVIEW
-                       + market_state.EVIDENCE_REPORT_REVIEW)
+                       + market_state.EVIDENCE_REPORT_REVIEW + market_state.MARKET_INDEPENDENCE_REVIEW)
 
 
 def method_references(stage, project=None):

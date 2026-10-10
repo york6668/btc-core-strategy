@@ -99,3 +99,5 @@ revision 5 深评独立阶段先交付纯市场 JSON，冻结后在同一研究�
 新 CLI run-prepare 使用 revision 7 市场→组合→观察→报告材料，细节见[完整闭环](closed-loop.md)。market 阶段复用观察校验；按正常路径预检、回读并审阅实际公开候选，再冻结同一内容。结构、引用、时间和上下文绑定由程序重验，语义范围由模型核验；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 的 allocation_review 绑定 portfolio_risk_hash 和 strategy_advice_hash；主评估由真实 risk_assessment 进入 revision 7，风险应对可为空，原有机会建议独立保留。旧 allocation_decision 仅按原版本恢复，不自动转换为新风险结论。
 
 report 材料只含最终两项结果、适用性及必要来源，result_binding 已由模板绑定。完整内部研究不通过报告 read_set 再次提供。旧 run.json 未含 workflow_revision 时按旧上下文接续，不为升级重建输入或重发报告。
+
+公开上下文使用 MARKET_INSTRUCTIONS；市场冻结后才提供本轮可读 fact_files 及 fact_availability。不可用个人文件的 fact_version 值为 null 并保留原因，公开阶段继续，个人阶段具体限制依赖该资料的判断，不能推为空仓/安全或复用另一事实版本的动作。正式个人采用继续原完整事实校验，不以空文件绕过。reported.display 标为 DELIVERED_HISTORY_ONLY，只用于通知比较。新报告契约 3 的 market_independence 对照公开命题、个人映射及完整正文，末尾个人选择也不得回写公共总裁决；全部实质正文 bindings 只证明来源归属，语义由模型核验。

@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import re
 
-from .common import create, digest, exact, facts, instant, locked, now, pointer, read, require, text
+from .common import create, digest, exact, fact_inputs, facts, instant, locked, now, pointer, read, require, text
 
 SCOPE = ('/domain', '/factor_assessment', '/conclusion', '/outlook', '/robustness', '/portfolio_analysis', '/recommendations',
          '/domain/drivers', '/domain/value_zones', '/domain/value_band_map', '/domain/event', '/domain/forward_value_band_semantics')
@@ -355,8 +355,8 @@ def request(root, project, spec, workflow_revision=None):
                 packet['cycle_assignment']['required_coverage'] = [v for v in cycle.COVERAGE if v != 'portfolio_waiting']
                 packet['cycle_assignment']['method_references'].pop('recommendations', None)
             if workflow_revision >= 6:
-                from .closed_loop import INSTRUCTIONS
-                packet['market_result_contract']['instructions'] += INSTRUCTIONS
+                from .closed_loop import MARKET_INSTRUCTIONS
+                packet['market_result_contract']['instructions'] += MARKET_INSTRUCTIONS
                 packet['historical_hypotheses'] = {key: packet.pop(key) for key in ('historical_anchor', 'historical_dispute_zones')}
                 for row in packet['report_subjects'].values():
                     if isinstance(row, dict):
@@ -389,10 +389,12 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
         require(independent['request_id'] == request_id and independent.get('market_result') is not None,
                 'portfolio input requires a frozen public market result')
         project = Path(root).parent.parent
-        current_facts = facts(project)
+        inputs = fact_inputs(project)
+        current_facts = inputs['fact_version']
         value = {'market_result': independent['market_result'], 'market_result_hash': independent['market_result_hash'],
                  'fact_version': current_facts,
-                 'fact_files': {name: {'path': str(project / name), 'hash': hashed} for name, hashed in current_facts.items()},
+                 'fact_files': {name: {'path': str(project / name), 'hash': hashed} for name, hashed in current_facts.items() if hashed is not None},
+                 'fact_availability': inputs['files'],
                  'instructions': '仅完成个人组合应对；公开市场结果与原市场正文保持原文。追加个人部分，不改写市场方向、周期、风险和分歧区判断。'}
         public_input = read(Path(root) / req['independent_input_path'])
         require(digest(public_input) == req['independent_input_id'], 'independent input changed')
@@ -449,7 +451,7 @@ def _completed_turn(path, agent_id, turn_id):
     session_id = None
     contexts, completed = {}, None
     active_turn = None
-    calls, proof_reads = {}, []
+    calls, proof_reads, prior_personal_reads = {}, [], []
     for line in Path(path).read_text().splitlines():
         item = json.loads(line)
         payload = item.get('payload', {})
@@ -459,7 +461,7 @@ def _completed_turn(path, agent_id, turn_id):
             settings = payload.get('collaboration_mode', {}).get('settings', {})
             contexts[payload.get('turn_id')] = (payload.get('model'), payload.get('effort', settings.get('reasoning_effort')))
             active_turn = payload.get('turn_id')
-        elif item.get('type') == 'response_item' and active_turn == turn_id:
+        elif item.get('type') == 'response_item':
             if payload.get('type') in ('custom_tool_call', 'function_call'):
                 calls[payload.get('call_id')] = payload.get('input', payload.get('arguments', ''))
             elif payload.get('type') in ('custom_tool_call_output', 'function_call_output'):
@@ -467,7 +469,10 @@ def _completed_turn(path, agent_id, turn_id):
                 if 'research-read' in call and 'strategy_v4.py' in call:
                     for proof in _read_proofs(payload.get('output')):
                         if proof['request_id'] in call:
-                            proof_reads.append(proof)
+                            if active_turn == turn_id:
+                                proof_reads.append(proof)
+                            elif completed is None and proof.get('phase') in ('portfolio', 'candidate'):
+                                prior_personal_reads.append(proof)
         elif item.get('type') == 'event_msg' and payload.get('type') == 'task_complete' and payload.get('turn_id') == turn_id:
             completed = payload
             model, effort = contexts.get(turn_id, (None, None))
@@ -475,7 +480,7 @@ def _completed_turn(path, agent_id, turn_id):
     require((model, effort) == ('gpt-6-astra', 'max'), 'research must actually run Astra/max')
     text(completed.get('last_agent_message'), 'completed research output')
     require(isinstance(completed.get('started_at'), (int, float)) and isinstance(completed.get('completed_at'), (int, float)), 'research runtime phase timestamps required')
-    return dict(completed, proof_reads=proof_reads)
+    return dict(completed, proof_reads=proof_reads, prior_personal_reads=prior_personal_reads)
 
 
 def independent(root, request_id, agent_id, rollout_path, turn_id, additional=None):
@@ -488,7 +493,9 @@ def independent(root, request_id, agent_id, rollout_path, turn_id, additional=No
         require(turn['started_at'] >= int(instant(req['created_at']).timestamp()), 'independent phase predates this request')
         expected = read_input(root, request_id)
         require(expected in turn['proof_reads'], 'independent runtime did not read this frozen request input')
-        require(not any(v['phase'] == 'candidate' for v in turn['proof_reads']), 'independent runtime already read candidate material')
+        require(not any(v['phase'] in ('portfolio', 'candidate') for v in turn['proof_reads'])
+                and not turn.get('prior_personal_reads'),
+                'independent runtime already read personal or candidate material; continue the existing study or use a fresh public-only context')
         supplement = {}
         if additional is not None:
             context = _review_evidence(root, req, None, additional)
@@ -557,9 +564,13 @@ def _review_facts(root, req, candidate):
     require(set(version) == set(owners), 'candidate must retain the local fact owners')
     files = {}
     for name, owner in owners.items():
-        raw = Path(owner['path']).read_bytes()
-        require(digest(raw) == version[name], 'candidate facts changed before final review')
-        files[name] = {'path': owner['path'], 'text': raw.decode('utf-8')}
+        if version[name] is None:
+            require(facts(Path(root).parent.parent).get(name) is None, 'unavailable candidate fact changed before final review')
+            files[name] = {'path': owner['path'], 'text': None}
+        else:
+            raw = Path(owner['path']).read_bytes()
+            require(digest(raw) == version[name], 'candidate facts changed before final review')
+            files[name] = {'path': owner['path'], 'text': raw.decode('utf-8')}
     return {'fact_version': version, 'files': files}
 
 
@@ -574,7 +585,9 @@ def _result_facts(req, disclosed):
             'fact supplement differs from the reviewed candidate')
     for name, item in context['files'].items():
         exact(item, 'path text', 'frozen local fact')
-        require(digest(item['text'].encode('utf-8')) == version[name], 'frozen final review fact changed')
+        require((item['text'] is None if version[name] is None else
+                 isinstance(item['text'], str) and digest(item['text'].encode('utf-8')) == version[name]),
+                'frozen final review fact changed')
     return version
 
 
@@ -915,11 +928,18 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
             amendment = {'dispatch_call_id': dispatch_call_id, 'return_message_id': return_message_id,
                          'dispatch_hash': proof['dispatch_hash'], 'return_hash': proof['return_hash']}
         require(proof['started_at'] >= phase['completed_at'], 'amendment predates the independent result')
+        supplement = {}
+        if additional is not None:
+            context = _review_evidence(root, req, None, additional)
+            require(instant(context['knowledge_cutoff']).timestamp() <= proof['completed_at'],
+                    'public correction supplement is after the actual completed answer')
+            supplement['evidence_context'] = context
         result = _public_result(root, req, proof['analysis'], additional)
         market_state.validate_zones(result['market_result']['outlook']['dispute_zones'], lambda ref: None,
             phase['market_result']['outlook']['dispute_zones'], revision=req.get('workflow_revision', 5))
         updated = {k: v for k, v in phase.items() if k != 'independent_id'}
-        updated.update(result, parent_independent_id=independent_id,
+        updated.update(result, **supplement, parent_independent_id=independent_id,
+            independence_status='CONTINUED_PUBLIC_CORRECTION',
             initial_completed_at=phase.get('initial_completed_at', phase['completed_at']),
             completed_at=proof['completed_at'], market_amendment={
             'rollout_path': str(Path(rollout_path).resolve()), **amendment,

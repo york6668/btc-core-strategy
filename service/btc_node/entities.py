@@ -164,16 +164,16 @@ class Entities:
             target, target_type = pending.pop()
             rows = self.db.rows('SELECT e.entity_key,e.object_id,e.kind FROM dependencies d JOIN entities e '
                                 'ON e.entity_key=d.source_key AND e.current_version=d.source_version '
-                                "WHERE d.target_key=%s AND d.target_type=%s AND (e.active=1 OR e.kind='REVIEW')",
+                                "WHERE d.target_key=%s AND d.target_type=%s AND (e.active=1 OR e.kind IN ('REVIEW','DECISION'))",
                                 (target, target_type))
             for row in rows:
                 source = row['entity_key']
                 if source in visited:
                     continue
                 visited.add(source)
-                if row['kind'] == 'REVIEW':
-                    # Keep a correction's path to active consumers of this
-                    # historical result, without asking to re-review the record.
+                if row['kind'] in {'REVIEW', 'DECISION'}:
+                    # Immutable judgements/reviews bridge changes to active
+                    # consumers; the historical record itself is not fresh work.
                     pending.append((source, 'ENTITY'))
                     continue
                 requirement = identity(source, cause, cause_version)

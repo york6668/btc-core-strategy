@@ -6,10 +6,18 @@ Older immutable assessments/observations continue through their original contrac
 from copy import deepcopy
 
 from .common import digest, exact, instant, require, text
+from .judgements import LIFECYCLE_REVIEW, REPORT_FIDELITY_REVIEW
 
 REVISION = 7
 OUTCOMES = ('VALID', 'REVISE', 'EVIDENCE_LIMITED')
 SCOPES = ('MARKET', 'PORTFOLIO')
+MARKET_INSTRUCTIONS = (
+    '仅完成公开市场研究：同一公开证据、尺度、方法与截止下，方向、周期、动量衰减与反向趋势、主证据链、公开现价价值和验证关系独立于个人持仓、成本、偏好和执行能力。'
+    '先形成机制、应有与实际价格响应、竞争解释和反证裁决，再形成当前周期及现价参与价值；方向、归因、延续和价值各由自身依据支持。'
+    '市场价值、具体产品身份与报价、个人数量及执行分别判断；公开产品净成本缺口可限制该产品价值，但个人敞口未知不能撤销底层市场方向或公开价值分析。'
+    '历史观点和已送达报告只用于比较，不作公开事实；混合稿中的个人安排不能回到市场论证。保持同尺度拐点、双向风险及条件/失效关系，证据变化或实际分析错误可以修正结论并说明原因。'
+    '公开阶段不完成个人组合风险或动作；形成完整独立市场命题及依据，后续报告可调整表达但不能由个人输入改变命题。'
+)
 INSTRUCTIONS = (
     '完整闭环以持续识别和验证周期主线为主干：先形成独立市场论证与现价取舍，再结合实际持仓形成参与、防守、等待及改变条件的个人建议；风险评估服务这些取舍。'
     '公开事实、历史假设、个人事实分开；先从原始公开证据研判，再检验历史观点，历史预测和候选价不自证。'
@@ -39,13 +47,13 @@ INSTRUCTIONS = (
 # preceding stages and must not re-enter the report through result_instructions.
 REPORT_INSTRUCTIONS = (
     '成稿承接market_result、portfolio_risk、strategy_advice和applicability中的已形成结果；旧版本仍按原allocation_decision恢复，不冒充新版风险评估。'
-    '开头给已形成的总裁决，重要主题分别交付当前判断及支持程度、本轮选择和确实未决的动作，最后收束总体安排及改变条件；具体表达按mobile-report，不固定条数或栏目。周期不是天数，不以局部事件或短线剩余期限替代主结论。'
+    '开头从market_result承接独立公开结论；重要市场主题继续交付方向、支持程度、同尺度拐点、主线及公开价值，个人应用在其后明确映射。总体个人取舍不作为市场总裁决或市场依据，不能用已有仓位、成本、保护目标或执行缺口支持或撤销公共判断。不固定条数或栏目。周期不是天数，不以局部事件或短线剩余期限替代主结论。'
     '普通日内变化没有改变周期判断、重要风险或安排时留在内部；重大即时风险仍及时反馈并说明影响范围。缺少周期分析返回原研究，不在成稿延长小时结论。'
     '市场呈现主论点、决定性证据及反证裁决，个人部分承接现价下参与、防守和等待的有据取舍及现货、空头各自含义；不以风险变化组织另一份报告，不要求风险需要应对才给有用建议。'
     '没有操作建议不等于缺少评估；不因配置比例、短线偏弱或未知信息生成操作清单。比例、数量和操作顺序只在依据充分且必要时呈现。'
     'market_result中已形成且影响当前取舍的现价吸引力与美债等待比较属于综合结果，正文保留补偿是否充分或仍无法确认、主要原因和改变条件；方向与笼统资金成本不能替代这一判断。缺少量化依据时承接已有定性结论和具体限制，不在成稿补算。'
     '按结果的实际含义取舍表达，不逐项转述内部字段、来源核验、未知清单或维护记录；applicability限制当前安排，不要求照抄其explanation中的全部规则。'
-    '详细理由集中说明，概览和最后收束可为整体取舍作必要概括，避免逐字重复；逐句删并不得删除本轮选择或未决影响，段落主题重要不代表段内所有句子都必要。'
+    '详细理由集中说明；最后收束若概括个人安排，明确其适用个人事实及市场前提，不将个人等待写成整体市场价值不足。逐句删并保留各自决定及未决影响；历史reported.display只用于已交付含义比较，不从旧个人动作恢复当前建议。'
     '数量受限与判断未决分别说明实际影响；缺少新版风险评估不证明旧安排有效或安全，也不取消已有公开依据的区域、价格风险和条件价值分析。到期作为内部复核依据，正文说明本轮重新分析的实际结论，只有旧可执行建议失效确会误导时才简明纠正。'
     '重要风险、建议有效性、恢复参与条件及事实纠错忠实保留，不提高确认程度或补造交易价。'
     '成稿不重新研究或改写结果；发现影响判断的分析缺口，返回对应研究，表达问题在冻结前修正。'
@@ -53,8 +61,9 @@ REPORT_INSTRUCTIONS = (
 )
 
 from .market_state import CYCLE_EXPRESSION_REVIEW, MOMENTUM_REPORT_REVIEW, EVIDENCE_REPORT_REVIEW, CYCLE_THESIS_REVIEW
+MARKET_INSTRUCTIONS += LIFECYCLE_REVIEW
 INSTRUCTIONS += CYCLE_THESIS_REVIEW
-REPORT_INSTRUCTIONS += CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
+REPORT_INSTRUCTIONS += REPORT_FIDELITY_REVIEW + CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
 
 
 def strings(value, name, nonempty=False):
@@ -173,6 +182,8 @@ def validate_risk(value, cutoff, market_hash=None, fact_version=None):
     require(max(instant(value['assessed_at']), instant(cutoff)) < instant(value['valid_until']), 'risk assessment needs an explicitly reviewed validity window')
     require(isinstance(value['market_result_hash'], str) and value['market_result_hash'].startswith('sha256:'), 'risk market binding required')
     require(isinstance(value['fact_version'], dict) and value['fact_version'], 'risk local fact binding required')
+    if any(v is None for v in value['fact_version'].values()):
+        require(value['limitations'], 'unavailable personal files need explicit bounded risk limitations')
     if market_hash is not None:
         require(value['market_result_hash'] == market_hash, 'risk assessment binds another market result')
     if fact_version is not None:
@@ -202,6 +213,9 @@ def validate_allocation_review(value, ctx, market_hash):
     require(type(value['material']) is bool, 'portfolio review needs materiality judgement')
     text(value['explanation'], 'portfolio applicability reasoning')
     strings(value['limitations'], 'portfolio applicability limits', value['outcome'] == 'EVIDENCE_LIMITED')
+    if any(v is None for v in ctx['identity']['fact_version'].values()):
+        require(value['outcome'] != 'VALID' and value['limitations'],
+                'unavailable personal files require bounded portfolio limitations, not confirmed safety')
     if value['outcome'] == 'VALID':
         require(current is not None, 'legacy content cannot manufacture a current portfolio assessment')
         require(current['fact_version'] == value['fact_version'], 'changed facts require an actual allocation reassessment')
@@ -271,8 +285,23 @@ def report_inputs(ctx):
             result['applicability']['portfolio'] = actual
         else:
             result['applicability']['portfolio'] = expired
+    version = ctx['identity'].get('fact_version')
+    unavailable = [name for name, hashed in version.items() if hashed is None] if isinstance(version, dict) else []
+    if unavailable:
+        if not decision or decision['fact_version'] != ctx['identity']['fact_version']:
+            result[result_key] = None
+            advice = None
+        bounded = deepcopy(result['applicability']['portfolio']) if result['applicability']['portfolio'] else {}
+        if bounded.get('outcome') not in ('REVISE', 'EVIDENCE_LIMITED'):
+            bounded['outcome'] = 'EVIDENCE_LIMITED'
+        bounded['limitations'] = bounded.get('limitations', []) + [
+            'Personal source files unavailable: ' + ', '.join(unavailable) + '; do not infer missing holdings or reuse actions bound to different facts.']
+        result['applicability']['portfolio'] = bounded
+        if strategy.get('fact_version') != ctx['identity']['fact_version']:
+            for plan in result['execution_plans'].values():
+                plan.update(status='UNDETERMINED', tiers=[])
     result['result_binding'] = {'market_result_hash': digest(market),
-                                binding: digest(decision) if decision else None,
+                                binding: digest(result[result_key]) if result[result_key] else None,
                                 'applicability_hash': digest(result['applicability'])}
     if revision >= 7:
         # Only an actual revision 7 assessment owns current opportunity advice.

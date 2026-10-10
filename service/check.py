@@ -65,7 +65,8 @@ def run(docker, reader, reader_image=None):
                     'maintenance_enabled':False,'recycle_grace_hours':48}
         (directory/'settings.json').write_text(json.dumps(settings))
         override = directory/'compose.test.json'
-        override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias]}}}))
+        override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
+            'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']}}}))
         command += ['-f',str(override)]
         (directory/'compose.env').write_text('\n'.join(['BTC_DATA_DIR='+str(directory),
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),

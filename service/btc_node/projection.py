@@ -19,11 +19,12 @@ class Projection:
         self.source_digests, self.source_dependencies = {}, {}
 
     def put(self, kind, object_id, payload, source, known, *, scope='PUBLIC', product=None,
-            observed=None, active=True, due=None, expires=None, dependencies=(), identified=None, outcome_review=None):
+            observed=None, active=True, due=None, expires=None, dependencies=(), identified=None, outcome_review=None,
+            source_bytes=None, source_relation='ORIGINAL'):
         current = self.objects.get(kind, object_id)
         source = Path(source)
         if source not in self.source_digests:
-            self.source_digests[source] = self.db.put_blob(source.read_bytes())
+            self.source_digests[source] = self.db.put_blob(source.read_bytes() if source_bytes is None else source_bytes)
         source_digest = self.source_digests[source]
         # Validated old artifacts are immutable historical evidence. Re-reading
         # them must not overwrite a newer service judgement or revive retirement.
@@ -38,8 +39,8 @@ class Projection:
                 'observed_at': observed or known, 'known_at': known, 'change_reason': 'validated source projection',
                 'source_ref': str(source), 'method_version': self.method_version, 'payload': deepcopy(payload),
                 'active': active, 'review_at': due, 'valid_until': expires,
-                'dependencies': list(dependencies) + [{'type': 'BLOB', 'digest': source_digest, 'relation': 'ORIGINAL'}]}
-        spec['dependencies'].extend(self.evidence_dependencies(source))
+                'dependencies': list(dependencies) + [{'type': 'BLOB', 'digest': source_digest, 'relation': source_relation}]}
+        spec['dependencies'].extend(self.evidence_dependencies(source, source_bytes))
         if identified and not current:
             spec['identified_at'] = identified
         if outcome_review:
@@ -55,13 +56,13 @@ class Projection:
         self.results.append({'kind': kind, **result})
         return self.objects.get(kind, object_id)
 
-    def evidence_dependencies(self, source):
+    def evidence_dependencies(self, source, source_bytes=None):
         """Pin original evidence manifests/raw bytes, never their freshness."""
         source = Path(source)
         if source in self.source_dependencies:
             return self.source_dependencies[source]
         try:
-            value = json.loads(Path(source).read_bytes())
+            value = json.loads(Path(source).read_bytes() if source_bytes is None else source_bytes)
         except (ValueError, UnicodeError):
             return []
         evidence_ids, hashes = set(), set()
@@ -181,6 +182,12 @@ class Projection:
             payload = {'formal_decision_id': decision_id, 'formal_created_at': adopted_at,
                        'recommendation_name': name, 'market_binding': binding,
                        'recommendation': plan, **(fact_fields or {})}
+            if (fact_fields or {}).get('fact_review') == 'REQUIRED':
+                # Preserve the formal proposal and its original deadline as
+                # history; unavailable current facts cannot make it current advice.
+                payload['formal_recommendation'] = payload['recommendation']
+                payload['recommendation'] = None
+                payload['recommendation_applicability'] = 'EVIDENCE_LIMITED'
             self.put('PLAN', object_id, payload, source, known, observed=adopted_at,
                      identified=adopted_at, scope='PERSONAL', due=due, expires=expires,
                      dependencies=[basis, *dependencies])
@@ -227,7 +234,6 @@ class Projection:
     def refresh(self, project, root):
         # Import only through the real validators and current-pointer authority.
         from v4 import storage, market_state, research, delivery
-        from v4.common import facts
         project, root = Path(project), Path(root)
         from .reader_prices import project as project_receipts
         receipts = project_receipts(self.db)
@@ -258,24 +264,50 @@ class Projection:
             if known is None:
                 known = stamp(datetime.fromtimestamp(observed_path.stat().st_mtime, timezone.utc))
             self.public(effective, observed_path, known, reference=effective['observation_id'])
-        fact_version = facts(project)
-        match = fact_version == decision['fact_version']
-        for name, digest in fact_version.items():
+        # This service also consumes older pinned methods. Snapshot the exact
+        # local bytes here once, rather than requiring a newer v4 helper or
+        # reopening a file after hashing it. A failed read has receipt provenance,
+        # not invented confirmed-file content or an empty holdings projection.
+        from .fact_views import NAMES
+        fact_version, fact_sources = {}, {}
+        for name in NAMES:
             fact_path = project / name
-            self.put('FACT_PROJECTION', name, {'file_hash': digest, 'authority': 'CONFIRMED_LOCAL_FILE',
-                     'structured_status': 'MATCHED_FORMAL_VIEW' if match else 'NEEDS_EXTRACTION',
+            try:
+                raw = fact_path.read_bytes()
+                raw.decode('utf-8')
+            except (OSError, UnicodeError) as exc:
+                fact_version[name] = None
+                availability = {'status': 'UNAVAILABLE', 'reason': type(exc).__name__}
+                raw = encode({'schema': 'LOCAL_FACT_AVAILABILITY_V1', 'file': name,
+                              'path': str(fact_path), **availability})
+                relation = 'AVAILABILITY_CHECK'
+            else:
+                fact_version[name] = 'sha256:' + fingerprint(raw)
+                availability = {'status': 'AVAILABLE', 'reason': None}
+                relation = 'CONFIRMED_FILE'
+            fact_sources[name] = (fact_path, raw, availability, relation)
+        match = all(value is not None for value in fact_version.values()) and fact_version == decision['fact_version']
+        for name, digest in fact_version.items():
+            fact_path, raw, availability, relation = fact_sources[name]
+            self.put('FACT_PROJECTION', name, {'file_hash': digest,
+                     'authority': 'CONFIRMED_LOCAL_FILE' if digest is not None else 'UNAVAILABLE_LOCAL_FILE',
+                     'availability': availability,
+                     'structured_status': ('UNAVAILABLE' if digest is None else
+                                           'MATCHED_FORMAL_VIEW' if match else 'NEEDS_EXTRACTION'),
                      'formal_fact_version': decision['fact_version'],
                      'structured_view': assessment.get('domain', {}).get('account_facts') if match and name == '资产配置.md' else None},
-                     fact_path, stamp(), scope='PERSONAL')
+                     fact_path, stamp(), scope='PERSONAL', source_bytes=raw, source_relation=relation)
         fact_dependencies = [{'type': 'ENTITY', 'kind': 'FACT_PROJECTION', 'object_id': name,
-                              'relation': 'CONFIRMED_FACT'} for name in fact_version]
+                              'relation': 'CONFIRMED_FACT' if fact_version[name] is not None else 'FACT_AVAILABILITY'}
+                             for name in fact_version]
         checked_time = stamp()
         fact_known = max(self.objects.get('FACT_PROJECTION', name)['known_ms'] for name in fact_version)
         review_due = stamp(datetime.fromtimestamp(fact_known / 1000, timezone.utc)) if not match else None
         self.put('ALLOCATION', 'portfolio', {'market_binding': binding, 'fact_version': decision['fact_version'],
                  'current_fact_version': fact_version, 'fact_review': 'CURRENT' if match else 'REQUIRED',
-                 'portfolio_analysis': assessment.get('portfolio_analysis'),
-                 'portfolio': assessment.get('recommendations', {}).get('portfolio'),
+                 'portfolio_analysis': assessment.get('portfolio_analysis') if match else None,
+                 'portfolio': assessment.get('recommendations', {}).get('portfolio') if match else None,
+                 'recommendation_applicability': 'CURRENT' if match else 'EVIDENCE_LIMITED',
                  'fact_authority': 'bound source version'}, source, checked_time, observed=frozen_time,
                  due=review_due, scope='PERSONAL', dependencies=fact_dependencies)
         if binding:

@@ -248,7 +248,7 @@ class RevisionFivePublicationTests(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.c.study(authored=True,independent_output=json.dumps(self.public))
 
-    def test_independent_can_register_its_actual_public_supplement_without_restarting(self):
+    def test_public_supplement_continues_original_research_after_disclosure(self):
         req, saved, _ = self.adopted()
         original = research._load(self.f.store, 'independent', saved['independent_id'])
         bundle_spec = {k: deepcopy(v) for k, v in self.f.evidence.items()
@@ -282,16 +282,24 @@ class RevisionFivePublicationTests(unittest.TestCase):
                     'started_at': original['completed_at'] + 1, 'completed_at': original['completed_at'] + 10,
                     'last_agent_message': json.dumps(public)}}):
                 stream.write(json.dumps(item) + '\n')
-        args = (self.f.store, req['request_id'], original['agent_id'], path, 'PUBLIC_SUPPLEMENT')
+        original_args = (self.f.store, req['request_id'], original['agent_id'], path, 'PUBLIC_SUPPLEMENT')
+        with self.assertRaisesRegex(Invalid, 'already read personal or candidate'):
+            research.independent(*original_args)
+        def continuation(additional=None):
+            return research.amend_market(self.f.store, original['independent_id'], path,
+                                         turn_id='PUBLIC_SUPPLEMENT', additional=additional)
         with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'):
             with self.assertRaisesRegex(Invalid, 'reference source absent'):
-                research.independent(*args)
+                continuation()
             with self.assertRaisesRegex(Invalid, 'archive supplementary'):
-                research.independent(*args, additional=directory)
+                continuation(additional=directory)
             storage.archive_evidence(self.f.store, directory)
-            actual = research.independent(*args, additional=directory)
+            actual = continuation(additional=directory)
         self.assertEqual(actual['market_result'], public)
         self.assertEqual(actual['input_id'], req['independent_input_id'])
+        self.assertEqual(actual['independence_status'], 'CONTINUED_PUBLIC_CORRECTION')
+        self.assertEqual(actual['turn_id'], original['turn_id'])
+        self.assertEqual(actual['parent_independent_id'], original['independent_id'])
         self.assertEqual(actual['evidence_context']['evidence_id'], bundle['evidence_id'])
         self.assertEqual(actual['evidence_context']['knowledge_cutoff'], bundle['cutoff'])
         self.assertEqual(research._load(self.f.store, 'independent', original['independent_id']), original)
@@ -302,11 +310,11 @@ class RevisionFivePublicationTests(unittest.TestCase):
         evidence.freeze(late_spec, files, late_dir)
         storage.archive_evidence(self.f.store, late_dir)
         with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'), self.assertRaisesRegex(Invalid, 'after the actual completed answer'):
-            research.independent(*args, additional=late_dir)
+            continuation(additional=late_dir)
         # A raw-source rewrite cannot acquire approval merely by using --additional.
         (directory / 'raw' / (source['raw_hash'][7:] + '.json')).write_text('{}')
         with mock.patch('v4.research.now', return_value='2030-03-01T13:03:20Z'), self.assertRaisesRegex(Invalid, 'raw evidence'):
-            research.independent(*args, additional=directory)
+            continuation(additional=directory)
 
     def test_model_selected_driver_does_not_require_legacy_factor_recipe(self):
         self.f.draft['domain']['causal_attribution'].update(driver_regime='MIXED',

@@ -135,7 +135,7 @@ def accumulation(prior, history, current):
     return {'status': 'AVAILABLE', 'start': prior['cutoff'], 'end': current['cutoff'], 'windows': windows, 'revisions': revisions}
 
 
-def context(root, db, project, current_market, limit=240, compact=True, evidence_dir=None, *, frozen_review=False, workflow_revision=None):
+def context(root, db, project, current_market, limit=240, compact=True, evidence_dir=None, *, frozen_review=False, workflow_revision=None, fact_snapshot=None):
     from .storage import current
     root = Path(root)
     market.validate_evidence(current_market)
@@ -159,7 +159,10 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         prior = raw_market(root / 'evidence' / core['evidence_id'][7:], core) if core else None
     from . import cycle
     cycle_workflow = workflow and cycle.enabled(root)
-    cycle_basis = cycle.baseline(root, core, facts(project)) if cycle_workflow else None
+    # The cycle baseline and identity describe the same personal snapshot.
+    # A caller may also reuse its file availability and hashes downstream.
+    current_facts = deepcopy(fact_snapshot['fact_version']) if fact_snapshot is not None else facts(project)
+    cycle_basis = cycle.baseline(root, core, current_facts) if cycle_workflow else None
     if cycle_workflow:
         prior = cycle.raw_baseline(root, cycle_basis)
     legacy = market.read_context(db, 1)
@@ -193,7 +196,6 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         market.validate_evidence(package)
         later = max(instant(r['retrieved_at']) for r in package['retrievals'].values()) > max(instant(r['retrieved_at']) for r in current_market['retrievals'].values())
         require(not (later and market._has_new_rows(package, current_market)), 'newer public revision requires a new current evidence package')
-    current_facts = facts(project)
     event_review = main_event_review(root, pinned, current_facts) if workflow else None
     identity = {'decision_id': (pinned or {}).get('decision_id'),
                 'deep_completion_hash': (completed or {}).get('completion_hash'),

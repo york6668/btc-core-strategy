@@ -61,6 +61,14 @@ def help_only(argv):
     return False
 
 
+def component_binding(release):
+    directory = Path(__file__).parent
+    names = ('execution.py', 'projection.py', 'entities.py', 'series.py', 'history.py')
+    return {'schema': 'BTC_OPERATION_COMPONENT_BINDING_V1', 'core_release': Path(release).name,
+            'service_sources': {name: fingerprint((directory / name).read_bytes()) for name in names},
+            'meaning': 'Actual executing method and service bytes; data/reader identity remains in frozen run inputs, not inferred from this pin.'}
+
+
 def execute(settings, request):
     params = request['params']
     release = Path(params['release']).resolve()
@@ -127,7 +135,8 @@ def execute(settings, request):
             command = [sys.executable, str(release / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *argv]
             command_started = monotonic()
             process = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True)
-            result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr}
+            result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr,
+                      'component_binding': component_binding(release)}
             timings = {'command_ms': round((monotonic()-command_started)*1000)}
             atomic(journal, {**journal_state, 'status': 'EXECUTED', 'result': result})
             with db.transaction():
@@ -189,10 +198,32 @@ def project_state(db, settings, release, argv=()):
     if directory and not directory.is_absolute():
         directory = project / directory
     if directory and (directory / 'run.json').is_file():
-        public = full_context(db, 'PUBLIC')
+        run = json.loads((directory / 'run.json').read_bytes())
+        cutoff = run['created_at']
         public_path = directory / 'continuous-public.json'
-        atomic(public_path, public)
+        binding_path = directory / 'continuous-public-binding.json'
+        if binding_path.exists():
+            snapshot = json.loads(binding_path.read_bytes())
+            public_path = directory / snapshot['file']
+            if snapshot['as_of'] != cutoff or fingerprint(public_path.read_bytes()) != snapshot['digest']:
+                raise Conflict('frozen continuous public context changed; preserve the original run')
+        else:
+            legacy = {'file': public_path.name, 'digest': fingerprint(public_path.read_bytes())} if public_path.exists() else None
+            if legacy is not None:
+                # An unbound dynamic index can omit an object retired later,
+                # even when its remaining rows contain no future timestamps.
+                # Preserve those original bytes and disclose reconstruction.
+                public_path = directory / 'continuous-public-as-of.json'
+            atomic(public_path, full_context(db, 'PUBLIC', as_of=cutoff))
+            snapshot = {'schema': 'BTC_CONTINUOUS_PUBLIC_SNAPSHOT_V1', 'as_of': cutoff,
+                        'file': public_path.name, 'digest': fingerprint(public_path.read_bytes()),
+                        'legacy_context': legacy,
+                        'origin': 'LEGACY_RECONSTRUCTED_AS_KNOWN' if legacy else 'RUN_AS_KNOWN_SNAPSHOT',
+                        'component_binding': component_binding(release),
+                        'role': 'HISTORICAL_JUDGEMENT_CONTEXT_NOT_NEW_EXTERNAL_EVIDENCE'}
+            atomic(binding_path, snapshot)
         result['public_context'] = str(public_path)
+        result['public_context_binding'] = snapshot
         frozen_path = directory / 'market-result.json'
         if frozen_path.exists():
             frozen = json.loads(frozen_path.read_bytes())
@@ -211,24 +242,38 @@ def project_state(db, settings, release, argv=()):
     return result
 
 
-def full_context(db, scope):
+def full_context(db, scope, *, as_of=None):
     objects, after, values = Entities(db), None, []
     while True:
-        page = objects.list(scope=scope, limit=500, after=after)
+        page = objects.list(scope=scope, active=None if as_of is not None else True, limit=500, after=after)
         for row in page['objects']:
-            value=objects.get(row['kind'],row['object_id'])
-            # Every run gets a bounded index, not another full copy of all
-            # unchanged analyses. Original typed state stays in immutable CAS.
+            value = objects.get(row['kind'], row['object_id'], as_of=as_of)
+            if not value or not value['active'] or row['kind'] == 'REVIEW':
+                continue
+            recovery = value['payload'].get('recovery') or {} if row['kind'] == 'DELIVERY' else {}
+            attempts = recovery.get('attempts', [])
+            if attempts and not recovery.get('actions') and all(v.get('next_action') == 'WAIT_FOR_NEW_EVIDENCE' for v in attempts):
+                continue
             values.append({name:value[name] for name in
                 ('kind','object_id','scope','product','version','digest','known_ms','observed_ms')})
-            values[-1]['content_path']=str(db.blobs.path(value['digest']))
+            values[-1]['content_path'] = str(db.blobs.path(value['digest']))
         after = page['next']
         if not after:
             break
+    limit = millis(as_of) if as_of is not None else millis()
     requirements = db.rows('SELECT r.* FROM review_requirements r JOIN entities e USING(entity_key) '
-                           "WHERE e.scope=%s AND e.kind<>'REVIEW' AND r.resolved_ms IS NULL ORDER BY r.opened_ms", (scope,))
-    return {'scope': scope, 'objects': values, 'requirements': requirements,
-            'meaning': 'Complete maintenance index. Read immutable content_path or object.get at the listed version before judging; report visibility does not determine maintenance.'}
+                           "WHERE e.scope=%s AND e.kind NOT IN ('REVIEW','DECISION') AND r.opened_ms<=%s "
+                           'AND (r.resolved_ms IS NULL OR r.resolved_ms>%s) ORDER BY r.opened_ms', (scope, limit, limit))
+    if as_of is not None:
+        # A later review does not close the obligation in an earlier view.
+        # Keep the stored resolution; mask only what was not yet known.
+        for row in requirements:
+            if row['resolved_ms'] is not None and row['resolved_ms'] > limit:
+                row['resolved_ms'] = None
+                row['resolution_ref'] = None
+    return {'scope': scope, 'as_of_ms': limit, 'objects': values, 'requirements': requirements,
+            'role': 'HISTORICAL_JUDGEMENT_CONTEXT_NOT_NEW_EXTERNAL_EVIDENCE',
+            'meaning': 'Version-pinned maintenance index as known at the stated time. Read immutable judgement contents and recheck against external evidence; a prior opinion is not a new fact.'}
 
 
 def recover(settings, operation):
@@ -252,12 +297,13 @@ def recover(settings, operation):
                         (value.get('help_only') is True and help_only(value['request']['argv'])))
             if not readonly:
                 Catalog(db).sync('strategy', Path(settings['project']) / '.strategy', hardlink=True)
-                continuity = project_state(db, settings, value['request']['release'])
+                continuity = project_state(db, settings, value['request']['release'], value['request']['argv'])
             result = value.get('result') or {'returncode': 75, 'stdout': '', 'stderr':
                 'Execution was interrupted. State preserved. Inspect the original run and delivery before a new operation.'}
             if not readonly:
                 result['continuity'] = continuity
             result['recovery'] = 'STATE_PRESERVED_NO_REPLAY'
+            result['recovery_component_binding'] = component_binding(value['request']['release'])
             digest = db.put_blob(encode(result))
             db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",
                        (millis(), digest, operation))

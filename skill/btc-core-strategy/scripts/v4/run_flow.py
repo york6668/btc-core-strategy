@@ -6,7 +6,7 @@ from pathlib import Path
 
 import market_observation as market
 from . import evidence, main_flow, reporting, report_care, sensing, storage, cycle, material_reads
-from .common import create, digest, exact, facts, instant, locked, now, pointer, read, require, text
+from .common import create, digest, exact, fact_inputs, facts, instant, locked, now, pointer, read, require, text
 
 
 def refs_in(value):
@@ -155,6 +155,8 @@ def report_brief(ctx):
         brief['cycle_baseline'] = {k: basis.get(k) for k in
             ('status', 'market_status', 'portfolio_status', 'result_id', 'report_hash', 'recheck_at')}
         brief.update(report_inputs(ctx))
+    if brief.get('reported'):
+        brief['reported']['input_role'] = 'DELIVERED_HISTORY_ONLY'
     brief.update(reporting.authoring_guidance(ctx))
     return brief
 
@@ -463,6 +465,8 @@ def phase_material(run, label, stage='report'):
     form['_binding'] = {'context_file': full_path, 'context_hash': digest(ctx)}
     template_path = save(d / (prefix + '-template.json'), form)
     quality_keys = {'decision_and_advice','reasoning','necessary_numbers','material_risk','phone_readability'}
+    if ctx.get('report_contract_revision', 1) >= 3:
+        quality_keys.add('market_independence')
     if ctx.get('cycle_policy_revision') == 1:
         quality_keys |= cycle.REPORT_CHECKS
     if ctx.get('deep_report_policy_revision') == 1:
@@ -554,8 +558,10 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         require(template == market_template(ctx, raw), 'market template changed')
         authored = material_reads.compose(template, resolve_answers(run, read(answers_path)))
     exact(authored, ' '.join(market_template(ctx, raw)), 'independent hourly market result')
+    inputs = fact_inputs(run['project'])
     latest = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
-                             run['project'], raw, evidence_dir=run['evidence'], workflow_revision=run.get('workflow_revision'))
+                             run['project'], raw, evidence_dir=run['evidence'], workflow_revision=run.get('workflow_revision'),
+                             fact_snapshot=inputs)
     require(market_state.market_projection(ctx) == market_state.market_projection(latest),
             'public market inputs changed; refresh market material')
     package = evidence.validate(read(Path(run['evidence']) / 'evidence.json'), run['evidence'])
@@ -591,7 +597,8 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
             path = save(candidate_path, frozen)
             material = save(d / ('market-review-' + digest(frozen)[7:] + '.json'),
                 {'market_candidate': frozen,
-                 'instructions': market_state.EVIDENCE_REASONING_REVIEW + market_state.PUBLIC_RESULT_REVIEW})
+                 'instructions': (market_state.CYCLE_THESIS_REVIEW + market_state.EVIDENCE_REASONING_REVIEW
+                                  + market_state.PUBLIC_RESULT_REVIEW)})
             reads = material_reads.make(d, 'market-review', material, compact=True,
                 on_demand={'public_context': str(d / 'context.json'),
                            'reference_index': str(d / 'reference-index.json'),
@@ -617,8 +624,9 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                      'portfolio_analysis': core.get('portfolio_analysis'),
                      'conclusion': core.get('conclusion'), 'robustness': core.get('robustness'),
                      'confirmed_account_facts': core.get('domain', {}).get('account_facts'),
-                     'fact_files': {name: str(Path(run['project']) / name) for name in facts(run['project'])},
-                     'facts_match_current': core['fact_version'] == facts(run['project']),
+                     'fact_files': {name: item['path'] for name, item in inputs['files'].items() if item['status'] == 'AVAILABLE'},
+                     'fact_availability': inputs['files'],
+                     'facts_match_current': core['fact_version'] == inputs['fact_version'],
                      'instructions': '围绕已冻结周期主线和现价价值，完成参与、防守、等待及现货与空头各自的条件含义；不得改写市场结果。账户缺口只约束依赖它的数量、覆盖或实际净动作，仍完成有独立依据的分项判断。内部到期触发实质重新分析，不以到期或未知结案、不自动续期；正式建议改变沿原研究审阅。'}
         if not portfolio['facts_match_current']:
             portfolio['confirmed_account_facts'] = None
@@ -632,7 +640,8 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                          'current_recommendations': core.get('recommendations'),
                          'fact_version': latest['identity']['fact_version'],
                          'confirmed_account_facts': portfolio['confirmed_account_facts'],
-                         'fact_files': portfolio['fact_files'], 'instructions': INSTRUCTIONS}
+                         'fact_files': portfolio['fact_files'], 'fact_availability': portfolio['fact_availability'],
+                         'instructions': INSTRUCTIONS}
             # A facts-only change can refresh this stage around the same public
             # freeze, without recollecting evidence or rebuilding research.
             context_path = save(d / ('portfolio-sensing-' + latest['context_id'][7:] + '.json'), latest)

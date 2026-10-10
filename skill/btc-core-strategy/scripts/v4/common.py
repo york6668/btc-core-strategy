@@ -132,6 +132,23 @@ def atoms(values, name, empty=False):
     require(len(set(values)) == len(values), name + ': duplicate concept')
 
 
-def facts(project):
+def fact_inputs(project):
+    """Unavailable personal files are explicit gaps, never empty holdings."""
     root = Path(project)
-    return {name: digest((root / name).read_bytes()) for name in ('资产配置.md', '操作记录.md', '纠正记录.md')}
+    files = {}
+    for name in ('资产配置.md', '操作记录.md', '纠正记录.md'):
+        path = root / name
+        try:
+            raw = path.read_bytes()
+            raw.decode('utf-8')
+            value = digest(raw)
+        except (OSError, UnicodeError) as exc:
+            files[name] = {'path': None, 'hash': None, 'status': 'UNAVAILABLE',
+                           'reason': type(exc).__name__}
+        else:
+            files[name] = {'path': str(path), 'hash': value, 'status': 'AVAILABLE', 'reason': None}
+    return {'fact_version': {name: item['hash'] for name, item in files.items()}, 'files': files}
+
+
+def facts(project):
+    return fact_inputs(project)['fact_version']

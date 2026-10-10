@@ -112,6 +112,8 @@ def render(value, decision):
     if ctx.get('deep_report_policy_revision') == 1:
         expected |= SUMMARY_CHECKS
         validate_report_basis(value, ctx)
+    if ctx.get('report_contract_revision', 1) >= 3:
+        expected.add('market_independence')
     require(isinstance(layout['quality_review'], dict) and set(layout['quality_review']) == expected,
             'complete authored expression review required')
     for key, explanation in layout['quality_review'].items():
@@ -157,6 +159,15 @@ def render(value, decision):
         validate_price(binding, values)
         covered |= numbers(excerpt)
     require(numbers(body) <= covered, 'all report numbers need frozen evidence bindings')
+    if ctx.get('report_contract_revision', 1) >= 3:
+        conclusions = [b for b in layout['bindings'] if b['scope'] != 'clock']
+        require(conclusions and min(conclusions, key=lambda b: body.index(b['text']))['scope'] == 'market',
+                'report must present the independent public conclusion before personal application')
+        remaining = body
+        for binding in sorted(layout['bindings'], key=lambda item: len(item['text']), reverse=True):
+            remaining = remaining.replace(binding['text'], '')
+        require(not business_text(remaining),
+                'all report prose needs explicit public, personal or clock ownership, not only numbers')
     # The whole source is the delivery assertion: all prose, whitespace, order,
     # tables and caveats are protected, without forcing display sections.
     constraints = [{'id':'authored-body', 'kind':'condition', 'source_text':body}]

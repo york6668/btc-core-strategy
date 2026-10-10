@@ -77,7 +77,7 @@ class DomainRuntime(unittest.TestCase):
                     project = sample.f.project
                     runtime = folder/'releases'; release=runtime/'synthetic-release'
                     release.mkdir(parents=True)
-                    shutil.copytree(source/'skill',release/'skill')
+                    shutil.copytree(source/'skill',release/'skill',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
                     shutil.copytree(source/'project-methods',release/'project-methods')
                     (release/'RELEASE.json').write_text('{"synthetic":true}\n')
                     config=json.loads(node.read_text());config['project_dir']=str(project);node.write_text(json.dumps(config))
@@ -203,6 +203,32 @@ class DomainRuntime(unittest.TestCase):
                             'run-advance','--run',os.path.relpath(prepared['run'],project),'--stage','observe','--input',str(answers)]}}
                     observed=execute(settings,observed_request)
                     self.assertEqual(observed['returncode'],0,observed['stderr'])
+                    # A later database judgement must not become evidence for
+                    # an older prepared round, including through real CLI reads.
+                    from btc_node.entities import Entities
+                    frozen_public=Path(result['continuity']['public_context']).read_bytes()
+                    db=Database(settings)
+                    try:
+                        with db.writer(),db.transaction():
+                            future_id=folder.name+'-later-public'
+                            Entities(db).put({'kind':'CYCLE','object_id':future_id,'scope':'PUBLIC',
+                                'observed_at':'2030-03-01T14:01:00Z','known_at':'2030-03-01T14:10:00Z',
+                                'method_version':'SYNTHETIC_ONLY','source_ref':'generated-later-evidence',
+                                'change_reason':'Later information must not enter the original round',
+                                'payload':{'direction':'BEARISH','synthetic':True}},expected_version=0)
+                    finally:db.close()
+                    material_request={'method':'core.execute','operation_id':folder.name+'-old-round-material',
+                        'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),
+                            'run-material','--run',prepared['run']]}}
+                    material=execute(settings,material_request)
+                    self.assertEqual(material['returncode'],0,material['stderr'])
+                    self.assertEqual(Path(material['continuity']['public_context']).read_bytes(),frozen_public)
+                    self.assertNotIn(future_id,{v['object_id'] for v in json.loads(frozen_public)['objects']})
+                    self.assertEqual(material['component_binding']['core_release'],release.name)
+                    self.assertEqual(set(material['component_binding']['service_sources']),
+                        {'execution.py','projection.py','entities.py','series.py','history.py'})
+                    print('BTC_OLD_ROUND_FROZEN_PUBLIC='+json.dumps({'later_object_withheld':True,
+                        'snapshot_unchanged':True,'real_cli_returncode':0,'component_receipt':True}),flush=True)
                     before=(sample.f.store/'sensing-current.json').read_bytes()
                     # Simulate a lost response after the durable EXECUTED journal,
                     # then reconcile state without rerunning an analysis or send.
@@ -211,6 +237,9 @@ class DomainRuntime(unittest.TestCase):
                         with self.assertRaises(RuntimeError):execute(settings,broken)
                     reconciled=recover(settings,broken['operation_id'])
                     self.assertEqual(reconciled['recovery'],'STATE_PRESERVED_NO_REPLAY')
+                    self.assertEqual(Path(reconciled['continuity']['public_context']).read_bytes(),frozen_public)
+                    self.assertEqual(reconciled['component_binding'],result['component_binding'])
+                    self.assertIn('recovery_component_binding',reconciled)
                     self.assertEqual((sample.f.store/'sensing-current.json').read_bytes(),before)
                     self.assertEqual(execute(settings,broken),reconciled)
                     # Resume an immutable pre-Docker release. Its real SQLite
@@ -235,6 +264,54 @@ class DomainRuntime(unittest.TestCase):
                     db=Database(settings)
                     try:self.assertEqual(latest,db.one('SELECT COUNT(*) AS n FROM mo_review')['n'])
                     finally:db.close()
+                    # The real service wrapper must commit public work even if
+                    # personal source files cannot be read. The isolated core
+                    # drops DAC override/read-search, so uid 0 cannot bypass 000.
+                    from btc_node.entities import Entities
+                    for mode, name in [('missing', '资产配置.md'), ('unreadable', '操作记录.md')]:
+                        path=project/name
+                        original_bytes=path.read_bytes()
+                        original_mode=path.stat().st_mode & 0o777
+                        if mode=='missing':
+                            path.unlink()
+                            with self.assertRaises(FileNotFoundError):path.read_bytes()
+                        else:
+                            path.chmod(0)
+                            with self.assertRaises(PermissionError):path.read_bytes()
+                        probe=deepcopy(request)
+                        probe['operation_id']=folder.name+'-'+mode
+                        probe['params']['argv'][probe['params']['argv'].index('--directory')+1]=str(sample.d.parent/(sample.d.name+'-'+mode))
+                        try:
+                            committed=execute(settings,probe)
+                            self.assertEqual(committed['returncode'],0,committed['stderr'])
+                            self.assertEqual(execute(settings,probe),committed)
+                            db=Database(settings)
+                            try:
+                                fact=Entities(db).get('FACT_PROJECTION',name)
+                                self.assertIsNone(fact['payload']['file_hash'])
+                                self.assertEqual(fact['payload']['authority'],'UNAVAILABLE_LOCAL_FILE')
+                                self.assertEqual(fact['payload']['availability'],{'status':'UNAVAILABLE',
+                                    'reason':'FileNotFoundError' if mode=='missing' else 'PermissionError'})
+                                self.assertIsNone(fact['payload']['structured_view'])
+                                self.assertIn('AVAILABILITY_CHECK',{d['relation'] for d in fact['dependencies']})
+                                portfolio=Entities(db).get('ALLOCATION','portfolio')['payload']
+                                self.assertEqual(portfolio['fact_review'],'REQUIRED')
+                                self.assertEqual(portfolio['recommendation_applicability'],'EVIDENCE_LIMITED')
+                                self.assertIsNone(portfolio['portfolio_analysis'])
+                                self.assertIsNone(portfolio['portfolio'])
+                                self.assertEqual(db.one('SELECT status FROM operations WHERE operation_id=%s',
+                                    (probe['operation_id'],))['status'],'COMMITTED')
+                            finally:db.close()
+                            public=json.loads(Path(committed['continuity']['public_context']).read_bytes())
+                            self.assertTrue(public['objects'])
+                            self.assertTrue(all(v['scope']=='PUBLIC' for v in public['objects']))
+                            print('BTC_FACT_WRAPPER_FIXED='+json.dumps({'case':mode,
+                                'actual_read_denied':True,'core_returncode':0,'wrapper_committed':True,
+                                'personal_value_unknown':True,'stale_current_portfolio_withheld':True}),flush=True)
+                        finally:
+                            path.chmod(0o600) if path.exists() else None
+                            path.write_bytes(original_bytes)
+                            path.chmod(original_mode)
                 finally:
                     sample.doCleanups()
 
