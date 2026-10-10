@@ -64,14 +64,26 @@ def run(docker, reader, reader_image=None):
                     'socket':'/run/btc/btc.sock','test_only':True,
                     'maintenance_enabled':False,'recycle_grace_hours':48}
         (directory/'settings.json').write_text(json.dumps(settings))
-        override = directory/'compose.test.json'
-        override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
-            'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']}}}))
-        command += ['-f',str(override)]
         (directory/'compose.env').write_text('\n'.join(['BTC_DATA_DIR='+str(directory),
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
-        subprocess.run(command+['up','-d','--build','--wait','mysql','core'], check=True, timeout=600)
+        subprocess.run(command+['build','core'], check=True, timeout=600)
+        # Match the owner seen through this daemon's bind mount. Linux retains
+        # the runner UID; Desktop file sharing can map it differently. This
+        # keeps the private 0600 test secrets readable without DAC bypass, and
+        # makes chmod(0) an actual PermissionError for the service and CLI.
+        owner_code = ('import json; from pathlib import Path; '
+                      's=Path("/fixture").stat(); print(json.dumps([s.st_uid,s.st_gid]))')
+        uid, gid = json.loads(subprocess.check_output([docker,'run','--rm',
+            '--entrypoint','python','-v',str(directory)+':/fixture:ro',
+            'btc-node:contract','-c',owner_code], text=True))
+        override = directory/'compose.test.json'
+        override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
+            'user':str(uid)+':'+str(gid),
+            'tmpfs':['/run/btc:uid='+str(uid)+',gid='+str(gid)+',mode=0700'],
+            'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']}}}))
+        command += ['-f',str(override)]
+        subprocess.run(command+['up','-d','--wait','mysql','core'], check=True, timeout=600)
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
         probe = ('import json,os; from pathlib import Path; '
                  'root=Path("/fixture/project"); assert (root/".strategy").resolve()==root/".strategy"; '
