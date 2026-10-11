@@ -18,6 +18,15 @@ from v4.common import Invalid, create, digest, read
 
 
 class CollectorProvenanceTests(unittest.TestCase):
+    def test_snapshot_keeps_notification_and_raw_availability_separate(self):
+        item = {'transport': {'received_at': 100, 'raw_available_at': 140,
+                             'download_attempts': 1, 'file_id': 'credential'}}
+        transport = collector.provenance(item)['transport']
+        self.assertEqual(transport['received_at'], 100)
+        self.assertEqual(transport['raw_available_at'], 140)
+        self.assertEqual(transport['download_attempts'], 1)
+        self.assertNotIn('file_id', transport)
+
     def test_retained_snapshot_reuses_exact_source_and_rejects_collisions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

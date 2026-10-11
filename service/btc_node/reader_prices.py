@@ -58,7 +58,15 @@ def project(db, *, limit=32):
                              'original_digest': digest})
             else:
                 asset = observation.get('asset_id') or bundle.get('asset_id', 'BTC')
-                observation['transport'] = {'received_at': row['received_at'],
+                available = row['raw_available_at'] if 'raw_available_at' in row.keys() else None
+                # Old failed downloads have no successful-read clock. Their first
+                # validated projection is a conservative bound, not a past fact.
+                known = available if available is not None else (
+                    millis()/1000 if row['download_attempts'] else row['received_at'])
+                observation['transport'] = {'received_at': row['received_at'], 'known_at': known,
+                    'raw_available_at': available,
+                    'known_time_basis': 'RAW_AVAILABLE_AT' if available is not None else (
+                        'LEGACY_PROJECTION_UPPER_BOUND' if row['download_attempts'] else 'LEGACY_RECEIPT'),
                     'text_message_id': row['parent_id'], 'document_message_id': row['message_id']}
                 result = ingest(db, {'assets': {asset: observation}}, db.blobs.path(digest))
                 counts.extend(result['counts'])

@@ -13,7 +13,7 @@ from .series import Series
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
          'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list'}
-WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references',
+WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references', 'prices.repair_seller_knowledge',
           'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve'}
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
 
@@ -83,6 +83,8 @@ def invoke(database, method, params):
         return series.products(**params)
     if method == 'prices.repair_seller_references':
         return series.repair_seller_references(**params)
+    if method == 'prices.repair_seller_knowledge':
+        return series.repair_seller_knowledge(**params)
     if method == 'evidence.put':
         data = base64.b64decode(params['base64'], validate=True)
         if len(data) > 24 * 1024 * 1024:

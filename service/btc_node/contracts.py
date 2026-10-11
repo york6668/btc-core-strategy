@@ -55,6 +55,7 @@ PARAMETERS = {
                           'limit':{'type':'integer','minimum':1,'maximum':10000}}, ['product','series','start','end','as_of']),
     'prices.products': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
     'prices.repair_seller_references': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
+    'prices.repair_seller_knowledge': obj({'source_digest':TEXT}, ['source_digest']),
     'context.public': obj({'kind':TEXT,'product':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500},'after':TEXT}),
     'context.personal': obj({'market_binding':obj({'object_id':TEXT,'version':VERSION,'digest':TEXT}, ['object_id','version','digest'])}, ['market_binding']),
     'evidence.put': obj({'base64':TEXT}, ['base64']),

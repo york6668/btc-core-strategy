@@ -88,7 +88,11 @@ def ingest(db, package, source, *, only=None):
     original = db.put_blob(source_bytes)
     counts, gaps = [], []
     for asset, value in package.get('assets', {}).items():
-        received = (value.get('transport') or {}).get('received_at')
+        transport = value.get('transport') or {}
+        received = transport.get('known_at', transport.get('raw_available_at') or transport.get('received_at'))
+        if 'known_at' not in transport and transport.get('raw_available_at') is None and transport.get('download_attempts', 0):
+            received = millis()/1000
+            transport = {**transport, 'known_time_basis':'LEGACY_PROJECTION_UPPER_BOUND'}
         if received is None:
             gaps.append({'asset':asset,'reason':'first local receipt time missing'})
             continue
@@ -145,7 +149,10 @@ def ingest(db, package, source, *, only=None):
             for (product,interval), items in groups.items():
                 series.instrument(product,items[0][0])
                 provenance = {'original_digest':original,'package_id':value.get('bundle_id'),
-                    'retrieval':{'received_at_ms':known,'generated_at':value.get('generated_at')},
+                    'retrieval':{'received_at_ms':known,'generated_at':value.get('generated_at'),
+                        'notification_received_at': transport.get('received_at'),
+                        'raw_available_at': transport.get('raw_available_at'),
+                        'known_time_basis': transport.get('known_time_basis', 'RAW_AVAILABLE_AT' if transport.get('raw_available_at') is not None else 'LEGACY_RECEIPT')},
                     'trust':'UNTRUSTED_LEAD','independent_verification':False,'asset':asset,
                     'relation':dataset.get('relation','UNKNOWN'),'quality':dataset.get('quality'),
                     'analysis_eligible':False,'field_units':dataset.get('field_units',{})}

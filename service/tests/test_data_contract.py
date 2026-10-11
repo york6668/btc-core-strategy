@@ -57,6 +57,45 @@ class NodeContract(unittest.TestCase):
     def at(self, hours=0):
         return (self.now - timedelta(hours=hours)).isoformat()
 
+    def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
+        product = self.id
+        self.prices.instrument(product, {'market':'synthetic','symbol':'BTC',
+            'product_type':'COLLECTOR_SERIES:seller_exhaustion_daily','quote_unit':'fraction',
+            'source_identity':self.id})
+        def row(value, known):
+            return {'item_key':'day','observed_at':self.at(10),'known_at':known,'payload':{'value':value}}
+        with tempfile.TemporaryDirectory() as folder:
+            original = self.db.put_blob(encode({'synthetic':self.id}))
+            connection = sqlite3.connect(Path(folder)/'collector_evidence.sqlite3')
+            connection.execute('CREATE TABLE collector_attachments(message_id INTEGER,raw_digest TEXT,download_attempts INTEGER)')
+            connection.execute('INSERT INTO collector_attachments VALUES(?,?,?)',(42,original,1))
+            connection.commit();connection.close()
+            old_reader = self.db.settings.get('reader_data')
+            self.db.settings['reader_data'] = folder
+            try:
+                self.prices.ingest(product,'seller_exhaustion_daily',[row(.01,self.at(5))],{'origin':self.id},interval_ms=86400000)
+                provenance = {'origin':self.id,'original_digest':original,'retrieval':{'received_at':self.at(2)}}
+                source_digest = self.db.put_blob(encode(provenance))
+                self.prices.ingest(product,'seller_exhaustion_daily',[row(.02,self.at(2))],provenance,interval_ms=86400000)
+                before = self.db.rows('SELECT * FROM observations WHERE product=%s ORDER BY sequence',(product,))
+                result = self.prices.repair_seller_knowledge(source_digest=source_digest)
+                self.assertFalse(result['unchanged'])
+                bound = result['correction']['effective_known_ms']
+                query = lambda cutoff:self.prices.query(product,'seller_exhaustion_daily',start=self.at(11),end=self.at(9),as_of=cutoff)['observations']
+                cutoff = datetime.fromtimestamp((bound-1)/1000,timezone.utc).isoformat()
+                self.assertEqual(query(cutoff)[0]['payload']['value'],.01)
+                visible = query(datetime.fromtimestamp(bound/1000,timezone.utc).isoformat())[0]
+                self.assertEqual(visible['payload']['value'],.02)
+                self.assertEqual(visible['known_ms'],bound)
+                self.assertEqual(visible['original_known_ms'],millis(self.at(2)))
+                self.assertTrue(visible['knowledge_correction']['first_raw_available_at_unknown'])
+                self.assertTrue(self.prices.repair_seller_knowledge(source_digest=source_digest)['unchanged'])
+                self.assertEqual(self.db.rows('SELECT * FROM observations WHERE product=%s ORDER BY sequence',(product,)),before)
+                with self.assertRaises(ValueError):
+                    self.prices.repair_seller_knowledge(source_digest='not-a-digest')
+            finally:
+                self.db.settings['reader_data'] = old_reader
+
     def test_waiting_delivery_remains_active_and_queryable_outside_operational_index(self):
         spec = self.spec('DELIVERY', scope='PERSONAL', payload={
             'status':{'state':'UNKNOWN', 'attempts':1},

@@ -37,7 +37,8 @@ def provenance(item):
     transport = item.get('transport')
     if isinstance(transport, dict):
         value['transport'] = {key: transport[key] for key in (
-            'text_message_id', 'document_message_id', 'received_at',
+            'text_message_id', 'document_message_id', 'received_at', 'raw_available_at',
+            'known_at', 'known_time_basis',
             'download_status', 'download_attempts', 'download_error') if key in transport}
     elif type(item.get('text_message_id')) is int:
         value['transport'] = {'text_message_id': item['text_message_id']}
@@ -161,6 +162,8 @@ def context(bundle, directory):
                     'period_end_exclusive_utc': utc_ms(last['period_end_ms']) if last else None,
                     'observed_at_utc': utc_ms(measured) if last else None,
                     'first_received_at': (row.get('transport') or {}).get('received_at'),
+                    'raw_available_at': (row.get('transport') or {}).get('raw_available_at'),
+                    'raw_availability_unknown': (row.get('transport') or {}).get('raw_available_at') is None,
                     'publication_time_unknown': ds.get('publication_time_unknown', True),
                     'meaning': 'UTC measurement bucket, not publication time or proof of event coverage; compare the actual event and independently verify source timing.'}
             if name == 'macro':

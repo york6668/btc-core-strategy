@@ -1,5 +1,6 @@
 """Product-specific observations with an as-known clock and immutable revisions."""
 from __future__ import annotations
+from pathlib import Path
 
 from .codec import Conflict, encode, fingerprint, identity, millis
 from .entities import Entities
@@ -197,6 +198,42 @@ class Series:
         return {'repaired': repaired, 'unchanged': unchanged, 'gaps': gaps,
                 'next': sources[limit-1]['source_digest'] if len(sources)>limit else None}
 
+    def repair_seller_knowledge(self, *, source_digest):
+        """Append a conservative chronology correction for a proven late download."""
+        import sqlite3
+        if not isinstance(source_digest, str) or len(source_digest) != 64 or any(c not in '0123456789abcdef' for c in source_digest):
+            raise ValueError('source_digest: expected SHA256')
+        repairs = self.db.metadata('seller.knowledge-repairs') or {}
+        if source_digest in repairs:
+            return {'unchanged': True, 'correction': repairs[source_digest]}
+        source = self.db.value(source_digest)
+        original = source.get('original_digest') if isinstance(source, dict) else None
+        sidecar = Path(self.db.settings['reader_data'])/'collector_evidence.sqlite3'
+        with sqlite3.connect(sidecar.as_uri()+'?mode=ro', uri=True) as connection:
+            columns = {column[1] for column in connection.execute('PRAGMA table_info(collector_attachments)')}
+            available_column = 'raw_available_at' if 'raw_available_at' in columns else 'NULL'
+            receipts = connection.execute('SELECT message_id,download_attempts,'+available_column+' FROM collector_attachments '
+                'WHERE raw_digest=?', (original,)).fetchall()
+        if not original or not any(attempts > 0 for _, attempts, _ in receipts):
+            raise ValueError('no retained failed-download evidence for this source')
+        row = self.db.one('SELECT MIN(known_ms) AS original_known_ms,MIN(recorded_ms) AS bound_ms,COUNT(*) AS n '
+            'FROM observations WHERE source_digest=%s AND series=%s', (source_digest, 'seller_exhaustion_daily'))
+        if not row['n'] or row['bound_ms'] <= row['original_known_ms']:
+            raise ValueError('source has no delayed seller projection to correct')
+        available = [int(at*1000) for _, attempts, at in receipts if attempts > 0 and at is not None]
+        bound = min(available) if available else row['bound_ms']
+        if bound <= row['original_known_ms']:
+            raise ValueError('source knowledge already follows raw availability')
+        correction = {'original_digest': original, 'original_known_ms': row['original_known_ms'],
+            'effective_known_ms': bound, 'correction_known_ms': millis(),
+            'basis': 'RAW_AVAILABLE_AT' if available else 'FIRST_VALIDATED_PROJECTION_UPPER_BOUND',
+            'first_raw_available_at_unknown': not bool(available),
+            'reason': 'notification time preceded successful raw retrieval',
+            'message_ids': sorted({mid for mid, attempts, _ in receipts if attempts > 0})}
+        repairs[source_digest] = correction
+        self.db.metadata('seller.knowledge-repairs', repairs, write=True)
+        return {'unchanged': False, 'correction': correction}
+
     def query(self, product, series, *, start, end, as_of, limit=1000, after=None):
         if not 1 <= limit <= 10000:
             raise ValueError('bounded query limit required')
@@ -209,21 +246,33 @@ class Series:
         cursor = after or {'observed_ms': -1, 'item_key': ''}
         if set(cursor) != {'observed_ms', 'item_key'} or type(cursor['observed_ms']) is not int or not isinstance(cursor['item_key'], str):
             raise ValueError('invalid observation continuation cursor')
-        rows = self.db.rows('SELECT * FROM (SELECT o.*,ROW_NUMBER() OVER('
-                            'PARTITION BY item_key ORDER BY known_ms DESC,sequence DESC) AS rn '
-                            'FROM observations o WHERE product=%s AND series=%s AND known_ms<=%s) visible '
+        repairs = (self.db.metadata('seller.knowledge-repairs') or {}) if series == 'seller_exhaustion_daily' else {}
+        effective = 'known_ms'
+        args = []
+        if repairs:
+            effective = 'CASE source_digest ' + ' '.join('WHEN %s THEN %s' for _ in repairs) + ' ELSE known_ms END'
+            for key, correction in repairs.items():
+                args.extend((key, correction['effective_known_ms']))
+        rows = self.db.rows('SELECT * FROM (SELECT dated.*,ROW_NUMBER() OVER('
+                            'PARTITION BY item_key ORDER BY effective_known_ms DESC,sequence DESC) AS rn '
+                            'FROM (SELECT o.*,('+effective+') AS effective_known_ms FROM observations o '
+                            'WHERE product=%s AND series=%s) dated WHERE effective_known_ms<=%s) visible '
                             'WHERE rn=1 AND observed_ms>=%s AND observed_ms<=%s '
                             'AND (observed_ms,item_key)>(%s,%s) '
                             'ORDER BY observed_ms,item_key LIMIT %s',
-                            (product, series, known_ms, start_ms, end_ms, cursor['observed_ms'], cursor['item_key'], limit + 1))
+                            tuple(args)+(product, series, known_ms, start_ms, end_ms, cursor['observed_ms'], cursor['item_key'], limit + 1))
         truncated = len(rows) > limit
-        items = [{k: v for k, v in row.items() if k not in {'rn', 'digest', 'source_digest'}} |
+        items = [{k: v for k, v in row.items() if k not in {'rn', 'digest', 'source_digest', 'effective_known_ms'}} |
                  {'payload': self.db.value(row['digest']), 'provenance': self.db.value(row['source_digest'])}
                  for row in rows[:limit]]
         corrections = {}
         if series == 'seller_exhaustion_daily':
             for row, item in zip(rows[:limit], items):
                 digest = row['source_digest']
+                if digest in repairs:
+                    item['original_known_ms'] = item['known_ms']
+                    item['known_ms'] = row['effective_known_ms']
+                    item['knowledge_correction'] = repairs[digest]
                 if digest not in corrections:
                     corrections[digest] = self.db.metadata('seller.ref-repair:' + digest)
                 correction = corrections[digest]
