@@ -28,7 +28,7 @@ import test_strategy_contract as legacy  # noqa: E402
 
 @contextmanager
 def frozen_clock(instant: str):
-    current = datetime.fromisoformat(instant)
+    current = datetime.fromisoformat(instant.replace('Z', '+00:00'))
 
     class Clock(datetime):
         @classmethod
