@@ -12,9 +12,10 @@ from .series import Series
 
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
-         'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list'}
+         'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list', 'model.deep.status'}
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references', 'prices.repair_seller_knowledge',
-          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve'}
+          'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve',
+          'model.deep.claim', 'model.deep.finish', 'model.deep.reconcile', 'model.defect.open', 'model.defect.resolve'}
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
 
 
@@ -38,6 +39,16 @@ def invoke(database, method, params):
     if method.startswith('failure.'):
         from . import failures
         return getattr(failures, 'listing' if method == 'failure.list' else method.split('.')[1])(database, **params)
+    if method.startswith('model.'):
+        from . import deep_gate
+        action = method.split('.')[-1]
+        if method == 'model.deep.status': return deep_gate.status(database)
+        if method == 'model.deep.claim': return deep_gate.claim(database, **params)
+        if method == 'model.deep.finish': return deep_gate.finish(database, **params)
+        if method == 'model.deep.reconcile': return deep_gate.reconcile_unknown(database, **params)
+        if method == 'model.defect.open': return deep_gate.open_fault(database, **params)
+        if method == 'model.defect.resolve': return deep_gate.resolve_fault(database, **params)
+        raise ValueError('unsupported model gate method: ' + action)
     if method == 'status':
         return {'schema': database.one('SELECT version FROM node_schema WHERE singleton=1')['version'],
                 'writer': database.metadata('writer'),
@@ -180,7 +191,12 @@ def dispatch(settings, request):
                     raise Conflict('operation_id already used for another request')
                 if prior['status'] != 'COMMITTED':
                     raise Conflict('operation needs recovery before retry')
-                return database.value(prior['result_digest'])
+                result = database.value(prior['result_digest'])
+                if method == 'model.deep.claim':
+                    # A lost claim response may have preceded a real launch.
+                    # An idempotent replay is never permission to launch again.
+                    return {**result, 'action': 'RECONCILE_EXISTING_NO_LAUNCH'}
+                return result
             database.put_blob(encode({'method': method, 'params': params}))
             result = invoke(database, method, params)
             result_digest = database.put_blob(encode(result))

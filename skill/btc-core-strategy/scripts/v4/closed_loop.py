@@ -64,6 +64,17 @@ from .market_state import CYCLE_EXPRESSION_REVIEW, MOMENTUM_REPORT_REVIEW, EVIDE
 MARKET_INSTRUCTIONS += LIFECYCLE_REVIEW
 INSTRUCTIONS += CYCLE_THESIS_REVIEW
 REPORT_INSTRUCTIONS += REPORT_FIDELITY_REVIEW + CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
+from .investment import POLICY_INSTRUCTIONS
+INSTRUCTIONS += POLICY_INSTRUCTIONS
+REPORT_INSTRUCTIONS += (
+    'validation_limits与gaps限制对应产品和安排；METHOD_CHECK只证明模拟方法，不得在正文写成杠杆组合、真实收益或策略有效。未支持能力影响动作时不输出执行建议，影响数量时保留有据方向和实际执行限制。'
+    'revision 8报告消费investment_decision的总体取舍、优先关系、有据分项判断和具体依赖，不把风险与分项机会并列未决当作完整组合决定。'
+    '核对公开方向与拐点依据、现价吸引力、策略适用性、总体选择及报告传递是否完整；实际分析缺项返回上游，不能用新增自审字段或已审查字样代替。'
+)
+MARKET_INSTRUCTIONS += (
+    '宏观研究沿机制解释相关资产前景和市场已定价部分，比较主导与竞争解释；方向、当前价格吸引力和策略适用性分别判断。'
+    '延续、动量衰减、反转迹象与反转确认分别由证据支持，不固定4小时、不要求ETF或慢宏观变量一票前置，不以单次价格或费率确定反转。'
+)
 
 
 def strings(value, name, nonempty=False):
@@ -77,10 +88,14 @@ def window(value, name):
     require(instant(value['start']) <= instant(value['end']), name + ' is reversed')
 
 
-def validate_forward(value, cutoff, resolve, prior=None):
-    exact(value, 'observed_window judgement_window realization_window timing_basis conditions invalidations prior_check', 'forward assessment')
-    for key in ('observed_window', 'judgement_window'):
-        window(value[key], key)
+def validate_forward(value, cutoff, resolve, prior=None, revision=6, lifecycle_root=None):
+    exact(value, 'observed_window judgement_window realization_window timing_basis conditions invalidations prior_check' + (' lifecycle' if revision >= 9 else ''), 'forward assessment')
+    window(value['observed_window'], 'observed_window')
+    if revision >= 9 and value['judgement_window']['end'] is None:
+        exact(value['judgement_window'], 'start end', 'mechanism judgement window')
+        instant(value['judgement_window']['start'])
+    else:
+        window(value['judgement_window'], 'judgement_window')
     require(instant(value['observed_window']['end']) <= instant(cutoff), 'forward evidence exceeds cutoff')
     # Judgement may already be expired during delayed/recovery work; it must be
     # checked, never silently moved into the future to pass a publication check.
@@ -105,8 +120,33 @@ def validate_forward(value, cutoff, resolve, prior=None):
         if old['realization_window'] is not None:
             due.append(old['realization_window'])
         require(checked['outcome'] != 'INITIAL', 'existing forward thesis requires an actual outcome check')
-    if any(instant(w['end']) <= instant(cutoff) for w in due):
+    if any(w['end'] is not None and instant(w['end']) <= instant(cutoff) for w in due):
         require(checked['outcome'] not in ('INITIAL', 'PENDING'), 'expired forward window requires realization review, not automatic renewal')
+    if revision >= 9:
+        from . import forward_lifecycle
+        life = value['lifecycle']
+        result = forward_lifecycle.validate(life, cutoff, resolve, prior,
+            getattr(resolve, 'fact', None), lifecycle_root)
+        c = life['claim']
+        require(value['judgement_window']['end'] == c['scale']['end'], 'forward window differs from its own mechanism scale')
+        if value['realization_window'] is not None:
+            require(c['scale']['end_ref'] is not None and value['realization_window']['end'] == c['scale']['end']
+                    and instant(value['realization_window']['start']) >= instant(c['formed_at']),
+                    'realization window needs the new claim own evidenced calendar, not an inherited forecast date')
+        previous_claim = ((old or {}).get('lifecycle') or {}).get('claim')
+        if previous_claim is None or previous_claim['id'] != c['id']:
+            require(instant(value['judgement_window']['start']) >= instant(c['formed_at']),
+                    'new expectation cannot inherit a historical prediction start')
+        if result['falsified_prior']:
+            require(checked['outcome'] in ('FAILED', 'REVISE'), 'falsified prior must be corrected or withdrawn, not remain pending')
+        if checked['outcome'] == 'REALIZED':
+            outcomes = result['verification']
+            require(result['complete_prior_support'] and outcomes and all(v['verdict'] == 'SUPPORTED' for v in outcomes),
+                    'process completion or partial review cannot declare forecast realized')
+        return result
+    return {'status': 'POSTHOC_ONLY', 'prospective_support': False,
+            'reason': 'Legacy fields remain readable; no first registered conditions or later mechanism proof.'}
+
 
 
 def allocation(assessment):
@@ -151,7 +191,7 @@ def validate_actions(actions):
     require(isinstance(actions, list), 'risk responses must be a list')
     ids, statuses = set(), set()
     for action in actions:
-        exact(action, 'id scope status decision arrangement gap_impact execution reentry_conditions', 'allocation action')
+        exact(action, 'id scope status decision arrangement gap_impact execution reentry_conditions'+(' investment_candidates' if 'investment_candidates' in action else '')+(' implementation_products' if 'implementation_products' in action else ''), 'allocation action')
         for key in ('id', 'scope', 'arrangement'):
             text(action[key], 'allocation ' + key)
         require(action['id'] not in ids, 'duplicate allocation action')
@@ -194,10 +234,11 @@ def validate_risk(value, cutoff, market_hash=None, fact_version=None):
 def review_template(revision=6):
     return {'market_result_hash': None, result_keys(revision)[1]: None, 'fact_version': None,
             'outcome': None, 'explanation': None, 'limitations': [], 'material': None,
-            **({'strategy_advice_hash': None} if revision >= 7 else {})}
+            **({'strategy_advice_hash': None} if revision >= 7 else {}),
+            **({'investment_decision_hash': None, 'issue_reviews': []} if revision >= 8 else {})}
 
 
-def validate_allocation_review(value, ctx, market_hash):
+def validate_allocation_review(value, ctx, market_hash, main_required=False):
     revision = ctx.get('revision', 6)
     binding = result_keys(revision)[1]
     exact(value, ' '.join(review_template(revision)), 'portfolio applicability review')
@@ -206,6 +247,11 @@ def validate_allocation_review(value, ctx, market_hash):
     if revision >= 7:
         advice = (ctx.get('current_recommendations') or {}).get('portfolio', {}).get('strategy_advice') if current else None
         require(value['strategy_advice_hash'] == (digest(advice) if advice is not None else None), 'portfolio review binds different opportunity advice')
+    if revision >= 8:
+        from .investment import decision, validate_issue_review
+        whole = decision(assessment)
+        require(value['investment_decision_hash'] == (digest(whole) if whole is not None else None), 'portfolio review binds another investment decision')
+        validate_issue_review(value['issue_reviews'], assessment, main_required)
     require(value['market_result_hash'] == market_hash, 'portfolio review changed its frozen market result')
     require(value[binding] == (digest(current) if current else None), 'portfolio review binds another assessed result')
     require(value['fact_version'] == ctx['identity']['fact_version'], 'portfolio review facts changed')
@@ -217,6 +263,8 @@ def validate_allocation_review(value, ctx, market_hash):
         require(value['outcome'] != 'VALID' and value['limitations'],
                 'unavailable personal files require bounded portfolio limitations, not confirmed safety')
     if value['outcome'] == 'VALID':
+        if revision >= 8:
+            require(whole is not None and instant(whole['valid_until']) > instant(ctx['factor_context']['evidence']['cutoff']), 'missing or expired whole investment decision cannot become VALID')
         require(current is not None, 'legacy content cannot manufacture a current portfolio assessment')
         require(current['fact_version'] == value['fact_version'], 'changed facts require an actual allocation reassessment')
         require(instant(current['valid_until']) > instant(ctx['factor_context']['evidence']['cutoff']), 'expired allocation requires reassessment')
@@ -245,6 +293,22 @@ def report_inputs(ctx):
             'market_report': basis.get('market_report'),
             'factor_assessment': deepcopy(strategy.get('factor_assessment'))}
     revision = ctx.get('market_revision', strategy.get('revision', 6))
+    if ctx.get('report_contract_revision', 1) >= 6:
+        # Carry the completed argument verbatim, under its real adopted owner.
+        # An hourly overlay is a separately dated check, not a fresh authorship
+        # of the adopted semantic outlook. Never reconstruct it from prose.
+        provenance = (strategy.get('section_provenance') or {}).get('outlook') or {}
+        market['research_basis'].update(
+            decision_id=decision_id,
+            evidence_id=provenance.get('evidence_id', strategy.get('evidence_id')),
+            assessed_at=provenance.get('assessed_at', strategy.get('knowledge_cutoff')),
+            section_provenance=deepcopy(provenance),
+            outlook=deepcopy(strategy.get('outlook')))
+        market['observation_basis'] = {
+            'observation_id': observation.get('observation_id') if matched else None,
+            'baseline_decision_id': observation.get('baseline_decision_id') if matched else None,
+            'market_result_hash': review.get('market_result_hash') if matched else None,
+            'applicability_review': deepcopy(review.get('applicability_review')) if matched else None}
     result_key, binding = result_keys(revision)
     decision = risk(strategy) if revision >= 7 else allocation(strategy)
     personal = deepcopy(review.get('allocation_review'))
@@ -308,6 +372,33 @@ def report_inputs(ctx):
         # Do not relabel historical allocation actions during a new observation.
         result['strategy_advice'] = deepcopy(advice)
         result['result_binding']['strategy_advice_hash'] = digest(advice) if advice is not None else None
+    if revision >= 8:
+        from .investment import decision as investment_decision, finished
+        whole = investment_decision(strategy)
+        if whole is not None and whole['fact_version'] != ctx['identity']['fact_version']:
+            whole = None
+        result['investment_decision'] = finished(whole)
+        current_whole=whole is not None and instant(whole['valid_until'])>instant(ctx['evaluated_at'])
+        result['portfolio_narrative']=strategy['recommendations']['portfolio']['narrative'] if current_whole else None
+        result['result_binding']['portfolio_narrative_hash']=digest(result['portfolio_narrative']) if result['portfolio_narrative'] is not None else None
+        result['result_binding']['investment_decision_hash'] = digest(whole) if whole is not None else None
+        if whole is None:
+            result['applicability']['portfolio']['outcome'] = 'REVISE'
+            result['applicability']['portfolio'].setdefault('limitations', []).append('Whole-portfolio investment judgement has not been formed; return upstream for synthesis.')
+        elif instant(whole['valid_until']) <= instant(ctx['evaluated_at']):
+            result['applicability']['portfolio']['outcome'] = 'REVISE'
+            result['applicability']['portfolio'].setdefault('limitations', []).append('Investment judgement expired; preserve open issues and current bounded review, never renew by reporting.')
+        if whole is None or instant(whole['valid_until']) <= instant(ctx['evaluated_at']):
+            # Preserve the original bounded judgement and open questions, but
+            # remove its executable outputs from the current report interface.
+            for plan in result['execution_plans'].values():
+                plan.update(status='UNDETERMINED',tiers=[])
+            result['strategy_advice']=None
+            if result[result_key] is not None:
+                result[result_key]['actions']=[]
+            result['result_binding'][binding]=digest(result[result_key]) if result[result_key] is not None else None
+            result['result_binding']['strategy_advice_hash']=None
+        result['result_binding']['applicability_hash'] = digest(result['applicability'])
     return result
 
 
@@ -315,3 +406,18 @@ def validate_report_binding(spec, ctx):
     result = report_inputs(ctx)
     require(spec.get('result_binding') == result['result_binding'], 'report must bind the final market, allocation and applicability results')
     return result
+
+
+MARKET_INSTRUCTIONS += (
+    'revision 9按forward.lifecycle固定初判和原标准，逐项核验首次登记之后的真实事实；后继明确引用被支持的机制及scope。未知/部分/证伪不越界，旧记录无事前标准只作事后复核。'
+)
+REPORT_INSTRUCTIONS += (
+    '按实际主题保留清晰普通小节标题，结论先行，以自然段说明关键因果及反证；个人应用去重。资产长期用途不能替代完整敞口/资金/全仓约束，不将未知写成维持。内部验证字段留在内部。'
+)
+
+REPORT_INSTRUCTIONS += (
+    'report contract 6的market_result.research_basis.outlook逐字承接已采纳完整前景及实际Owner/证据/判断时点；'
+    'market_assessment与observation_basis保留当前观察和对原论点的适用性裁决。两层不能互相冒充。'
+    '正文主路径、相对把握及反证影响须可回溯到原已形成判断；当前观察已修订的状态与限制同样交付。'
+    '若当前观察与原前景实质冲突而未完成同尺度重新裁决，回到同一原研究补评，不在成稿选择一个字段掩盖缺口。'
+)

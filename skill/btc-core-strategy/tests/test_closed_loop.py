@@ -6,6 +6,7 @@ import json
 import unittest
 from unittest import mock
 
+
 import test_market_state as old
 import test_run_flow as adapter
 import test_report_care as care_fixture
@@ -373,9 +374,10 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(read(receipt)['status'], 'MARKET_CANDIDATE_READY')
         self.assertFalse((self.f.d / 'market-result.json').exists())
-        for stage in ('observe', 'report'):
-            with self.assertRaisesRegex(Invalid, 'market or main stage'):
-                run_flow.advance(p['run'], stage, check_only=True)
+        # Report now has its own final-body preflight (covered by ReportStageTests).
+        # Observation still cannot mutate or validate a candidate via check-only.
+        with self.assertRaisesRegex(Invalid, 'market, main or report stage'):
+            run_flow.advance(p['run'], 'observe', check_only=True)
 
     def test_completed_report_material_contains_results_not_internal_factor_and_module_prose(self):
         p, frozen, public = self.freeze()

@@ -125,7 +125,7 @@ class DynamicSensingTests(unittest.TestCase):
         source = spec['sources'][0]
         directory = self.f.base / 'no-current-market'
         evidence.freeze(spec, {source['id']: str(self.f.evidence_dir / 'raw' / (source['raw_hash'][7:] + '.json'))}, directory)
-        with self.assertRaisesRegex(Invalid, 'exact current public market package'):
+        with self.assertRaisesRegex(Invalid, 'exact complete current market package'):
             self.ctx(directory)
 
     def test_untrusted_factor_can_be_observed_but_cannot_alone_open_research(self):

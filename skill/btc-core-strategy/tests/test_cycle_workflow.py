@@ -7,6 +7,7 @@ import sys
 import unittest
 from unittest import mock
 
+
 sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'scripts'), str(Path(__file__).parent)]
 import test_dynamic_factor_main as main_fixture
 import test_market_observation as market_fixture
@@ -80,7 +81,7 @@ class CycleWorkflowTests(unittest.TestCase):
         self.d.bind()
         return req, saved, result_spec
 
-    def observe(self, finding='NO_MATERIAL_CHANGE', required=False, extra=None, applicability='VALID'):
+    def observe(self, finding='NO_MATERIAL_CHANGE', required=False, extra=None, applicability='VALID', source_id='hourly'):
         f = self.f
         ctx = sensing.context(f.store, f.project / '.strategy/market_observation.sqlite3', f.project, f.raw, evidence_dir=f.evidence_dir)
         review = {'schema': 'BTC_SENSING_REVIEW_V4', 'revision': 4, 'context_id': ctx['context_id'],
@@ -92,7 +93,7 @@ class CycleWorkflowTests(unittest.TestCase):
             'applicability_review': {'basis_result_id': ctx['cycle_baseline']['result_id'],
                 'outcome': applicability if ctx['cycle_baseline']['result_id'] else 'REVISE',
                 'explanation': 'Synthetic explicit assessment of the full thesis and cumulative evidence.',
-                'refs': [{'source_id': 'hourly', 'pointer': '/datasets', 'value_hash': digest(f.raw['datasets'])}],
+                'refs': [{'source_id': source_id, 'pointer': '/datasets', 'value_hash': digest(f.raw['datasets'])}],
                 'limitations': 'Synthetic account uncertainty is unchanged; no fill or account safety inferred.'}}
         return sensing.record(f.store, f.project / '.strategy/market_observation.sqlite3', f.project, f.raw, review, evidence_dir=f.evidence_dir)
 
@@ -259,13 +260,19 @@ class CycleWorkflowTests(unittest.TestCase):
     def test_price_touch_and_support_weakening_stay_in_baseline(self):
         self.study(); self.d.commit()
         before = cycle.baseline(self.f.store, storage.current(self.f.store)['assessment'])
-        observed = self.observe('SUPPORT_WEAKENED')
+        old = self.observe('SUPPORT_WEAKENED')
+        self.assertNotIn('upper_short:PRICE_TOUCH_REVIEW', old['triggers'])
+        # The same locked bars precede issuance. Construct the next completed
+        # hour before asserting a post-publication price touch.
+        import test_workflow_event_review as next_hour
+        next_hour.EventReviewTests.advance_market(self.f)
+        observed = self.observe('SUPPORT_WEAKENED', source_id='hourly_14')
         self.assertIn('upper_short:PRICE_TOUCH_REVIEW', observed['triggers'])
         self.assertFalse(observed['deep_eligible'])
         ctx = self.d.bind()
         self.assertEqual(ctx['accumulation']['start'], before['market_cutoff'])
         self.assertEqual(ctx['accumulation']['baseline_role'], 'ADOPTED_ASTRA_CYCLE')
-        self.d.commit()
+        self.assertEqual(cycle.baseline(self.f.store, storage.current(self.f.store)['assessment'])['result_id'], before['result_id'])
         self.assertEqual(cycle.baseline(self.f.store, storage.current(self.f.store)['assessment'])['completed_at'], before['completed_at'])
 
     def test_flat_price_material_counterevidence_reopens_cycle(self):
@@ -742,6 +749,42 @@ class CycleReportTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'pending cycle review'):
             f.source(spec)
 
+
+
+    def test_public_request_assembly_preserves_duties_across_supported_stages(self):
+        from v4 import market_state
+        for revision in (5, 6, 7, 8):
+            with self.subTest(revision=revision):
+                case = main_fixture.DynamicMainTests()
+                case.setUp(); self.addCleanup(case.doCleanups)
+                case.upgrade(); case.commit()
+                f = case.f
+                replace(f.store/'write-policy.json', {'minimum_assessment_revision':revision,
+                        'cycle_review_required': True})
+                spec = {'issue_key':cycle.ISSUE_KEY, 'scope':cycle.SCOPE,
+                    'question':'Synthetic public cycle study for revision '+str(revision),
+                    'decision_id':storage.current(f.store)['decision_id'], 'evidence_id':f.evidence['evidence_id'],
+                    'change':{'kind':'INITIAL_QUESTION', 'reason':'A complete independent baseline is absent.',
+                        'refs':[{'source_id':'hourly','pointer':'/datasets','value_hash':digest(f.raw['datasets'])}],
+                        'reopen_condition':None}, 'reopen_conditions':['New public mechanism evidence.']}
+                req = research.request(f.store, f.project, spec)
+                packet = research.read_input(f.store, req['request_id'], 'independent')['payload']
+                public = packet['market_result_contract']['instructions']
+                self.assertEqual(public, packet['cycle_assignment']['instructions'])
+                for duty in ('有界前瞻', '真实竞争路径', '有限反馈', '个人资金优先级', '来源新原件'):
+                    self.assertIn(duty, public)
+                self.assertNotIn('fact_files', packet)
+                self.assertNotIn('portfolio_waiting', packet['cycle_assignment']['required_coverage'])
+                self.assertIn(market_state.PUBLIC_ANALYSIS_REVIEW, public)
+        projection = market_state.market_projection({'identity':{}})
+        self.assertIn(market_state.PUBLIC_ANALYSIS_REVIEW, projection['instructions'])
+        self.assertIn(market_state.PUBLIC_ANALYSIS_REVIEW, cycle.APPLICABILITY_REVIEW)
+        self.assertIn(market_state.PUBLIC_ANALYSIS_REVIEW, cycle.MAPPING_REVIEW)
+        guidance = reporting.authoring_guidance({'market_revision':8,'report_contract_revision':5})
+        self.assertIn(market_state.PUBLIC_ANALYSIS_REPORT_REVIEW, guidance['completed_analysis_review'])
+        self.assertNotIn(market_state.PUBLIC_ANALYSIS_REVIEW, str(guidance))
+        self.assertIn('check-only', guidance['final_text_review'])
+        # This checks actual instruction assembly, not semantic completion of research.
 
 if __name__ == '__main__':
     unittest.main()

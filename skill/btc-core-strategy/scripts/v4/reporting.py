@@ -12,7 +12,7 @@ import sqlite3
 import json
 import market_observation as market
 from .common import create, digest, exact, facts, instant, locked, now, pointer, read, require, text
-from .authored_report import FORMAT as AUTHORED_FORMAT, DISPLAY_FORMATS
+from .authored_report import FORMAT as AUTHORED_FORMAT, DISPLAY_FORMATS, REPORT_CONTRACT_REVISION
 
 SOURCE_SCHEMA = 'BTC_REPORT_SOURCE_V4'
 ARTIFACT_SCHEMA = 'BTC_REPORT_V6'
@@ -199,9 +199,9 @@ def context(root):
     if care['enabled']:identity['report_day']=care['day']
     current_report_contract = separated and max(observed.get('revision', 5), decision['assessment'].get('revision', 5)) >= 6
     if current_report_contract:
-        identity['report_contract_revision'] = 3
+        identity['report_contract_revision'] = REPORT_CONTRACT_REVISION
     return {'schema':'BTC_REPORT_CONTEXT_V1', 'context_id':digest(identity), 'identity':identity,
-            **({'report_contract_revision': 3} if current_report_contract else {}),
+            **({'report_contract_revision': REPORT_CONTRACT_REVISION} if current_report_contract else {}),
             **cycle_context, **({'market_revision':max(5, observed.get('revision', 5), decision['assessment'].get('revision', 5))} if separated else {}), 'evaluated_at':stamp, 'reported':prior, 'report_care':care, 'coverage':{'start':start or raw['observed_hour'],'end':raw['cutoff']},
             'coverage_display_revision':3,
             'knowledge_cutoff':max([x['retrieved_at'] for x in raw['retrievals'].values()] + ([supplementary['cutoff']] if supplementary else []), key=instant),
@@ -212,7 +212,9 @@ def context(root):
             'silent_hours':max(0,(instant(stamp)-instant(prior['confirmed_at'])).total_seconds()/3600) if prior.get('confirmed_at') else None,
             'current_strategy':{'decision_id':decision['decision_id'],
                                 **{k:decision['assessment'].get(k) for k in ('conclusion','outlook','robustness','portfolio_analysis','recommendations','factor_assessment','section_provenance')},
-                                'market_cutoff':decision['assessment']['temporal_scope']['market_cutoff']},
+                                'market_cutoff':decision['assessment']['temporal_scope']['market_cutoff'],
+                                'knowledge_cutoff':decision['assessment']['temporal_scope']['knowledge_cutoff'],
+                                'evidence_id':decision['assessment']['evidence_id']},
             'observation':{'observation_id':observed['observation_id'],'review':observed['review'], 'main_eligible':observed.get('main_eligible'),
                            'baseline_decision_id':observed['context']['identity']['decision_id']},
             'metrics':metrics(raw,start), 'unreported':unreported[-240:], 'unreported_total':len(unreported),
@@ -228,14 +230,21 @@ def authoring_guidance(ctx):
     """Reuse the report-stage method at every model-facing context entry."""
     from . import cycle
     from .report_care import AUTHORING
+    from .market_state import PUBLIC_ANALYSIS_REPORT_REVIEW
     guidance = {'maintenance_authoring': deepcopy(AUTHORING),
-                'applicability_instructions': cycle.APPLICABILITY_REVIEW}
+                'completed_analysis_review': PUBLIC_ANALYSIS_REPORT_REVIEW}
     if ctx.get('deep_report_policy_revision') == 1:
         guidance.update(cycle_report_instructions=cycle.REPORT_SCOPE_REVIEW,
                         method_references=cycle.method_references('report'))
     if ctx.get('market_revision', 0) >= 6:
         from .closed_loop import REPORT_INSTRUCTIONS
         guidance['result_instructions'] = REPORT_INSTRUCTIONS
+    if ctx.get('report_contract_revision', 1) >= 4:
+        from .authored_report import BODY_AUTHORING_INSTRUCTIONS, READING_REVIEW
+        guidance.update(body_authoring_instructions=BODY_AUTHORING_INSTRUCTIONS,
+                        reading_review_instructions=deepcopy(READING_REVIEW))
+    if ctx.get('report_contract_revision', 1) >= 5:
+        guidance['final_text_review'] = ('用run-advance --stage report --check-only导出实际候选，按返回review_read完整回读候选及冻结来源，实际审阅后填写具体quality_review及reviewed_candidate_hash；任何正文或绑定改变均重新核验，旧审阅不沿用。哈希仅绑定对象，不证明语义。冻结后逐字交付；外部聊天改写无法由项目程序控制。')
     return guidance
 
 

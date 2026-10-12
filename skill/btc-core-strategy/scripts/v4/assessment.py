@@ -39,19 +39,22 @@ def scenario(value):
     exact(value, 'direction horizon mechanism formation_conditions invalidation_conditions', 'scenario')
     require(value['direction'] in ('UPSIDE_SKEW', 'DOWNSIDE_SKEW', 'RANGE', 'TWO_SIDED', 'UNRESOLVED'), 'scenario direction invalid')
     exact(value['horizon'], 'unit minimum maximum', 'horizon')
-    require(value['horizon']['unit'] in ('HOURS', 'DAYS', 'WEEKS', 'MONTHS'), 'invalid horizon unit')
+    require(value['horizon']['unit'] in ('HOURS', 'DAYS', 'WEEKS', 'MONTHS', 'PROCESS'), 'invalid horizon unit')
     low, high = value['horizon']['minimum'], value['horizon']['maximum']
-    require(type(low) is int and type(high) is int and 0 < low <= high, 'horizon range invalid')
+    if value['horizon']['unit'] == 'PROCESS':
+        require(low is None and high is None, 'mechanism progress cannot inherit calendar duration')
+    else:
+        require(type(low) is int and type(high) is int and 0 < low <= high, 'horizon range invalid')
     for key in ('mechanism', 'formation_conditions', 'invalidation_conditions'):
         atoms(value[key], 'scenario.' + key)
 
 
-def validate_outlook(outlook, revision, resolve, cutoff=None):
+def validate_outlook(outlook, revision, resolve, cutoff=None, prior_market=None, lifecycle_root=None):
     """Public preflight before portfolio disclosure; no private inputs needed."""
     exact(outlook, 'semantic narrative refs' + (' market_assessment dispute_zones' if revision >= 5 else ''), 'outlook')
     if revision >= 5:
         from . import market_state
-        market_state.validate_assessment(outlook['market_assessment'], resolve, cutoff, revision=revision)
+        market_state.validate_assessment(outlook['market_assessment'], resolve, cutoff, revision=revision, prior=prior_market, lifecycle_root=lifecycle_root)
         market_state.validate_zones(outlook['dispute_zones'], resolve, cutoff=cutoff, revision=revision)
     exact(outlook['semantic'], 'status baseline alternatives next_evidence', 'outlook semantics')
     require(outlook['semantic']['status'] == 'ASSESSED', 'new assessment cannot hide outlook as historical unknown')
@@ -59,17 +62,47 @@ def validate_outlook(outlook, revision, resolve, cutoff=None):
     require(isinstance(outlook['semantic']['alternatives'], list) and outlook['semantic']['alternatives'], 'reasonable alternative scenario required')
     for alternative in outlook['semantic']['alternatives']:
         scenario(alternative)
+    if revision >= 9:
+        scenarios = [outlook['semantic']['baseline']] + outlook['semantic']['alternatives']
+        dated = all(h['forward']['lifecycle']['claim']['scale']['end_ref'] is not None
+                    for m in outlook['market_assessment']['markets'] for h in m['horizons'])
+        require(dated or all(s['horizon']['unit'] == 'PROCESS' for s in scenarios),
+                'new outlook cannot mechanically inherit long calendar forecasts')
     atoms(outlook['semantic']['next_evidence'], 'next discriminating evidence')
     text(outlook['narrative'], 'forward outlook explanation')
     for ref in outlook['refs']:
         resolve(ref)
 
 
-def validate_analysis_sections(draft, revision, resolve):
+def validate_analysis_sections(draft, revision, resolve, lifecycle_root=None, frozen_public=False):
     """Reuse the publication structure checks before disclosing a cycle candidate."""
     origin = draft.get('section_provenance', {}).get('outlook', {})
     cutoff = origin.get('assessed_at') if origin.get('mode') == 'REUSED' else draft.get('temporal_scope', {}).get('knowledge_cutoff')
-    validate_outlook(draft['outlook'], revision, resolve, cutoff)
+    public_revision=revision
+    if revision>=8 and origin.get('mode')!='ASSESSED':
+        from .market_state import public_schema_revision
+        public_revision=public_schema_revision(draft['outlook'])
+    prior_market = None
+    if lifecycle_root is not None and public_revision >= 9 and origin.get('mode') != 'REUSED':
+        from . import market_state
+        prior_market = market_state.effective(lifecycle_root).get('market_assessment')
+    historical_read = public_revision >= 9 and (frozen_public or origin.get('mode') == 'REUSED')
+    if historical_read:
+        if not frozen_public:
+            # Reuse is only a read of the exact original ancestor and its
+            # original time/evidence identity, never an input-authored bypass.
+            require(lifecycle_root is not None, 'reused public result needs its original owner')
+            from . import storage, main_flow
+            pinned = storage.current(lifecycle_root)
+            main_flow.validate_reuse(lifecycle_root, pinned,
+                {'revision':0,'outlook':draft['outlook'],'section_provenance':{'outlook':origin}})
+        from .run_flow import refs_in
+        for ref in refs_in(draft['outlook']): resolve(ref)
+        # The original immutable body retains its original verification. A
+        # reread does not rerun INITIAL/PENDING/REALIZED against today's prior
+        # or grant a newly composed successor any verification privilege.
+    else:
+        validate_outlook(draft['outlook'], public_revision, resolve, cutoff, prior_market, lifecycle_root)
     robust = draft['robustness']
     exact(robust, 'semantic narrative refs', 'robustness')
     exact(robust['semantic'], 'failed_primary module_impacts adjustment_conditions', 'robustness semantics')
@@ -103,7 +136,7 @@ def validate_analysis_sections(draft, revision, resolve):
 
 def validate(draft, evidence_dir, prior, project, review):
     revision = draft.get('revision', 1)
-    require(revision in (1, 2, 3, 4, 5, 6, 7), 'unsupported assessment revision')
+    require(revision in (1, 2, 3, 4, 5, 6, 7, 8, 9), 'unsupported assessment revision')
     extra = ' revision recommendations maintenance_binding' if revision >= 2 else ''
     if revision >= 3:
         extra += ' conclusion section_provenance research_absorptions'
@@ -146,14 +179,18 @@ def validate(draft, evidence_dir, prior, project, review):
     require(draft['stop_reason'] in ('SUFFICIENT_FOR_CHOICE', 'INSUFFICIENT_CONSERVATIVE_COMPLETE'), 'evaluation stopping reason required')
     if revision >= 4:
         from . import factors
-        factors.validate(draft['factor_assessment'], package, evidence_dir)
-    validate_analysis_sections(draft, revision, lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True))
+        factor_revision=revision
+        if revision>=8 and draft.get('section_provenance',{}).get('factor_assessment',{}).get('mode')=='REUSED':
+            factor_revision=8 if all('decision_review' in i for i in draft['factor_assessment']['items']) else 4
+        factors.validate(draft['factor_assessment'], package, evidence_dir, revision=factor_revision)
+    validate_analysis_sections(draft, revision, evidence.forward_resolver(package, evidence_dir),
+                               Path(project) / '.strategy' / 'v4')
     if revision >= 2:
         from .recommendations import validate as validate_recommendations
         from .closed_loop import public_hash
         validate_recommendations(draft['recommendations'], scope['knowledge_cutoff'],
                                  lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True), revision,
-                                 public_hash(draft) if revision >= 6 else None, draft['fact_version'])
+                                 public_hash(draft) if revision >= 6 else None, draft['fact_version'], project=project)
     require(isinstance(draft['evidence_bindings'], dict), 'domain evidence bindings required')
     source_by_id = {s['id']: s for s in package['sources'] if s['trust'] == 'PUBLIC_RAW'}
     for dimension, entry in draft['domain']['evidence_matrix'].items():

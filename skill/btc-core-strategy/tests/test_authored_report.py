@@ -79,6 +79,30 @@ class AuthoredReportTests(unittest.TestCase):
             self.assertEqual(source['body'], value['layout']['body'])
         self.source(self.spec('BTC 最近完成小时收盘 80,001.25 USDT。\n\n1. 观察条件。\n2. 保留未知。'))
 
+    def test_reading_review_belongs_to_new_sources_and_legacy_sources_keep_their_contract(self):
+        quote = 'BTC 最近完成小时收盘 80,001.25 USDT。'
+        value = self.spec(quote)
+        context = self.f.context(self.root)
+        context['report_contract_revision'] = 4
+        review = value['layout']['quality_review']
+        review['market_independence'] = '本稿市场原句只引用独立公开小时收盘，未引入个人资产。'
+        decision = self.f.f.decision
+        # Correct references alone do not fulfil the new reading review record.
+        with self.assertRaisesRegex(Invalid, 'complete authored expression review'):
+            authored.render(dict(value, context=context), decision)
+        review.update({key: '对照本稿实际收盘原句与公开来源说明主题、决定影响及技术依据边界。'
+                       for key in authored.READING_REVIEW})
+        self.assertEqual(authored.render(dict(value, context=context), decision)[0], quote)
+        review['maintenance_separation'] = ''
+        with self.assertRaisesRegex(Invalid, 'maintenance_separation'):
+            authored.render(dict(value, context=context), decision)
+        for key in authored.READING_REVIEW:
+            review.pop(key)
+        context['report_contract_revision'] = 3
+        self.assertEqual(authored.render(dict(value, context=context), decision)[0], quote)
+        # The program validates records and renders verbatim; content quality
+        # still needs the actual model/human reading, not a prose score.
+
     def test_clock_only_change_is_not_a_new_report(self):
         original = self.f.context
         ctx = original(self.root); ctx['evaluated_at'] = '2030-03-01T13:00:00Z'
@@ -263,6 +287,56 @@ class AuthoredReportTests(unittest.TestCase):
         self.assertEqual(ctx['report_subjects']['VOO']['report_quote_unit'],'USD')
 
 
+    def test_review_target_changes_invalidate_copied_explanations(self):
+        quote = 'BTC 最近完成小时收盘 80,001.25 USDT。'
+        context = self.f.context(self.root)
+        context['report_contract_revision'] = 5
+        value = dict(self.spec(quote), context=context)
+        layout = value['layout']
+        layout['quality_review'] = {key: None for key in authored.quality_keys(context)}
+        layout['reviewed_candidate_hash'] = None
+        checked = authored.preview(value, self.f.f.decision)
+        self.assertEqual(checked['semantic_review'], 'PENDING_ACTUAL_FULL_BODY_REVIEW')
+        self.assertEqual(checked['scope'], 'structure_and_bindings_only')
+        layout['quality_review'] = {key: 'Synthetic review explanation for the actual bound candidate, not semantic evidence.'
+                                  for key in authored.quality_keys(context)}
+        with self.assertRaisesRegex(Invalid, 'has not been reviewed'):
+            authored.render(value, self.f.f.decision)
+        layout['reviewed_candidate_hash'] = checked['reviewed_candidate_hash']
+        self.assertEqual(authored.render(value, self.f.f.decision)[0], quote)
+        changed = deepcopy(value)
+        changed['layout']['body'] = quote.replace('最近', '最新')
+        changed['layout']['bindings'][0]['text'] = changed['layout']['body']
+        with self.assertRaisesRegex(Invalid, 'final report changed'):
+            authored.render(changed, self.f.f.decision)
+        for mutate in (
+                lambda v: v['layout']['price_status'].update(lower_spot='ADJUSTED'),
+                lambda v: v['layout']['bindings'][0].update(scope='personal'),
+                lambda v: v.update(result_binding={'changed_public_result': 'sha256:'+'a'*64}),
+                lambda v: v['context'].update(context_id='sha256:'+'b'*64)):
+            changed = deepcopy(value); mutate(changed)
+            with self.assertRaisesRegex(Invalid, 'final report changed'):
+                authored.render(changed, self.f.f.decision)
+        # A live validity clock and the review explanation are not source identity.
+        changed = deepcopy(value)
+        changed['context']['evaluated_at'] = '2030-03-01T13:01:00Z'
+        changed['layout']['quality_review']['reasoning'] += ' Another review note.'
+        self.assertEqual(authored.candidate_hash(changed), checked['reviewed_candidate_hash'])
+        # No automatic prose classifier: a newly computed hash still needs real reading.
+
+    def test_frozen_revision_four_keeps_its_original_layout(self):
+        quote = 'BTC 最近完成小时收盘 80,001.25 USDT。'
+        context = self.f.context(self.root); context['report_contract_revision'] = 4
+        value = dict(self.spec(quote), context=context)
+        value['layout']['quality_review'] = {key: 'Original frozen contract review, retained without rewriting the body.'
+                                            for key in authored.quality_keys(context)}
+        self.assertNotIn('reviewed_candidate_hash', value['layout'])
+        self.assertEqual(authored.render(value, self.f.f.decision)[0], quote)
+
+if __name__ == '__main__':
+    unittest.main()
+
+
 class PublicProductTests(unittest.TestCase):
     def setUp(self):
         import tempfile
@@ -365,7 +439,3 @@ class PublicProductTests(unittest.TestCase):
         self.product['product_id'] = 'QQQon'
         with self.assertRaisesRegex(Invalid, 'identity differs'):
             self.freeze('bad-id')
-
-
-if __name__ == '__main__':
-    unittest.main()

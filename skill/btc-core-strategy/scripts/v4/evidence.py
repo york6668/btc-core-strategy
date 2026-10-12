@@ -110,9 +110,34 @@ def resolve(bundle, directory, ref, verified=False):
     if verified:
         require(source['trust'] == 'PUBLIC_RAW', 'untrusted lead cannot support verified fact')
     data = read(Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json'))
-    value = pointer(data, ref['pointer'])
+    from . import public_observations
+    if ref['pointer'].startswith(public_observations.PREFIX):
+        require(digest((Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json')).read_bytes()) == source['raw_hash'],
+                'missing or changed original observation source')
+        record_id, separator, suffix = ref['pointer'][len(public_observations.PREFIX):].partition('/')
+        exact_data = json.loads((Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json')).read_bytes(), parse_float=str)
+        record = public_observations.projection(source, exact_data, record_id)
+        value = pointer(record, '/' + suffix) if separator else record
+    else:
+        value = pointer(data, ref['pointer'])
     require(digest(value) == ref['value_hash'], 'raw value reference mismatch')
     return value
+
+
+
+def observation_refs(bundle, directory, source_id):
+    """List recomputable source projections; callers can inspect them with resolve.
+
+    These are derived RawRefs, never additional public sources or conclusions.
+    Exact field anchors may append /value and bind that field's own value_hash.
+    """
+    from . import public_observations
+    source = next((s for s in bundle['sources'] if s['id'] == source_id), None)
+    require(source is not None and source['trust'] == 'PUBLIC_RAW', 'classified observations need a frozen public source')
+    path = Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json')
+    require(path.is_file() and digest(path.read_bytes()) == source['raw_hash'], 'missing or changed raw evidence')
+    values = public_observations.records(source, json.loads(path.read_bytes(), parse_float=str))
+    return [{'source_id': source_id, 'pointer': public_observations.PREFIX + v['id'], 'value_hash': digest(v)} for v in values]
 
 
 def resolve_number(bundle, directory, ref, verified=False):
@@ -286,24 +311,49 @@ def compact_root(base_directory, raw_market_file, refs, directory, cutoff, addit
                 files[sid] = str(Path(additional) / 'raw' / (source['raw_hash'][7:] + '.json'))
     raw = read(raw_market_file)
     market.validate_evidence(raw)
-    retrievals = [r['retrieved_at'] for r in raw['retrievals'].values()]
-    start = min((d['requested_start'] for d in raw['datasets'].values()), key=instant)
-    sid = 'market_' + raw['evidence_id'].replace('sha256:', '')[:20]
-    existing = next((s for s in sources if s['id'] == sid), None)
-    source = {'id':sid, 'origin':'BINANCE','url':'https://data-api.binance.vision/api/v3/klines',
-              'trust':'PUBLIC_RAW','published_at':raw['cutoff'],'retrieved_at':max(retrievals,key=instant),
-              'start':start,'end':raw['cutoff'],'raw_hash':digest(Path(raw_market_file).read_bytes())}
-    if existing is not None and existing != source:
-        # Market identity excludes retrieval metadata. Keep the previously cited
-        # source immutable and give a fresh retrieval its own byte-bound identity.
-        sid += '_' + source['raw_hash'][7:23]
-        source['id'] = sid
-        existing = next((s for s in sources if s['id'] == sid), None)
-    if existing:
-        require(existing == source, 'current evidence source collision')
+    if raw.get('normalization'):
+        # A replay is an existing derived source, never a fabricated Binance
+        # PUBLIC_RAW retrieval. Restore its exact immutable descriptor and every
+        # original input from the retained/additional source owners.
+        available = {sid: (source, package, folder) for sid, (source, package, folder) in owners.items()}
+        if additional is not None:
+            available.update({s['id']: (s, extra, additional) for s in extra['sources']})
+        matched = []
+        for sid, (source, _, folder) in available.items():
+            path = Path(folder) / 'raw' / (source['raw_hash'][7:] + '.json')
+            if source['trust'] == 'UNTRUSTED_LEAD' and read(path) == raw:
+                matched.append(sid)
+        require(matched, 'locked replay needs its exact retained UNTRUSTED_LEAD wrapper owner')
+        needed = set(matched) | {value['source_id'] for value in raw['normalization']['inputs'].values()}
+        by_id = {s['id']: s for s in sources}
+        for sid in sorted(needed):
+            require(sid in available, 'current original source is absent from retained evidence')
+            source, _, folder = available[sid]
+            require(sid not in by_id or by_id[sid] == source, 'current retained source identity collision')
+            if sid not in by_id:
+                sources.append(source); by_id[sid] = source
+            files[sid] = str(Path(folder) / 'raw' / (source['raw_hash'][7:] + '.json'))
+        from .main_flow import current_market_source_ownership
+        current_market_source_ownership(by_id, {sid: read(files[sid]) for sid in by_id}, raw)
     else:
-        sources.append(source)
-    files[sid] = str(raw_market_file)
+        retrievals = [r['retrieved_at'] for r in raw['retrievals'].values()]
+        start = min((d['requested_start'] for d in raw['datasets'].values()), key=instant)
+        sid = 'market_' + raw['evidence_id'].replace('sha256:', '')[:20]
+        existing = next((s for s in sources if s['id'] == sid), None)
+        source = {'id':sid, 'origin':'BINANCE','url':'https://data-api.binance.vision/api/v3/klines',
+                  'trust':'PUBLIC_RAW','published_at':raw['cutoff'],'retrieved_at':max(retrievals,key=instant),
+                  'start':start,'end':raw['cutoff'],'raw_hash':digest(Path(raw_market_file).read_bytes())}
+        if existing is not None and existing != source:
+            # Market identity excludes retrieval metadata. Keep the previously cited
+            # source immutable and give a fresh retrieval its own byte-bound identity.
+            sid += '_' + source['raw_hash'][7:23]
+            source['id'] = sid
+            existing = next((s for s in sources if s['id'] == sid), None)
+        if existing:
+            require(existing == source, 'current evidence source collision')
+        else:
+            sources.append(source)
+        files[sid] = str(raw_market_file)
     spec = {'parent_id':None,'cutoff':cutoff,'sources':sources,'measurements':[],'verified_facts':[],
             'candidates':[],'gaps':[], 'handoff':{'previous_hour':None,'successful_deep':None,
             'changes_since_hour':[],'changes_since_deep':[],'active_hypotheses':[],'open_questions':[]}}
@@ -317,3 +367,168 @@ def compact_root(base_directory, raw_market_file, refs, directory, cutoff, addit
     elif base.get('collector') and base['collector']['source_id'] in files:
         spec['collector'] = base['collector']
     return freeze(spec, files, directory)
+
+
+def forward_resolver(bundle, directory):
+    """Public fact adapter; registration/lineage policy stays domain-neutral.
+
+    Event time comes from the referenced observation itself or the start of
+    its source period, never retrieval/publication time. Opaque material may
+    inform independent research, but cannot automatically grant a later fact.
+    """
+    from datetime import datetime, timezone
+    from urllib.parse import parse_qs, unquote
+
+    def resolve_ref(ref): return resolve(bundle, directory, ref, verified=True)
+
+    def observation(scope,start,end,source):
+        # Economic keys omit raw/ref aliases and retrieval clocks. The original
+        # publisher/provenance remains attached separately to the resolved fact.
+        period={'start':instant(start).astimezone(timezone.utc).isoformat(),
+                'end':instant(end).astimezone(timezone.utc).isoformat()}
+        require(instant(period['start'])<=instant(period['end']),'invalid original observation period')
+        key={'scope':{k:v for k,v in scope.items() if k!='publisher'},'economic_period':period}
+        return dict(key,identity=digest(key),publisher=canonical_origin(source['url']))
+
+    def view(ref, time_pointer):
+        value = resolve_ref(ref)
+        source = next(s for s in bundle['sources'] if s['id'] == ref['source_id'])
+        from . import public_observations
+        if ref['pointer'].startswith(public_observations.PREFIX):
+            require(isinstance(value, dict) and 'economic_period' in value,
+                    'later fact sample must reference its whole source observation')
+            require(time_pointer in (None, '/observed_at'), 'derived fact cannot substitute another event clock')
+            scopes = {'/value': value['scope']}
+            numeric = [] if value['scope']['unit'] == 'SOURCE_STATEMENT' else ['/value']
+            field_errors = {}
+            if numeric:
+                from decimal import Decimal, InvalidOperation
+                try: number = Decimal(str(value['value']))
+                except (InvalidOperation, TypeError, ValueError): number = None
+                if number is None or not number.is_finite(): field_errors['/value'] = 'classified source value is unavailable'
+            return {'kind': value['kind'], 'value': value, 'scope': value['scope'],
+                    'field_scopes': scopes, 'field_times': {'/value': value['observed_at']},
+                    'field_period_starts': {'/value': value['observed_at'] if value['scope'].get('period_kind') == 'DAILY_PRICE_BAR'
+                                             else value['economic_period']['start']},
+                    'numeric_fields': numeric, 'field_errors': field_errors,
+                    # Exact dates remain source-bound. A process claim may leave
+                    # its next date open; an explicitly named date still matches
+                    # through the ordinary scope comparison in the validator.
+                    'qualifiers': {'/value': [k for k in value['scope'] if k not in ('period', 'as_of')]},
+                    'observed_at': value['observed_at'], 'known_at': value['known_at'],
+                    'available_at': value['available_at'], 'provenance': value['provenance'],
+                    'field_observations':{'/value':observation(value['scope'],value['economic_period']['start'],value['economic_period']['end'],source)}}
+        raw = read(Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json'))
+        endpoint = urlsplit(source['url']); query = parse_qs(endpoint.query)
+        base = {'publisher': source['origin']}; fields = {}; field_times = {}
+        candidate = 'MATERIAL'
+        symbol = query.get('symbol', [None])[0]
+        if symbol and canonical_origin(source['url']) == 'BINANCE':
+            subject = symbol
+            for quote in ('USDT', 'USDC', 'BUSD', 'USD'):
+                if subject.endswith(quote): subject = subject[:-len(quote)]; break
+            base.update(subject=subject, venue='BINANCE', quote_unit=next((q for q in ('USDT','USDC','BUSD','USD') if symbol.endswith(q)), 'UNESTABLISHED'),
+                        product=('FUTURES' if '_' in symbol else 'PERPETUAL') if (endpoint.hostname == 'fapi.binance.com' or endpoint.path.startswith(('/fapi/', '/futures/'))) else 'SPOT')
+            if isinstance(value, list) and len(value) >= 11 and 'klines' in endpoint.path:
+                # The actual request interval is part of the observation's
+                # scope. An hourly close cannot verify an ex-ante daily test.
+                if query.get('interval'):
+                    base['interval'] = query['interval'][0]
+                candidate = 'EXTERNAL_OBSERVATION'
+                for i in (1, 2, 3, 4): fields['/' + str(i)] = dict(base, measure='PRICE')
+                fields['/5'] = dict(base, measure='TRADED_VOLUME')
+                fields['/7'] = dict(base, measure='TRADED_TURNOVER')
+                fields['/9'] = dict(base, measure='TAKER_VOLUME')
+                fields['/10'] = dict(base, measure='TAKER_TURNOVER')
+            elif isinstance(value, dict):
+                for k in ('sumOpenInterest', 'openInterest', 'sumOpenInterestValue', 'fundingRate'):
+                    if k in value:
+                        candidate = 'EXTERNAL_OBSERVATION'
+                        fields['/' + k] = dict(base, measure='FUNDING_RATE' if k == 'fundingRate' else 'OPEN_INTEREST_NOTIONAL' if k == 'sumOpenInterestValue' else 'OPEN_INTEREST_QUANTITY')
+        if isinstance(raw, dict) and isinstance(raw.get('datasets'), dict):
+            segments = ref['pointer'].split('/')
+            if len(segments) >= 3 and segments[1] == 'datasets' and segments[2] in raw['datasets']:
+                ds = raw['datasets'][segments[2]]
+                group = ds.get('group', '')
+                if group in ('BINANCE', 'COINBASE', 'KRAKEN') and ds.get('instrument') and ds.get('quote_unit'):
+                    instrument = ds['instrument']; quote = ds['quote_unit']
+                    subject = instrument[:-len(quote)].rstrip('-') if instrument.endswith(quote) else 'UNESTABLISHED'
+                    if subject == 'XBT': subject = 'BTC'  # Kraken's actual Bitcoin instrument alias.
+                    base = {'subject':subject, 'venue':group, 'product':ds['market'], 'quote_unit':quote}
+                    if isinstance(value, dict):
+                        measures = {'open':'PRICE','high':'PRICE','low':'PRICE','close':'PRICE',
+                                    'volume_btc':'TRADED_VOLUME','quote_volume':'TRADED_TURNOVER',
+                                    'taker_buy_btc':'TAKER_VOLUME','taker_buy_quote':'TAKER_TURNOVER',
+                                    'quantity_btc':'OPEN_INTEREST_QUANTITY','notional_usdt':'OPEN_INTEREST_NOTIONAL','rate':'FUNDING_RATE'}
+                        for k, measure in measures.items():
+                            if k in value and value[k] is not None:
+                                fields['/'+k] = dict(base,measure=measure)
+                        if fields: candidate = 'EXTERNAL_OBSERVATION'
+        if isinstance(value, dict) and value.get('kind') in ('FORECAST', 'HYPOTHESIS', 'SIMULATION', 'ENGINEERING', 'BACKTEST', 'FROZEN_REPLAY'):
+            candidate = value['kind']
+        if time_pointer is None:
+            stamp = instant(source['start'])
+        else:
+            require(isinstance(time_pointer, str), 'fact time must reference the same observation')
+            allowed = {'/time', '/date', '/observed_at', '/timestamp', '/close_time', '/fundingTime'}
+            if isinstance(value, list): allowed = {'/0', '/6'}
+            require(time_pointer in allowed, 'retrieval/publication or unrelated clock cannot replace event time')
+            t = pointer(value, time_pointer)
+            if isinstance(t, (int, float)):
+                stamp = datetime.fromtimestamp(t / 1000 if t > 100000000000 else t, timezone.utc)
+            else:
+                if isinstance(t, str) and len(t) == 10: t += 'T00:00:00Z'
+                stamp = instant(t)
+        require(instant(source['start']) <= stamp <= instant(source['end']), 'fact event time exceeds its frozen source period')
+        def field_clock(t):
+            if isinstance(t, (int, float)):
+                return datetime.fromtimestamp(t / 1000 if t > 100000000000 else t, timezone.utc).isoformat()
+            if isinstance(t, str) and len(t) == 10: t += 'T00:00:00Z'
+            return instant(t).isoformat()
+        if isinstance(value, list) and fields:
+            field_times = {p: field_clock(value[0 if p == '/1' else 6]) for p in fields}
+        elif isinstance(value, dict) and fields:
+            # A candle's close/range/accumulated trades form at its end; an
+            # open is already fixed at the start. Point facts use their own
+            # observation clock, never an author's alternative sample clock.
+            start_clock = value.get('time', value.get('timestamp', value.get('fundingTime', value.get('observed_at', value.get('date')))))
+            end_clock = value.get('end', value.get('close_time', start_clock))
+            if start_clock is not None:
+                field_times = {p: field_clock(start_clock if p == '/open' else end_clock) for p in fields}
+        for clock in field_times.values():
+            require(instant(source['start']) <= instant(clock) <= instant(source['end']), 'field time exceeds its frozen source period')
+        field_observations={}
+        if fields:
+            if isinstance(value,list):start_clock,end_clock=value[0],value[6]
+            else:
+                start_clock=value.get('time',value.get('timestamp',value.get('fundingTime',value.get('observed_at',value.get('date')))))
+                end_clock=value.get('end',value.get('close_time',start_clock))
+            if start_clock is not None and end_clock is not None:
+                field_observations={field:observation(actual,field_clock(start_clock),field_clock(end_clock),source)
+                                    for field,actual in fields.items()}
+        # Close/open and point measures have their own event clock. Range
+        # extrema and accumulated trades include the candle's whole period;
+        # its later close cannot make formation-era events prospective.
+        field_period_starts = {}
+        aggregate_fields = ('/2', '/3', '/5', '/7', '/9', '/10', '/high', '/low',
+                            '/volume_btc', '/quote_volume', '/taker_buy_btc', '/taker_buy_quote')
+        for field in aggregate_fields:
+            if field in field_observations:
+                field_period_starts[field] = field_observations[field]['economic_period']['start']
+        field_errors = {}
+        from decimal import Decimal, InvalidOperation
+        for field in fields:
+            try: number = Decimal(str(pointer(value, field)))
+            except (InvalidOperation, ValueError, TypeError):
+                field_errors[field] = 'classified numeric observation is unavailable, not a changed price or quantity'
+            else:
+                if not number.is_finite(): field_errors[field] = 'nonfinite numeric observation cannot verify a mechanism'
+        if fields:
+            base = dict(base, measure=sorted({f['measure'] for f in fields.values()}))
+        return {'kind': candidate, 'value': value, 'scope': base, 'field_scopes': fields, 'field_times': field_times, 'field_period_starts': field_period_starts, 'numeric_fields':list(fields), 'field_errors':field_errors,
+                'qualifiers': {p: [k for k in s if k != 'publisher'] for p, s in fields.items()},
+                'observed_at': stamp.isoformat(), 'known_at': source['retrieved_at'],
+                'field_observations':field_observations}
+
+    resolve_ref.fact = view
+    return resolve_ref

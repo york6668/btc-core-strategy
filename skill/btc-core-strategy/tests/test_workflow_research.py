@@ -7,6 +7,7 @@ import sys
 import unittest
 from unittest import mock
 
+
 sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'scripts'), str(Path(__file__).parent)]
 import test_recommendation_maintenance as support
 import test_market_observation as fixtures

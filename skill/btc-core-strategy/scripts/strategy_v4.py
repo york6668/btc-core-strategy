@@ -55,7 +55,7 @@ def main(argv=None):
     choice.add_argument('--input', help='complete authored input; legacy interface')
     choice.add_argument('--answers', help='authored judgment JSON, merged with --template')
     p.add_argument('--template', help='unchanged stage template from this run, required with --answers')
-    p.add_argument('--check-only', action='store_true', help='market: export a public candidate for review without freezing or exposing portfolio material; main: validate without writing artifacts or strategy state')
+    p.add_argument('--check-only', action='store_true', help='market: export a public candidate without portfolio disclosure; report: export the full-body review target without recording or sending; main: validate without writing strategy state')
     p.add_argument('--receipt', help='write the result to <run directory>/<stage>-stage-receipt.json; never redirect stdout into program-owned artifacts')
     p = sub.add_parser('migrate')
     p.add_argument('--state', required=True)
@@ -118,17 +118,21 @@ def main(argv=None):
     for name in ('research-request', 'research-result'):
         p = sub.add_parser(name)
         p.add_argument('--spec', required=True)
+        if name == 'research-result': p.add_argument('--guard-attempt')
     p = sub.add_parser('research-orchestrated-independent')
     for flag in ('request','rollout','dispatch','returned','input-review'):
         p.add_argument('--'+flag,required=True)
+    p.add_argument('--guard-attempt')
     p = sub.add_parser('research-orchestrated-result')
     p.add_argument('--spec',required=True)
+    p.add_argument('--guard-attempt')
     p = sub.add_parser('research-market-amendment')
     for flag in ('independent','rollout'):
         p.add_argument('--'+flag, required=True)
     for flag in ('dispatch','returned','turn'):
         p.add_argument('--'+flag)
     p.add_argument('--additional')
+    p.add_argument('--guard-attempt')
     p = sub.add_parser('research-read')
     p.add_argument('--request', required=True)
     p.add_argument('--phase', choices=('independent','portfolio','candidate'), required=True)
@@ -138,6 +142,7 @@ def main(argv=None):
     for flag in ('request', 'agent', 'rollout', 'turn'):
         p.add_argument('--' + flag, required=True)
     p.add_argument('--additional', help='archived merged public evidence consumed before the actual answer completed')
+    p.add_argument('--guard-attempt')
     p = sub.add_parser('research-reveal')
     for flag in ('request', 'independent', 'candidate'):
         p.add_argument('--' + flag, required=True)
@@ -158,6 +163,14 @@ def main(argv=None):
     repair.add_argument('--completion')
     repair.add_argument('--delivery-id')
     repair.add_argument('--main-draft', help='original submitted draft for an already published normalized main')
+    p = sub.add_parser('investment-policy'); p.add_argument('--input', required=True)
+    p = sub.add_parser('ledger-append'); p.add_argument('--input', required=True)
+    p = sub.add_parser('portfolio-performance')
+    for flag in ('currency','start','end'): p.add_argument('--'+flag, required=True)
+    p.add_argument('--as-of', required=True, help='Actual knowledge cutoff; never reconstruct unarchived views as known earlier')
+    p = sub.add_parser('strategy-rule-record'); p.add_argument('--input', required=True)
+    p = sub.add_parser('strategy-backtest'); p.add_argument('--input', required=True); p.add_argument('--evidence', required=True)
+    p = sub.add_parser('judgement-evaluate'); p.add_argument('--input', required=True); p.add_argument('--evidence', required=True)
     args = parser.parse_args(argv)
     try:
         import runtime_schedule
@@ -171,7 +184,7 @@ def main(argv=None):
             from v4 import run_flow
             from v4 import market_state
             result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations,
-                                      workflow_revision=7 if market_state.enabled(args.root) else None,
+                                      workflow_revision=max(8, storage.NEW_WRITE_REVISION) if market_state.enabled(args.root) else None,
                                       resume_preparation=args.resume_preparation, collector_snapshot=args.collector_snapshot,
                                       retained_source_bindings=args.retained_source_bindings)
         elif args.command == 'run-value-ref':
@@ -260,25 +273,42 @@ def main(argv=None):
             result={'source':args.output,'body':value['body'],'body_hash':value['body_hash']}
         elif args.command == 'research-request':
             from v4 import market_state
-            result=research.request(args.root,args.project,read(args.spec), workflow_revision=7 if market_state.enabled(args.root) else None)
+            result=research.request(args.root,args.project,read(args.spec), workflow_revision=max(8, storage.NEW_WRITE_REVISION) if market_state.enabled(args.root) else None)
         elif args.command == 'research-result':
-            result=research.result(args.root,read(args.spec))
+            result=research.result(args.root,read(args.spec),args.guard_attempt)
         elif args.command == 'research-orchestrated-independent':
-            result=research.orchestrated_independent(args.root,args.request,args.rollout,args.dispatch,args.returned,read(args.input_review))
+            result=research.orchestrated_independent(args.root,args.request,args.rollout,args.dispatch,args.returned,read(args.input_review),args.guard_attempt)
         elif args.command == 'research-orchestrated-result':
-            result=research.orchestrated_result(args.root,read(args.spec))
+            result=research.orchestrated_result(args.root,read(args.spec),args.guard_attempt)
         elif args.command == 'research-market-amendment':
-            result=research.amend_market(args.root,args.independent,args.rollout,args.dispatch,args.returned,args.additional,args.turn)
+            result=research.amend_market(args.root,args.independent,args.rollout,args.dispatch,args.returned,args.additional,args.turn,args.guard_attempt)
         elif args.command == 'research-read':
             result=research.read_input(args.root,args.request,args.phase,args.candidate_id,args.independent_id)
         elif args.command == 'research-independent':
-            result=research.independent(args.root,args.request,args.agent,args.rollout,args.turn,args.additional)
+            result=research.independent(args.root,args.request,args.agent,args.rollout,args.turn,args.additional,args.guard_attempt)
         elif args.command == 'research-reveal':
             result=research.reveal(args.root,args.request,args.independent,read(args.candidate),additional=args.additional,check_only=args.check_only)
         elif args.command == 'enqueue':
             result = delivery.enqueue(args.root, args.decision, read(args.destination), read(args.source) if args.source else None)
         elif args.command == 'delivery':
             result = delivery.transition(args.root, args.identity, args.action, read(args.receipt) if args.receipt else None)
+        elif args.command == 'investment-policy':
+            from v4.investment import record_policy
+            result = record_policy(args.root,args.project,read(args.input))
+        elif args.command == 'ledger-append':
+            from v4.portfolio_ledger import append
+            result = append(args.root,args.project,read(args.input))
+        elif args.command == 'portfolio-performance':
+            from v4.portfolio_ledger import records, measure
+            result = measure(records(args.root,args.as_of),args.currency,args.start,args.end)
+        elif args.command == 'strategy-rule-record':
+            from v4.strategy_validation import record_rule
+            result = record_rule(args.root,read(args.input))
+        elif args.command in ('strategy-backtest','judgement-evaluate'):
+            from v4 import strategy_validation
+            package = evidence.validate(read(Path(args.evidence)/'evidence.json'),args.evidence)
+            result = (strategy_validation.record_backtest(args.root,read(args.input),package,args.evidence) if args.command == 'strategy-backtest'
+                      else strategy_validation.evaluate_judgement(args.root,read(args.input),package,args.evidence))
         elif args.command == 'repair-completion':
             db = Path(args.project) / '.strategy/market_observation.sqlite3'
             with locked(args.root):

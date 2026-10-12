@@ -5,15 +5,23 @@ import json
 from pathlib import Path
 
 import market_observation as market
-from . import evidence, main_flow, reporting, report_care, sensing, storage, cycle, material_reads
+from . import evidence, main_flow, reporting, report_care, sensing, storage, cycle, material_reads, authored_report
 from .common import create, digest, exact, fact_inputs, facts, instant, locked, now, pointer, read, require, text
 
 
-def refs_in(value):
+def refs_in(value, root=None):
     """Retain the actual reference closure, never an entire parent evidence chain."""
-    found = {}
+    found = {}; visited = set()
     def walk(v):
         if isinstance(v, dict):
+            if root is not None:
+                from .forward_lifecycle import registration
+                for key in ('claim_hash','prior_claim_hash'):
+                    identity = v.get(key)
+                    if identity and identity not in visited:
+                        visited.add(identity)
+                        original = registration(root, identity)
+                        if original: walk(original['claim'])
             if set(('source_id', 'pointer', 'value_hash')) <= set(v):
                 ref = {k: v[k] for k in ('source_id', 'pointer', 'value_hash')}
                 found[digest(ref)] = ref
@@ -251,7 +259,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         else:
             snapshot = collector.capture(project, collector_file)
         collector_path = save(directory / 'collector.json', snapshot) if snapshot else None
-        retained = refs_in(core)
+        retained = refs_in(core, root)
         # Already-known conclusions remain part of this run's information set.
         # Reusing slow evidence must not move its original publication timestamps.
         cutoff = max([core['temporal_scope']['knowledge_cutoff']] + [r['retrieved_at'] for r in raw['retrievals'].values()] +
@@ -261,7 +269,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         retained_directories = []
         if market_state.enabled(root, core):
             prior_market = market_state.effective(root, core, pinned['decision_id'])
-            retained.extend(refs_in(prior_market))
+            retained.extend(refs_in(prior_market, root))
             if prior_market['observation_id']:
                 previous = sensing.observation(root, prior_market['observation_id'])
                 prior_evidence = root / 'evidence' / previous['context']['identity']['factor_evidence_id'][7:]
@@ -280,7 +288,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                 shown_dir = root / 'evidence' / shown_evidence_id[7:]
                 shown_bundle = evidence.validate(read(shown_dir / 'evidence.json'), shown_dir)
                 public_ids = {s['id'] for s in shown_bundle['sources'] if s['trust'] == 'PUBLIC_RAW'}
-                shown_refs = refs_in(market_state.public_review(shown_context.get('observation', {}).get('review', {})))
+                shown_refs = refs_in(market_state.public_review(shown_context.get('observation', {}).get('review', {})), root)
                 retained.extend(r for r in shown_refs if r['source_id'] in public_ids)
                 retained_directories.append(shown_dir)
                 cutoff = max(cutoff, shown_bundle['cutoff'], key=instant)
@@ -464,17 +472,13 @@ def phase_material(run, label, stage='report'):
     form = report_template(ctx)
     form['_binding'] = {'context_file': full_path, 'context_hash': digest(ctx)}
     template_path = save(d / (prefix + '-template.json'), form)
-    quality_keys = {'decision_and_advice','reasoning','necessary_numbers','material_risk','phone_readability'}
-    if ctx.get('report_contract_revision', 1) >= 3:
-        quality_keys.add('market_independence')
-    if ctx.get('cycle_policy_revision') == 1:
-        quality_keys |= cycle.REPORT_CHECKS
-    if ctx.get('deep_report_policy_revision') == 1:
-        quality_keys |= cycle.SUMMARY_CHECKS
+    quality_keys = authored_report.quality_keys(ctx)
     layout = {
         'format': 'AUTHORED_REPORT_V1', 'body': None, 'bindings': [],
         'price_status': {'lower_spot':None,'upper_short':None},
         'quality_review': {key:None for key in sorted(quality_keys)}}
+    if ctx.get('report_contract_revision', 1) >= 5:
+        layout['reviewed_candidate_hash'] = None
     extra = {}
     if stage == 'report-body':
         extra = {'layout_template': save(d / (prefix + '-layout-template.json'), layout),
@@ -548,7 +552,7 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         authored = read(input_path)
         if isinstance(authored, dict) and 'payload' in authored:
             candidate = authored
-            exact(candidate, 'payload result_hash market_context_id', 'public market candidate')
+            exact(candidate, 'payload result_hash market_context_id' + (' lifecycle_frozen_at' if 'lifecycle_frozen_at' in candidate else ''), 'public market candidate')
             require(candidate['result_hash'] == digest(candidate['payload']), 'public market candidate changed')
             authored = candidate['payload']
     else:
@@ -570,12 +574,13 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
     frozen_path = d / 'market-result.json'
     existing = read(frozen_path) if not check_only and frozen_path.is_file() else None
     if existing is not None:
-        exact(existing, 'payload result_hash market_context_id', 'frozen public market result')
+        exact(existing, 'payload result_hash market_context_id' + (' lifecycle_frozen_at' if 'lifecycle_frozen_at' in existing else ''), 'frozen public market result')
         require(existing['result_hash'] == digest(existing['payload']), 'frozen public result hash changed')
         require(existing['payload'] == authored, 'cannot change an already frozen public result')
-        original_candidate = d / ('market-candidate-' + digest(existing)[7:] + '.json')
+        original_view = {k:v for k,v in existing.items() if k != 'lifecycle_frozen_at'}
+        original_candidate = d / ('market-candidate-' + digest(original_view)[7:] + '.json')
         require(existing['market_context_id'] == read(d / 'context.json').get('market_context_id')
-                or (original_candidate.is_file() and read(original_candidate) == existing),
+                or (original_candidate.is_file() and read(original_candidate) == original_view),
                 'frozen public context differs from original run material or candidate')
         # Instruction updates change a new projection's hash. Recovery retains
         # the original freeze and its bound run material, never rebinds history.
@@ -583,10 +588,11 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
     else:
         frozen = {'payload': authored, 'result_hash': digest(authored),
                   'market_context_id': market_state.market_projection(ctx)['market_context_id']}
-    candidate_path = d / ('market-candidate-' + digest(frozen)[7:] + '.json')
+    candidate_view = {k:v for k,v in frozen.items() if k != 'lifecycle_frozen_at'}
+    candidate_path = d / ('market-candidate-' + digest(candidate_view)[7:] + '.json')
     if candidate is not None:
         if existing is not None:
-            require(candidate == existing, 'public market recovery differs from frozen result')
+            require(candidate == existing or candidate == candidate_view, 'public market recovery differs from frozen result')
         else:
             require(candidate['market_context_id'] == frozen['market_context_id'],
                     'public market candidate context changed')
@@ -597,7 +603,7 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
             path = save(candidate_path, frozen)
             material = save(d / ('market-review-' + digest(frozen)[7:] + '.json'),
                 {'market_candidate': frozen,
-                 'instructions': (market_state.CYCLE_THESIS_REVIEW + market_state.EVIDENCE_REASONING_REVIEW
+                 'instructions': (market_state.PUBLIC_ANALYSIS_REVIEW + market_state.CYCLE_THESIS_REVIEW + market_state.EVIDENCE_REASONING_REVIEW
                                   + market_state.PUBLIC_RESULT_REVIEW)})
             reads = material_reads.make(d, 'market-review', material, compact=True,
                 on_demand={'public_context': str(d / 'context.json'),
@@ -618,7 +624,13 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         # freshly composed or copied judgment that bypasses the review step.
         require(candidate is not None or (d / 'market-result.json').is_file(),
                 'new public result requires --check-only, actual candidate reread, then --input <market_candidate>')
+        if ctx.get('revision', 1) >= 9:
+            require(existing is None or 'lifecycle_frozen_at' in existing, 'missing original freeze clock remains posthoc; replay cannot backfill first registration')
+            if existing is None: frozen['lifecycle_frozen_at'] = now()
         path = save(d / 'market-result.json', frozen)
+        if ctx.get('revision', 1) >= 9:
+            from .forward_lifecycle import register
+            register(root, frozen['payload']['market_assessment'], path, '/lifecycle_frozen_at')
         core = storage.current(root)['assessment']
         portfolio = {'market_result': frozen, 'recommendations': core.get('recommendations'),
                      'portfolio_analysis': core.get('portfolio_analysis'),
@@ -642,6 +654,14 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
                          'confirmed_account_facts': portfolio['confirmed_account_facts'],
                          'fact_files': portfolio['fact_files'], 'fact_availability': portfolio['fact_availability'],
                          'instructions': INSTRUCTIONS}
+            if ctx.get('revision', 1) >= 8:
+                from .investment import open_issues, decision as investment_decision
+                if ctx.get('revision', 1) >= 9:
+                    portfolio['account_constraints'] = latest['account_constraints']
+                portfolio['investment_decision'] = investment_decision(core)
+                portfolio['open_investment_issues'] = open_issues(core)
+                portfolio['investment_feedback'] = latest.get('investment_feedback')
+                portfolio['recorded_policy_inputs'] = latest.get('recorded_policy_inputs',[])
             # A facts-only change can refresh this stage around the same public
             # freeze, without recollecting evidence or rebuilding research.
             context_path = save(d / ('portfolio-sensing-' + latest['context_id'][7:] + '.json'), latest)
@@ -660,7 +680,7 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
 
 
 def advance(run_path, stage, input_path=None, root=None, project=None, template_path=None, answers_path=None, *, check_only=False):
-    require(not check_only or stage in ('market', 'main'), 'check-only applies to the market or main stage')
+    require(not check_only or stage in ('market', 'main', 'report'), 'check-only applies to the market, main or report stage')
     if stage == 'market':
         return advance_market(run_path, input_path, root, project, template_path, answers_path, check_only=check_only)
     require(stage in ('observe', 'main', 'report'), 'invalid run stage')
@@ -708,12 +728,29 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
             save(d / (stage + '-authored-' + digest(authored)[7:] + '.json'), authored)
     if check_only:
         ctx = _bound_context(run, authored, stage)
+        if stage == 'report':
+            latest = reporting.context(root)
+            require(ctx['context_id'] == latest['context_id'], 'stage context changed; ' + json.dumps(context_changes(ctx, latest), ensure_ascii=False))
+            require(authored.get('action') == 'REPORT', 'report preflight requires a finished report candidate')
+            payload = dict(authored, schema='BTC_REPORT_REVIEW_V1', context_id=ctx['context_id'],
+                           provenance=identity(run), context=ctx)
+            checked = authored_report.preview(payload, storage.current(root))
+            review_material = {'candidate': payload, 'reviewed_candidate_hash': checked['reviewed_candidate_hash'],
+                               'instructions': reporting.authoring_guidance(ctx)}
+            # The reviewed text has a stable identity; each immutable reading artifact
+            # also binds its current context and review notes without overwriting history.
+            material = save(d / ('report-review-' + digest(review_material)[7:] + '.json'), review_material)
+            reads = material_reads.make(d, 'report-review', material, compact=True)
+            return dict(checked, status='REPORT_CANDIDATE_READY', review_material=material,
+                        read_set={'report_review': reads},
+                        review_read={'arguments': ['run-read', '--run', str(run_path), '--read-set', reads, '--cursor', '0']},
+                        next_action='READ_AND_REVIEW_ACTUAL_FULL_BODY_THEN_COMMIT_THE_SAME_CANDIDATE')
         latest = sensing.context(root, Path(run['project']) / '.strategy/market_observation.sqlite3',
             run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True, workflow_revision=run.get('workflow_revision'))
         require(ctx['context_id'] == latest['context_id'], 'stage context changed; ' + json.dumps(context_changes(ctx, latest), ensure_ascii=False))
         exact(authored, 'components checks', 'authored main input')
         candidate, review = main_flow.assemble(root, run['project'], authored['components'], run['evidence'],
-            read(run['market']), identity(run), authored['checks'])
+            read(run['market']), identity(run), authored['checks'], workflow_revision=run.get('workflow_revision'))
         storage.validate_main(root, run['project'], candidate, run['evidence'], review)
         return {'valid': True, 'draft_id': candidate['draft_id'], 'scope': 'structure_and_bindings_only',
                 'next_action': 'COMMIT_WITH_LIVE_REVALIDATION'}
@@ -757,7 +794,7 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
                 elif stage == 'main':
                     exact(authored, 'components checks', 'authored main input')
                     draft, review = main_flow.assemble(root, run['project'], authored['components'], run['evidence'],
-                        read(run['market']), identity(run), authored['checks'])
+                        read(run['market']), identity(run), authored['checks'], workflow_revision=run.get('workflow_revision'))
                     intent = {'draft': draft, 'review': review, 'expected': ctx['identity']['decision_id']}
                 else:
                     payload = deepcopy(authored)

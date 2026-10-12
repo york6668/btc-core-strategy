@@ -464,5 +464,66 @@ class EventContractTests(unittest.TestCase):
         self.assertEqual((value, baseline), before)
 
 
+class MaintenanceFormationClockTests(unittest.TestCase):
+    """Constructed clocks/windows only; never actual market or author approval."""
+    LOCK = "2030-03-01T15:01:00+00:00"
+    FORMED = "2030-03-01T15:19:00+00:00"
+    CLOCK = "2030-03-01T15:20:00+00:00"
+
+    def plan(self):
+        value = next_cycle()
+        value['cycle']['opened_at'] = self.FORMED
+        for event in value['cycle']['events']:
+            event['timezone'] = 'UTC'
+            event['due_at'] = datetime.fromisoformat(event['due_at']).astimezone(timezone.utc).isoformat()
+            event['completion_rule'] = {'kind':'PUBLIC_OBSERVATION_WINDOW_ENDED', 'window_start':self.FORMED}
+            event['timing_source'].update(authority='BINANCE',
+                endpoint_url='https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h',
+                scheduled_at=None, event_reference='CONSTRUCTED_PENDING_PUBLIC_WINDOW')
+        return value
+
+    def validate(self, value, **kwargs):
+        return check(value, self.LOCK, now=self.CLOCK, baseline_event=first_cycle(), **kwargs)
+
+    def test_old_locked_sources_new_actual_formation_future_pending_are_compatible(self):
+        value = self.plan(); baseline = first_cycle(); original = deepcopy((value, baseline))
+        self.assertEqual(check(value, self.LOCK, now=self.CLOCK, baseline_event=baseline), [])
+        self.assertEqual(value['cycle']['opened_at'], self.FORMED)
+        self.assertEqual(value['trigger']['completed_previous_event']['completed_at'], baseline['cycle']['events'][-1]['due_at'])
+        self.assertEqual((value, baseline), original)
+
+    def test_future_opened_at_is_rejected_without_clock_skew_allowance(self):
+        value = self.plan(); value['cycle']['opened_at'] = '2030-03-01T15:20:00.000001+00:00'
+        self.assertIn('event cycle cannot open after the trusted local clock', self.validate(value))
+
+    def test_sources_cannot_borrow_new_plan_clock_to_exceed_locked_cutoff(self):
+        for field in ('published_at', 'retrieved_at'):
+            value = self.plan(); value['cycle']['events'][0]['timing_source'][field] = self.FORMED
+            with self.subTest(field=field):
+                self.assertTrue(any('observation/pricing cutoff' in error for error in self.validate(value)))
+
+    def test_pending_at_clock_or_in_the_past_is_rejected(self):
+        for due in ('2030-03-01T15:19:30+00:00', self.CLOCK):
+            value = self.plan(); value['cycle']['events'][0]['due_at'] = due
+            with self.subTest(due=due):
+                self.assertIn('event newly established cycle must contain only future pending events', self.validate(value))
+
+    def test_wrong_original_final_completion_and_deadline_are_rejected(self):
+        for field in ('event_id', 'due_at', 'completed_at'):
+            value = self.plan(); old = value['trigger']['completed_previous_event']
+            old[field] = 'CONSTRUCTED_WRONG_EVENT' if field == 'event_id' else self.LOCK
+            with self.subTest(field=field):
+                self.assertTrue(self.validate(value))
+        value = checked_cycle(); old = value['cycle']['events'][-1]
+        old['due_at'] = '2030-03-01T16:00:00+00:00'; old['timing_source']['scheduled_at'] = old['due_at']
+        self.assertTrue(self.validate(value))
+
+    def test_historical_formation_is_read_at_original_publication_not_data_clock(self):
+        value = self.plan()
+        self.assertEqual(check(value, self.LOCK, now=self.CLOCK, baseline_mode=True), [])
+        self.assertIn('event cycle cannot open after the trusted local clock',
+                      check(value, self.LOCK, now=self.LOCK, baseline_mode=True))
+
+
 if __name__ == "__main__":
     unittest.main()

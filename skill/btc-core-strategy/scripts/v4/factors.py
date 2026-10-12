@@ -39,11 +39,11 @@ PUBLICATION_REVIEW = (
     '在coverage.value_pricing和coverage.verification中实际核对因素覆盖与时效，六项字段齐全不代表分析完整。'
     '完整报告开头必须能读出周期形态、切换确认性及建议价值与共识；因子解释、传导分段或历史价位不能代替结论。'
     '短窗承接或去仓只是竞争解释，不能直接证明中长期价值未受损；保留减仓与继续持有的比较。'
-    '完整内部研究核对三类收益、分资产结论与组合得失；最终配置由 allocation_decision 统一交付，正文只保留最终安排与执行限制。核验本金保护、资金不重复占用及退出/恢复参与条件。'
+    '完整内部研究核对三类收益、分资产结论与组合得失；总体取舍由当前 investment_decision 交付，旧版本沿其实际 allocation_decision 或风险/机会契约恢复，正文只保留最终安排与执行限制。核验本金保护、资金不重复占用及退出/恢复参与条件。'
 )
 
 
-def validate(value, bundle, directory):
+def validate(value, bundle, directory, revision=4):
     """Validate shape and cited values only; prose remains a model assessment.
 
     Empty items or references are legitimate. The model explains exclusions,
@@ -55,11 +55,19 @@ def validate(value, bundle, directory):
     require(isinstance(value['items'], list), 'factor items must be a list')
     ids = set()
     for item in value['items']:
-        exact(item, 'id name assessment change_reason refs counter_refs', 'factor item')
+        exact(item, 'id name assessment change_reason refs counter_refs' + (' decision_review' if revision >= 8 else ''), 'factor item')
         for field in ('id', 'name', 'assessment', 'change_reason'):
             text(item[field], 'factor ' + field)
         require(item['id'] not in ids, 'duplicate factor id')
         ids.add(item['id'])
+        if revision >= 8:
+            review=item['decision_review']
+            exact(review,'state mechanism judgement_impact applicability verification duplicate_of', 'factor decision review')
+            require(review['state'] in ('ADOPTED','OBSERVING','RETIRED'),'invalid factor adoption state')
+            for key in ('mechanism','judgement_impact','applicability','verification'):
+                text(review[key],'factor '+key)
+            require(isinstance(review['duplicate_of'],list) and item['id'] not in review['duplicate_of'],'duplicate evidence relations must identify other factors')
+            for key in review['duplicate_of']:text(key,'related factor identity')
         for field in ('refs', 'counter_refs'):
             require(isinstance(item[field], list), 'factor ' + field + ' must be a list')
             for ref in item[field]:

@@ -6,6 +6,7 @@ import sys
 import unittest
 from unittest import mock
 
+
 sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'scripts'), str(Path(__file__).parent)]
 import test_run_flow as adapter_fixture
 import test_mobile_report as mobile_fixture

@@ -2,11 +2,44 @@
 import re
 from decimal import Decimal
 from datetime import timedelta, timezone
-from .common import exact, instant, pointer, require, text
+from .common import digest, exact, instant, pointer, require, text
 from .mobile_report import QUALITY, INDEX_NAME
 
 FORMAT = 'AUTHORED_REPORT_V1'
 DISPLAY_FORMATS = {'MARKET_MOBILE_V2', FORMAT}
+REPORT_CONTRACT_REVISION = 6
+# These are model review responsibilities, not a prose classifier or score.
+# Frozen revisions retain the review keys used when their source was authored.
+READING_REVIEW = {
+    'decision_delivery': '对照最终正文原句与冻结结果，分别核验当前状态、有界未来竞争路径及相对把握、公开现价价值和策略适用性、个人总体取舍；方向句、未反转或条件清单不能代替未来判断及选择。有限反馈说明完成范围与上游未决，缺研究返回原研究，缺表达修稿。',
+    'evidence_priority': '指出支撑主线的决定性证据与关键反证及其正文原句，核验各分句的场所、产品、窗口和确认程度；完整数字与历史流水只在影响取舍时展示。',
+    'maintenance_separation': '对照最终正文说明核验记录、哈希、内部到期续期、冻结采用发送状态和完整缺口详单如何留在技术依据或原维护；必要限制以对价值、风险或动作的具体影响保留。',
+    'narrative_focus': '逐段对照正文说明各段推进的市场因果或个人取舍，实际删并重复结论与重复否定；开头独立市场、随后论证、再个人安排及改变条件，收束没有重述全部结论。',
+}
+BODY_AUTHORING_INSTRUCTIONS = (
+    '面向个人直接交付完整主题和自然段：独立市场裁决分别承接当前方向、拐点进展及已形成的有界未来路径比较，'
+    '随后主证据和重要反证、权益宏观及产品影响，再交付个人总体取舍与必要分项，最后说明改变判断的条件。'
+    '公开策略适用性保留公开价格风险依据；个人资金优先级及保护配合不插入独立市场结论。仅承接冻结已形成结果，不重新研究、不提高确认程度或补造价量。'
+    '数据时点在开头简明说明一次；其他日期仅在影响判断或行动时保留。'
+    '研究及个人叙述是来源，不是逐段必抄的正文；选择决定性证据，集中说明关键未知的实际影响。'
+    '核验、哈希、内部期限、冻结采用发送状态、历史事实核对流水及完整缺口详单留在已有来源索引、审阅和维护材料。'
+    '正文不按内部维护组织，不附机构式风险声明；不强制交易，不以未知默认安全。'
+    '长度按用户阅读需要及内容完整性取舍，不硬截断、不用字数、关键词或固定段数代替语义验收。'
+)
+
+
+def quality_keys(context):
+    from .cycle import REPORT_CHECKS, SUMMARY_CHECKS
+    expected = QUALITY | (REPORT_CHECKS if context.get('cycle_policy_revision') == 1 else set())
+    if context.get('deep_report_policy_revision') == 1:
+        expected |= SUMMARY_CHECKS
+    if context.get('report_contract_revision', 1) >= 3:
+        expected.add('market_independence')
+    if context.get('market_revision', 0) >= 8:
+        expected |= {'overall_choice', 'upstream_completeness'}
+    if context.get('report_contract_revision', 1) >= 4:
+        expected |= set(READING_REVIEW)
+    return expected
 PUBLIC = ('/assessment/outlook/', '/assessment/factor_assessment/',
           '/observation/review/market_assessment/', '/observation/review/dispute_zones/',
           '/observation/review/factor_checks/', '/metrics/', '/public_evidence/', '/report_subjects/')
@@ -49,6 +82,12 @@ def price_status(value, decision):
     pending = (ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT')
     pending |= ctx.get('identity', {}).get('fact_version', decision['assessment'].get('fact_version')) != decision['assessment'].get('fact_version')
     checked = max(instant(ctx['knowledge_cutoff']), instant(ctx.get('evaluated_at', ctx['knowledge_cutoff'])))
+    if decision['assessment'].get('revision',0)>=8:
+        from .investment import decision as investment_decision
+        whole=investment_decision(decision['assessment'])
+        pending |= whole is None or instant(whole['valid_until'])<=checked
+        if whole is not None:
+            pending |= whole['fact_version']!=ctx.get('identity',{}).get('fact_version',decision['assessment'].get('fact_version'))
     for side, status in statuses.items():
         rec = decision['assessment']['recommendations'][side]
         if rec['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED'):
@@ -101,23 +140,42 @@ def validate_price(binding, values):
                     'price belongs to a different instrument')
 
 
-def render(value, decision):
+def candidate_hash(value):
+    """Bind the actual review target, not an assertion that its meaning is sound."""
+    layout = value['layout']
+    return digest({'context_id': value['context']['context_id'],
+                   'result_binding': value.get('result_binding'),
+                   'layout': {key: layout[key] for key in ('format', 'body', 'bindings', 'price_status')}})
+
+
+def preview(value, decision):
+    """Preflight the whole candidate without accepting its semantic review."""
+    body, _ = render(value, decision, require_review=False)
+    return {'valid': True, 'scope': 'structure_and_bindings_only',
+            'semantic_review': 'PENDING_ACTUAL_FULL_BODY_REVIEW',
+            'reviewed_candidate_hash': candidate_hash(value), 'body_hash': digest(body.encode())}
+
+
+def render(value, decision, *, require_review=True):
     layout = value['layout']; ctx = value['context']
-    exact(layout, 'format body bindings price_status quality_review', 'authored report layout')
+    exact(layout, 'format body bindings price_status quality_review' +
+          (' reviewed_candidate_hash' if ctx.get('report_contract_revision', 1) >= 5 else ''), 'authored report layout')
     require(layout['format'] == FORMAT, 'invalid authored report format')
     body = layout['body']; text(body, 'final authored Markdown')
     require('{{' not in body and '}}' not in body, 'final body cannot contain unresolved template references')
-    from .cycle import REPORT_CHECKS, SUMMARY_CHECKS, validate_report_basis
-    expected = QUALITY | (REPORT_CHECKS if ctx.get('cycle_policy_revision') == 1 else set())
+    from .cycle import validate_report_basis
+    expected = quality_keys(ctx)
     if ctx.get('deep_report_policy_revision') == 1:
-        expected |= SUMMARY_CHECKS
         validate_report_basis(value, ctx)
-    if ctx.get('report_contract_revision', 1) >= 3:
-        expected.add('market_independence')
     require(isinstance(layout['quality_review'], dict) and set(layout['quality_review']) == expected,
             'complete authored expression review required')
     for key, explanation in layout['quality_review'].items():
+        if not require_review and explanation is None:
+            continue
         text(explanation, key); require(len(explanation.strip()) >= 12, 'expression review needs concrete reasoning')
+    if require_review and ctx.get('report_contract_revision', 1) >= 5:
+        require(layout['reviewed_candidate_hash'] == candidate_hash(value),
+                'final report changed or has not been reviewed; preflight and reread the actual candidate')
     price_status(value, decision)
     values = {k: ctx.get(k) for k in ('metrics', 'observation', 'public_evidence', 'report_subjects', 'report_quote_policy')}
     values.update(assessment=decision['assessment'], evaluation_time=evaluation_time(ctx))
@@ -142,6 +200,9 @@ def render(value, decision):
                 allowed = (personal_result, '/applicability/portfolio/', '/execution_plans/')
                 if ctx.get('market_revision', 0) >= 7:
                     allowed += ('/strategy_advice/',)
+                if ctx.get('market_revision', 0) >= 8:
+                    allowed += ('/investment_decision/', '/portfolio_narrative')
+                    require(values.get('investment_decision') is not None, 'personal synthesis is unfinished; return upstream before a complete personal report')
                 require(ref.startswith(allowed), 'personal report consumes only assessed risk, applicable advice and limits')
             if binding['scope'] == 'clock':
                 require(ref == '/evaluation_time' and excerpt == values['evaluation_time'], 'only frozen evaluation time is a clock binding')
@@ -158,6 +219,15 @@ def render(value, decision):
         require(numbers(excerpt) <= supported, 'authored numbers must match their frozen references without conversion')
         validate_price(binding, values)
         covered |= numbers(excerpt)
+    if ctx.get('market_revision',0)>=8 and any(b['scope']=='personal' for b in layout['bindings']):
+        require(any(ref.startswith(('/investment_decision/summary','/investment_decision/priorities/','/investment_decision/supported_judgements/'))
+                    for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']),
+                'complete personal report must consume the formed overall choice, not only parallel risk and opportunity results')
+        limits=values['investment_decision'].get('validation_limits',[])
+        if any(l['unsupported_capabilities'] or l['basis']=='METHOD_CHECK' for l in limits):
+            require(any(re.fullmatch(r'/investment_decision/(?:validation_limits/\d+/(?:limitations|unsupported_capabilities)/\d+|gaps/\d+/(?:consequence|required_evidence))',ref)
+                        for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']),
+                    'unsupported implementation capabilities must reach the personal report consumer through concrete limitations or their decision consequences')
     require(numbers(body) <= covered, 'all report numbers need frozen evidence bindings')
     if ctx.get('report_contract_revision', 1) >= 3:
         conclusions = [b for b in layout['bindings'] if b['scope'] != 'clock']

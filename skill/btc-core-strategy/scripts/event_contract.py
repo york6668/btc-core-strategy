@@ -342,7 +342,10 @@ def validate_event_contract(
     ``now`` is supplied by the caller's local clock; it is not an input artifact.
     Context times accept aware datetimes or ISO strings; pricing also accepts
     the project's minute-precision JST representation.  All persisted event
-    times require timezone-aware ISO strings.  A baseline already persisted in
+    times require timezone-aware ISO strings. ``opened_at`` is the actual plan
+    formation instant, bounded by the trusted clock, independently of the
+    older locked observation/pricing cutoff used for source evidence.
+    A baseline already persisted in
     a past run is structurally checked with ``baseline_mode=True`` and its own
     original cutoff; reaching its final deadline later is not baseline damage.
 
@@ -376,8 +379,8 @@ def validate_event_contract(
     _text(cycle.get("cycle_id"), "event.cycle.cycle_id", errors)
     _text(cycle.get("final_expiry_event_id"), "event.cycle.final_expiry_event_id", errors)
     opened = _instant(cycle.get("opened_at"), "event.cycle.opened_at", errors)
-    if opened is not None and cutoff is not None and opened > cutoff:
-        errors.append("event cycle cannot open after the observation/pricing cutoff")
+    if opened is not None and clock is not None and opened > clock:
+        errors.append("event cycle cannot open after the trusted local clock")
     chain = cycle.get("events")
     if not isinstance(chain, list) or not 2 <= len(chain) <= 4:
         errors.append("event.cycle.events must contain 2 to 4 sequential events")

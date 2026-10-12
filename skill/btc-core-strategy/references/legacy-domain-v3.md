@@ -308,6 +308,8 @@ revision 2到revision 3的首次激活使用一次性`MIGRATION`，不伪装成 
 
 `final_event_reached`只能由已绑定的旧周期最终事件与实际截止时点派生。E 消费旧最终事件，原子建立新身份及尚未完成的新事件链；下一轮检查新周期，不得重复消费旧最终事件，也不得把旧周期重新标成 PENDING。中间事件已到不等于 E，单独日历换页不产生报告。历史 baseline 校验使用该基线的历史时点，不能因为今天已晚于它的观察窗口就损坏回读；当前运行仍必须处理真正已经到达的最终事件。
 
+`cycle.opened_at` 保存作者实际建立观察安排的时点，按可信本次 clock 作上界，不能为了旧行情截止回填。资料的 observation/pricing 截止继续控制 timing_source 的 published_at/retrieved_at；计划形成晚于资料不使晚到来源进入旧信息集。新链各 pending due_at 必须晚于本次真实 clock，旧 final 的 due_at/completed_at 仍精确消费原窗口；事件安排只承担维护，不给价格周期定义固定天数。v4 的真实 REUSED ancestor 校验显式用该 Owner 的原 created_at 重放当次壁钟，当前到期门及新域校验仍用真实 clock；不改旧记录或对新计划开放调用者自报历史时钟。
+
 迁移使用独立 MIGRATION trigger 建立新链，不假称旧报告发生一次有效策略迁移。状态 metadata 的 cycle 身份必须与 event.cycle.cycle_id 一致。事件完成不意味着任何真实仓位结束。
 
 ## 原子状态/计划更新

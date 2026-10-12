@@ -7,6 +7,7 @@ trades, edit strategy owners, or publish reports. See references/market-observat
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import hashlib
 import json
@@ -299,7 +300,8 @@ def build_dataset(s, rows, cutoff, issues=None):
             'issues': sorted(set(issues or []))}
 
 
-def summarize_candles(rows, start, end, interval):
+def summarize_candles(rows, start, end, interval, *, sum_values=None):
+    sum_values = sum if sum_values is None else sum_values
     selected = [r for r in rows if start <= timestamp(r['time']) < end]
     complete = len(selected) == (end - start) // interval
     base = {'start': iso(start), 'end': iso(end), 'expected_count': (end - start) // interval, 'actual_count': len(selected), 'complete': complete}
@@ -310,21 +312,22 @@ def summarize_candles(rows, start, end, interval):
     measurements = {'first_open': first['open'], 'last_close': last['close'], 'high': high, 'low': low, 'observed_return_ratio': last['close'] / first['open'] - 1,
                     'close_location_ratio': (last['close'] - low) / (high - low) if high > low else None}
     if 'volume_btc' in first:
-        volume = sum(r['volume_btc'] for r in selected)
+        volume = sum_values(r['volume_btc'] for r in selected)
         measurements['volume_btc'] = volume
         # These are sums over observed bars, not a claimed continuous-window CVD.
         for suffix, total_key, buy_key in [('btc', 'volume_btc', 'taker_buy_btc'), ('quote', 'quote_volume', 'taker_buy_quote')]:
             known = all(r[buy_key] is not None and r[total_key] is not None for r in selected)
-            total = sum(r[total_key] for r in selected) if known else None
-            buy = sum(r[buy_key] for r in selected) if known else None
+            total = sum_values(r[total_key] for r in selected) if known else None
+            buy = sum_values(r[buy_key] for r in selected) if known else None
             net = 2 * buy - total if known else None
             measurements[f'net_taker_{suffix}'] = net
             measurements[f'net_taker_{suffix}_ratio'] = net / total if known and total else None
-        measurements['quote_volume'] = sum(r['quote_volume'] for r in selected) if all(r['quote_volume'] is not None for r in selected) else None
+        measurements['quote_volume'] = sum_values(r['quote_volume'] for r in selected) if all(r['quote_volume'] is not None for r in selected) else None
     return {**base, 'measurements': measurements}
 
 
-def summarize_point(rows, start, end, kind):
+def summarize_point(rows, start, end, kind, *, sum_values=None):
+    sum_values = sum if sum_values is None else sum_values
     selected = [r for r in rows if start <= timestamp(r['time']) <= end]
     if kind == 'OI':
         expected = int((end - start) // HOUR + 1)
@@ -334,10 +337,11 @@ def summarize_point(rows, start, end, kind):
             measurements = {'first_quantity_btc': selected[0]['quantity_btc'], 'last_quantity_btc': selected[-1]['quantity_btc'], 'first_notional_usdt': selected[0]['notional_usdt'], 'last_notional_usdt': selected[-1]['notional_usdt'], 'quantity_change_btc': selected[-1]['quantity_btc'] - selected[0]['quantity_btc'], 'notional_change_usdt': selected[-1]['notional_usdt'] - selected[0]['notional_usdt']}
         return {'start': iso(start), 'end': iso(end), 'expected_count': expected, 'actual_count': len(selected), 'complete': complete, 'measurements': measurements}
     selected = [r for r in selected if start < timestamp(r['time']) <= end]
-    return {'start': iso(start), 'end': iso(end), 'expected_count': None, 'actual_count': len(selected), 'complete': None, 'measurements': {'rates': selected, 'sum_observed_rates': sum(r['rate'] for r in selected)} if selected else None}
+    return {'start': iso(start), 'end': iso(end), 'expected_count': None, 'actual_count': len(selected), 'complete': None, 'measurements': {'rates': selected, 'sum_observed_rates': sum_values(r['rate'] for r in selected)} if selected else None}
 
 
-def compute_windows(datasets, cutoff):
+def compute_windows(datasets, cutoff, *, sum_values=None):
+    sum_values = sum if sum_values is None else sum_values
     windows = {}
     for hours in [4, 24, 72, 240]:
         start = cutoff - hours * HOUR
@@ -346,16 +350,29 @@ def compute_windows(datasets, cutoff):
             if dataset['interval_seconds'] != HOUR:
                 continue
             if dataset['kind'] in {'CANDLES', 'MARK', 'INDEX'}:
-                w[name] = summarize_candles(dataset['rows'], start, cutoff, HOUR)
+                w[name] = summarize_candles(dataset['rows'], start, cutoff, HOUR, sum_values=sum_values)
             elif dataset['kind'] in {'OI', 'FUNDING'}:
-                w[name] = summarize_point(dataset['rows'], start, cutoff, dataset['kind'])
+                w[name] = summarize_point(dataset['rows'], start, cutoff, dataset['kind'], sum_values=sum_values)
         mark = {r['time']: r for r in datasets.get('binance_mark_1h', {}).get('rows', []) if start <= timestamp(r['time']) < cutoff}
         index = {r['time']: r for r in datasets.get('binance_index_1h', {}).get('rows', []) if start <= timestamp(r['time']) < cutoff}
         aligned = sorted(set(mark) & set(index))
         basis = [{'time': t, 'end': mark[t]['end'], 'mark_close_usdt': mark[t]['close'], 'index_close_usdt': index[t]['close'], 'basis_ratio': mark[t]['close'] / index[t]['close'] - 1} for t in aligned]
-        w['binance_basis_1h'] = {'start': iso(start), 'end': iso(cutoff), 'expected_count': hours, 'actual_count': len(basis), 'complete': len(basis) == hours, 'measurements': {'rows': basis, 'last_basis_ratio': basis[-1]['basis_ratio'], 'mean_observed_basis_ratio': sum(b['basis_ratio'] for b in basis) / len(basis)} if basis else None}
+        w['binance_basis_1h'] = {'start': iso(start), 'end': iso(cutoff), 'expected_count': hours, 'actual_count': len(basis), 'complete': len(basis) == hours, 'measurements': {'rows': basis, 'last_basis_ratio': basis[-1]['basis_ratio'], 'mean_observed_basis_ratio': sum_values(b['basis_ratio'] for b in basis) / len(basis)} if basis else None}
         windows[f'{hours}h'] = w
     return windows
+
+
+
+def _v1_sequential_sum(values, start=0):
+    """Reproduce the pre-3.12 serialized V1 float accumulation exactly.
+
+    This is a historical arithmetic variant, not an epsilon/tolerance gate.
+    The default producer and frozen replay keep their current computation.
+    """
+    result = start
+    for value in values:
+        result += value
+    return result
 
 
 def evidence_identity(evidence):
@@ -411,7 +428,82 @@ def collect(as_of=None, deep=False, timeout=12, client=None, cycle_cache=None):
     return evidence
 
 
+def normalize_locked(as_of, inputs):
+    """Recompute a frozen public response, retaining its actual request and clock.
+
+    This is a derived replay, not another retrieval. Missing dimensions are
+    explicit and cannot acquire measured values or a successful receipt.
+    """
+    cutoff = utc_cutoff(as_of)
+    specs = [spec('binance_spot_1h', 'binance_spot'), spec('binance_futures_1h', 'binance_futures'),
+             spec('coinbase_spot_1h', 'coinbase_spot'), spec('kraken_spot_1h', 'kraken_spot'),
+             spec('binance_oi_1h', 'binance_futures', 'OI'), spec('binance_funding', 'binance_futures', 'FUNDING'),
+             spec('binance_mark_1h', 'binance_futures', 'MARK'), spec('binance_index_1h', 'binance_futures', 'INDEX'),
+             spec('binance_spot_1d', 'binance_spot', interval=86400, count=90),
+             spec('binance_spot_1w', 'binance_spot', interval=604800, count=52)]
+    registry = {s['dataset_id']: s for s in specs}
+    if not isinstance(inputs, dict) or not inputs or set(inputs) - set(registry):
+        raise ObservationError('locked input datasets invalid')
+    datasets, retrievals = {}, {}
+    for s in specs:
+        identifier = s['dataset_id']
+        raw = inputs.get(identifier)
+        if raw is None:
+            datasets[identifier] = build_dataset(s, [], cutoff, ['SOURCE_UNAVAILABLE'])
+            retrievals[identifier] = {**_request_plan(s, cutoff), 'retrieved_at': iso(cutoff),
+                                     'status': 'NOT_IN_LOCK', 'elapsed_seconds': 0}
+            continue
+        exact_keys(raw, {'source_id', 'url', 'retrieved_at', 'raw_hash', 'bytes_base64'}, 'locked raw response')
+        _text(raw['source_id'], 'locked source identity')
+        try:
+            body = base64.b64decode(raw['bytes_base64'], validate=True)
+            if len(body) > 2_000_000 or raw['raw_hash'] != 'sha256:' + hashlib.sha256(body).hexdigest():
+                raise ObservationError('locked raw bytes changed')
+            payload = json.loads(body)
+        except (ValueError, TypeError) as exc:
+            raise ObservationError('invalid locked raw response') from exc
+        parsed = urllib.parse.urlsplit(raw['url'])
+        endpoint = parsed.scheme + '://' + parsed.netloc + parsed.path
+        if endpoint != _request_plan(s, cutoff)['endpoint'] or parsed.username or parsed.password or parsed.fragment:
+            raise ObservationError('locked provider endpoint mismatch')
+        pairs = urllib.parse.parse_qsl(parsed.query, strict_parsing=True)
+        params = dict(pairs)
+        if len(params) != len(pairs) or any(k.lower() in {'signature', 'apikey', 'api_key', 'token'} for k in params):
+            raise ObservationError('locked request parameters invalid')
+        identity = ({'granularity': '3600'} if s['source'] == 'coinbase_spot' else
+                    {'pair': 'XBTUSD', 'interval': '60'} if s['source'] == 'kraken_spot' else
+                    {'symbol': 'BTCUSDT', 'period': '1h'} if s['kind'] == 'OI' else
+                    {'symbol': 'BTCUSDT'} if s['kind'] == 'FUNDING' else
+                    {'pair' if s['kind'] == 'INDEX' else 'symbol': 'BTCUSDT',
+                     'interval': {3600:'1h', 86400:'1d', 604800:'1w'}[s['interval_seconds']]})
+        if any(params.get(k) != v for k,v in identity.items()):
+            raise ObservationError('locked product, interval or measure mismatch')
+        if timestamp(raw['retrieved_at']) < cutoff or timestamp(raw['retrieved_at']) > time.time() + 1:
+            raise ObservationError('locked retrieval clock invalid')
+        datasets[identifier] = normalize(s, payload, cutoff)
+        retrievals[identifier] = {'endpoint': endpoint, 'parameters': params,
+                                 'retrieved_at': raw['retrieved_at'], 'status': 'RECEIVED', 'elapsed_seconds': 0}
+    value = {'schema': EVIDENCE_SCHEMA, 'observed_hour': iso(cutoff-HOUR), 'cutoff': iso(cutoff),
+             'datasets': datasets, 'windows': compute_windows(datasets, cutoff),
+             'gaps': {k:{'coverage':v['coverage'], 'issues':v['issues'], 'status':retrievals[k]['status']}
+                      for k,v in datasets.items() if not v['rows'] or v['coverage']['complete'] is False or v['issues']},
+             'retrievals': retrievals, 'limitations': list(LIMITATIONS),
+             'normalization': {'kind':'FROZEN_RAW_REPLAY', 'inputs': inputs}}
+    value['evidence_id'] = evidence_identity(value)
+    value['retrieval_id'] = digest({'evidence_id':value['evidence_id'], 'retrievals':retrievals,
+                                  'normalization':value['normalization']})
+    return value
+
+
 def validate_evidence(evidence):
+    if isinstance(evidence, dict) and 'normalization' in evidence:
+        exact_keys(evidence['normalization'], {'kind', 'inputs'}, 'locked normalization')
+        if evidence['normalization']['kind'] != 'FROZEN_RAW_REPLAY':
+            raise ObservationError('normalization kind invalid')
+        expected = normalize_locked(evidence['cutoff'], evidence['normalization']['inputs'])
+        if evidence != expected:
+            raise ObservationError('locked replay differs from its original bytes, request or clock')
+        return evidence
     exact_keys(evidence, {'schema', 'observed_hour', 'cutoff', 'datasets', 'windows', 'gaps', 'retrievals', 'limitations', 'evidence_id', 'retrieval_id'}, 'evidence')
     if evidence['limitations'] != LIMITATIONS:
         raise ObservationError('evidence limitations must be the fixed public-data contract')
@@ -475,7 +567,15 @@ def validate_evidence(evidence):
         if ds != build_dataset(registry[identifier], ds['rows'], int(cutoff), ds['issues']):
             raise ObservationError('dataset coverage is not derived from its rows')
     if evidence['windows'] != compute_windows(evidence['datasets'], int(cutoff)):
-        raise ObservationError('window measurement mismatch')
+        # Old V1 producers used native sequential float sum. Python 3.12's
+        # improved sum changes serialized low-order bits, even with identical
+        # source code and rows. Admit only exact whole-window reproduction;
+        # source identities, rows, coverage, clocks and fingerprints still pass
+        # every check below. New FROZEN_RAW_REPLAY takes its strict branch above.
+        if (evidence['schema'] != 'BTC_MARKET_EVIDENCE_V1' or
+                evidence['windows'] != compute_windows(evidence['datasets'], int(cutoff),
+                                                       sum_values=_v1_sequential_sum)):
+            raise ObservationError('window measurement mismatch')
     if evidence['evidence_id'] != evidence_identity(evidence):
         raise ObservationError('evidence fingerprint mismatch')
     if set(evidence['retrievals']) != set(evidence['datasets']):

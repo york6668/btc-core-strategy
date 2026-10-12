@@ -15,6 +15,19 @@ from .judgements import LIFECYCLE_REVIEW
 CORE_MARKETS = {'SPX', 'NDX', 'BTC'}
 MARKET_FIELDS = ('market_review', 'extra_findings', 'research_findings',
                  'factor_checks', 'applicability_review', 'market_assessment', 'dispute_zones')
+PUBLIC_ANALYSIS_REVIEW = (
+    '独立公开研究分别完成当前状态、有界前瞻、现价价值和公开策略适用性。前瞻比较同一投资问题及尺度下更有支持的未来路径与真实竞争路径、相对把握、机制依据及改变排序的反证；方向标签、未确认反转或条件清单不能代替未来判断。'
+    '窗口由问题、机制与证据选择，区分近端路径与原主周期，不固定ETF周、4小时或复核日期，不改变原预测的窗口及到期评价。允许低信心定性排序，不造概率、目标价或精确日期；无法排序说明具体证据缺口，不默认原方向延续、等待或中性。'
+    '当前定价与需求、供给、融资、盈利的背离、竞争解释及已计价部分分别裁决。有界前瞻不是必然预测，也不证明现价便宜；收益、损失、净成本及同期限机会成本另行判断，缺数只限制依赖它的命题。事实、受限推断和待验猜测不互换。'
+    '公开策略适用性可以比较参与、防守、等待及价格风险；个人资金优先级、保护配合及净动作在市场冻结后决定。动作词不是归属标准；公开证据、尺度和截止不变而个人仓位、资金、偏好替换时，公开命题及末尾概括保持独立。'
+    '普通研究、有限反馈、复核和离线重评承接累计职责。已经完成且仍适用的结果保留原作者、证据及窗口，实际核验新增和累计反证；不为每次价格波动重做全部研究。缺前瞻、核心遗漏或旧问题未解时说明完成与未完成范围，沿原研究补评，不以字段齐全、日期延续或已检查宣称完整闭环。'
+    '按发布节奏核对来源新原件，包内缺件不等于客观不可得；可取得先补入同一研究，失败说明实际尝试及影响。产品报价缺口不撤销底层市场判断；历史公开锚保留日期，个人历史和旧混合报告不回灌公开前提。'
+)
+PUBLIC_ANALYSIS_REPORT_REVIEW = (
+    '正文忠实承接已形成的当前状态、有界未来路径比较、公开现价价值与策略适用性，再交付个人总体取舍；不能从方向、未反转、条件日期或个人选择补造未来判断。'
+    '实际全文核对完成范围：上游缺前瞻或竞争路径比较返回原研究补评，有限反馈可准确说明未完成并保留有据结果，不假称完整重评；上游已完成而正文遗漏则修稿。低信心及关键限制不压缩成无条件安排。'
+    '缩写、重组、条件删除或末尾改写形成待重新核验的新文本。对照源命题和实际新正文核对尺度、场所、机制、竞争路径及个人依赖；旧审阅仅对原内容有效。程序绑定对象和逐字交付，不判断语义；实际全文审阅须识别反例，已检查记录不自证完成。'
+)
 EVIDENCE_REASONING_REVIEW = (
     '在现有basis、factor_assessment、conflicts及forward中区分已核验事实、有证据支持但受限的判断、待验证假设；关联原始refs、口径、时间与反证，不要求新增标签或固定栏目。'
     '关键判断须有贯穿其适用周期的主证据链；分别核验当前方向、主因归属、延续把握和现价参与选择，主因未识别只限制依赖它的命题，不能抹去独立结构支持的方向。引用存在、数据齐全或正反因素并列不证明论证完成。'
@@ -80,7 +93,7 @@ MOMENTUM_REPORT_REVIEW = (
     '保留原推动力衰减与相反趋势形成的确认差别：枯竭不等于反转，短暂反弹或回撤不等于可持续趋势，反转失败及具体证据缺口如实表达；不从UNKNOWN写出中性。'
     '保留已评估的现价风险收益、等待价值和个人风险结论，不以趋势标签替代。成稿不得提高确认程度或新增研究结论；缺论证返回对应研判，不靠添加模板词语补齐。'
 )
-INSTRUCTIONS = CYCLE_FOCUS_REVIEW + CYCLE_THESIS_REVIEW + MOMENTUM_REVIEW + EVIDENCE_REASONING_REVIEW + PUBLIC_RESULT_REVIEW + (
+INSTRUCTIONS = PUBLIC_ANALYSIS_REVIEW + CYCLE_FOCUS_REVIEW + CYCLE_THESIS_REVIEW + MOMENTUM_REVIEW + EVIDENCE_REASONING_REVIEW + PUBLIC_RESULT_REVIEW + (
     '市场判断独立于个人账户、个人仓位与成本、目标比例和个人建议；公共持有人成本按群体与统计口径作为市场证据，不得默认原有多空方向延续。'
     '跨市场、同向交易是识别渠道的示例，模型自主选择并扩展方法；在内部完成支持与冲突证据的取舍，不机械计票。'
     '逐市场判断方向、适用周期、结构变化、周期共振和趋势反转及确认程度；未知不写中性。'
@@ -103,16 +116,36 @@ def enabled(root, assessment=None):
         assessment = (storage.current(root) or {}).get('assessment', {})
     path = Path(root) / 'write-policy.json'
     policy = read(path) if path.exists() else {}
-    return max((assessment or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1)) >= 5
+    from .storage import NEW_WRITE_REVISION
+    return max(NEW_WRITE_REVISION, (assessment or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1)) >= 5
 
 
 def revision(assessment):
     from .closed_loop import allocation, risk
+    from .investment import decision as investment_decision
+    investment = investment_decision(assessment) or {}
+    if (assessment.get('revision', 1) >= 9 or 'account_constraints' in investment
+            or any('execution_role' in c for c in investment.get('candidates', []))
+            or ('market_assessment' in (assessment.get('outlook') or {}) and public_schema_revision(assessment['outlook']) >= 9)):
+        return 9
+    if investment_decision(assessment) is not None:
+        return 8
     if risk(assessment) is not None:
         return 7
     if allocation(assessment) is not None:
         return 6
     return max(5, assessment.get('revision', 5)) if 'market_assessment' in (assessment.get('outlook') or {}) else assessment.get('revision', 4)
+
+
+
+def public_schema_revision(outlook):
+    """Recognize stored field contracts, never infer a market judgement."""
+    horizons=[h for m in outlook['market_assessment']['markets'] for h in m['horizons']]
+    if any('lifecycle' in (h.get('forward') or {}) for h in horizons):
+        return 9
+    if any('momentum' in h or 'price_attractiveness' in h or 'strategy_applicability' in h for h in horizons):
+        return 8  # Mixed/incomplete new fields fail its exact validation.
+    return 7 if any('forward' in h for h in horizons) else 5
 
 
 def refs(value, resolve):
@@ -122,7 +155,7 @@ def refs(value, resolve):
             resolve(ref)
 
 
-def validate_assessment(value, resolve, cutoff=None, revision=5, prior=None):
+def validate_assessment(value, resolve, cutoff=None, revision=5, prior=None, lifecycle_root=None):
     exact(value, 'markets summary', 'public market assessment')
     text(value['summary'], 'independent market synthesis')
     require(isinstance(value['markets'], list), 'markets must be a list')
@@ -137,7 +170,7 @@ def validate_assessment(value, resolve, cutoff=None, revision=5, prior=None):
         require(isinstance(item['horizons'], list) and item['horizons'], 'market needs assessed horizons')
         periods = set()
         for h in item['horizons']:
-            exact(h, 'id period direction structure change basis confirmation refs counter_refs' + (' forward' if revision >= 6 else ''), 'market horizon')
+            exact(h, 'id period direction structure change basis confirmation refs counter_refs' + (' forward' if revision >= 6 else '') + (' momentum price_attractiveness strategy_applicability' if revision >= 8 else ''), 'market horizon')
             for key in ('id', 'period', 'structure', 'change', 'basis'):
                 text(h[key], 'horizon ' + key)
             require(h['id'] not in periods, 'duplicate horizon')
@@ -145,11 +178,13 @@ def validate_assessment(value, resolve, cutoff=None, revision=5, prior=None):
             require(h['direction'] in ('BULLISH', 'BEARISH', 'NEUTRAL', 'UNKNOWN'), 'invalid market direction')
             require(h['confirmation'] in ('CONFIRMED', 'PARTIAL', 'PENDING', 'UNKNOWN'), 'invalid confirmation')
             refs(h, resolve)
+            if revision >= 8:
+                validate_investment_research(h, resolve)
             if revision >= 6:
                 from .closed_loop import validate_forward
                 old_market = next((m for m in (prior or {}).get('markets', []) if m['id'] == item['id']), {})
                 old = next((p for p in old_market.get('horizons', []) if p['id'] == h['id']), None)
-                validate_forward(h['forward'], cutoff or item['as_of'], resolve, old)
+                validate_forward(h['forward'], cutoff or item['as_of'], resolve, old, revision, lifecycle_root)
         for name, statuses in (
             ('resonance', ('ALIGNED', 'CONFLICTED', 'NOT_ESTABLISHED', 'UNKNOWN')),
             ('reversal', ('CONFIRMED', 'FORMING', 'NOT_CONFIRMED', 'UNKNOWN')),
@@ -343,6 +378,8 @@ def market_projection(ctx):
         'market_report': (ctx.get('cycle_baseline') or {}).get('market_report'),
         'previous_market_observation': previous_public,
         'accumulation': deepcopy(ctx.get('accumulation')), 'instructions': INSTRUCTIONS}
+    if ctx.get('revision', 5) >= 9:
+        value['prospective_feedback'] = deepcopy(ctx.get('prospective_feedback', {'claims': [], 'status': 'NO_PROSPECTIVE_BASELINE'}))
     core = ctx.get('current_core') or {}
     outlook = core.get('outlook') or {}
     if outlook.get('market_assessment') is not None:
@@ -390,7 +427,11 @@ def parse_result(analysis, revision=5):
     exact(value, 'outlook factor_assessment market_report', 'independent public market result')
     if any('forward' in h for m in value['outlook']['market_assessment']['markets'] for h in m['horizons']):
         revision = max(revision, 6)
-    validate_assessment(value['outlook']['market_assessment'], lambda ref: None, revision=revision)
+    revision = max(revision, public_schema_revision(value['outlook']))
+    # Text parsing cannot perform source/time/registration verification. The
+    # public-result consumer validates revision 9 with its real frozen package.
+    if revision < 9:
+        validate_assessment(value['outlook']['market_assessment'], lambda ref: None, revision=revision)
     validate_zones(value['outlook']['dispute_zones'], lambda ref: None, revision=revision)
     text(value['market_report'], 'independent market and price-risk report')
     return value
@@ -406,3 +447,30 @@ def ensure_research_mapping(independent, candidate):
             'portfolio mapping changed the independent public market result')
     require(mapped['conclusion']['narrative'].startswith(result['market_report'].rstrip()),
             'full report changed the independent market report')
+
+
+def validate_investment_research(horizon, resolve):
+    """Separate evidence-supported research answers; never classify an indicator."""
+    momentum = horizon['momentum']
+    exact(momentum, 'phase basis next_condition', 'momentum assessment')
+    require(momentum['phase'] in ('CONTINUING', 'WEAKENING', 'REVERSAL_SIGNS', 'REVERSAL_CONFIRMED', 'UNKNOWN'), 'invalid momentum phase')
+    text(momentum['basis'], 'momentum versus reversal evidence')
+    text(momentum['next_condition'], 'discriminating reversal or continuation evidence')
+    price = horizon['price_attractiveness']
+    exact(price, 'status basis benchmark limitations change_conditions refs', 'current price attractiveness')
+    require(price['status'] in ('ATTRACTIVE', 'UNATTRACTIVE', 'CONDITIONAL', 'UNDETERMINED'), 'invalid current price judgement')
+    for key in ('basis', 'benchmark', 'limitations', 'change_conditions'):
+        text(price[key], 'price judgement ' + key)
+    require(isinstance(price['refs'], list), 'price evidence references required')
+    for ref in price['refs']:
+        resolve(ref)
+    strategies = horizon['strategy_applicability']
+    require(isinstance(strategies, list) and strategies, 'assess the actual strategy question separately from direction')
+    ids = set()
+    for item in strategies:
+        exact(item, 'id question status basis limitations review_conditions', 'public strategy applicability')
+        text(item['id'], 'strategy identity'); require(item['id'] not in ids, 'duplicate strategy applicability')
+        ids.add(item['id'])
+        require(item['status'] in ('SUITABLE', 'CONDITIONAL', 'UNSUITABLE', 'UNDETERMINED'), 'invalid strategy applicability')
+        for key in ('question', 'basis', 'limitations', 'review_conditions'):
+            text(item[key], 'strategy applicability ' + key)

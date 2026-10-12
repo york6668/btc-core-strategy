@@ -68,11 +68,11 @@ def sequences(value):
     return result
 
 
-def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=None):
+def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=None, project=None):
     exact(value, 'upper_short lower_spot portfolio', 'recommendations')
     for key in SIDES:
         side = value[key]
-        exact(side, 'status unit tiers validity purpose amount_basis allocation_percent rationale impact refs', key)
+        exact(side, 'status unit tiers validity purpose amount_basis allocation_percent rationale impact refs'+(' investment_candidates' if revision>=8 and 'investment_candidates' in side else ''), key)
         require(side['status'] in (('RECOMMENDED', 'NOT_RECOMMENDED', 'EXECUTION_LIMITED', 'UNDETERMINED') if revision >= 6 else ('RECOMMENDED', 'NOT_RECOMMENDED')), 'recommendation needs explicit validity conclusion')
         require(side['unit'] == ('SHORT_NOTIONAL_U' if key == 'upper_short' else 'SPOT_CAPITAL_U'), 'recommendation amount unit mismatch')
         require(isinstance(side['tiers'], list), 'recommendation tiers required')
@@ -118,7 +118,7 @@ def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=
         for ref in side['refs']:
             resolve(ref)
     portfolio = value['portfolio']
-    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative' + (' risk_assessment strategy_advice' if revision >= 7 else ' allocation_decision' if revision >= 6 else ''), 'recommendation portfolio')
+    exact(portfolio, 'capital_envelope_u sequence_policy existing_exposure uncertainty narrative' + (' risk_assessment strategy_advice' + (' investment_decision' if revision >= 8 else '') if revision >= 7 else ' allocation_decision' if revision >= 6 else ''), 'recommendation portfolio')
     capitals = [total(value[s], 'capital_u') for s in SIDES]
     if any(c is None for c in capitals) or any(value[s]['status'] in ('EXECUTION_LIMITED', 'UNDETERMINED') for s in SIDES):
         require(portfolio['capital_envelope_u'] is None, 'unknown short capital cannot become a confirmed total funding envelope')
@@ -131,6 +131,10 @@ def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=
         from .closed_loop import validate_risk, validate_actions
         validate_risk(portfolio['risk_assessment'], cutoff, market_hash, fact_version)
         validate_actions(portfolio['strategy_advice'])
+        if revision >= 8:
+            from .investment import validate as validate_investment, validate_outputs
+            validate_investment(portfolio['investment_decision'], cutoff, market_hash, fact_version, project, revision=revision)
+            validate_outputs(portfolio['investment_decision'],value)
     elif revision >= 6:
         from .closed_loop import validate_allocation
         validate_allocation(portfolio['allocation_decision'], cutoff, market_hash, fact_version)
@@ -174,4 +178,11 @@ def stable(value):
         # actions, uncertainty and execution limitations still carry meaning.
         for field in ('market_result_hash', 'fact_version', 'decided_at', 'assessed_at'):
             decision.pop(field, None)
+    whole=result['portfolio'].get('investment_decision')
+    if whole:
+        for field in ('market_result_hash','fact_version','decided_at'):
+            whole.pop(field,None)
+        p=whole.get('policy',{})
+        for field in ('version','recorded_at','fact_version','source_refs'):
+            p.pop(field,None)
     return result

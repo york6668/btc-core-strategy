@@ -151,7 +151,7 @@ class Projection:
         return result
 
     def plans(self, recommendations, binding, source, known, *, adopted_at,
-              fact_fields=None, due=None, dependencies=()):
+              fact_fields=None, due=None, dependencies=(), investment_deadline=None):
         """A formal adoption owns its plans; a side name is not a plan identity.
 
         Re-reading that adoption reuses its objects. A replacement never extends
@@ -176,18 +176,20 @@ class Projection:
             current_ids[name] = object_id
             previous = self.objects.get('PLAN', object_id)
             expires = (plan.get('validity') or {}).get('until')
+            if investment_deadline:
+                expires=min([v for v in (expires,investment_deadline) if v],key=millis)
             if previous and previous['active'] and previous.get('valid_until') != expires:
                 # Do not pair changed source content with the guarded old clock.
                 raise Conflict('formal plan identity has a different deadline; preserve its outcome review')
             payload = {'formal_decision_id': decision_id, 'formal_created_at': adopted_at,
                        'recommendation_name': name, 'market_binding': binding,
                        'recommendation': plan, **(fact_fields or {})}
-            if (fact_fields or {}).get('fact_review') == 'REQUIRED':
+            if (fact_fields or {}).get('fact_review') == 'REQUIRED' or (fact_fields or {}).get('recommendation_applicability')=='REVISE':
                 # Preserve the formal proposal and its original deadline as
                 # history; unavailable current facts cannot make it current advice.
                 payload['formal_recommendation'] = payload['recommendation']
                 payload['recommendation'] = None
-                payload['recommendation_applicability'] = 'EVIDENCE_LIMITED'
+                payload['recommendation_applicability'] = (fact_fields or {}).get('recommendation_applicability','EVIDENCE_LIMITED')
             self.put('PLAN', object_id, payload, source, known, observed=adopted_at,
                      identified=adopted_at, scope='PERSONAL', due=due, expires=expires,
                      dependencies=[basis, *dependencies])
@@ -253,7 +255,8 @@ class Projection:
             market = self.public(projected_public, source, frozen_time, reference=decision['decision_id'])
             binding = {k: market[k] for k in ('object_id', 'version', 'digest')}
             for factor in public['factor_assessment'].get('items', []):
-                self.put('FACTOR', factor['id'], factor, source, frozen_time)
+                self.put('FACTOR', factor['id'], factor, source, frozen_time,
+                         active=factor.get('decision_review',{}).get('state')!='RETIRED')
         else:
             binding = None
         effective = market_state.effective(root, assessment, decision['decision_id'])
@@ -303,18 +306,38 @@ class Projection:
         checked_time = stamp()
         fact_known = max(self.objects.get('FACT_PROJECTION', name)['known_ms'] for name in fact_version)
         review_due = stamp(datetime.fromtimestamp(fact_known / 1000, timezone.utc)) if not match else None
+        investment_feedback = None
+        investment_dependencies = []
+        # Older pinned methods have no investment feedback module. Their
+        # original contracts stay readable without fabricated migration.
+        import importlib.util
+        if importlib.util.find_spec('v4.strategy_validation') is not None:
+            from v4.strategy_validation import feedback
+            investment_feedback = feedback(root, assessment)
+            for directory in ('policies','rules','validations','evaluations','ledger/versions'):
+                for record in (root/'investment'/directory).glob('*.json'):
+                    investment_dependencies.append({'type':'BLOB','digest':self.db.put_blob(record.read_bytes()),
+                                                    'relation':'PERSONAL_INVESTMENT_SOURCE_VIEW'})
+        whole=assessment.get('recommendations',{}).get('portfolio',{}).get('investment_decision')
+        deadline=whole.get('valid_until') if whole else None
+        unfinished=assessment.get('revision',0)>=8 and (whole is None or millis(deadline)<=millis(checked_time))
+        applicability='EVIDENCE_LIMITED' if not match else 'REVISE' if unfinished else 'CURRENT'
+        if unfinished and review_due is None:review_due=deadline or checked_time
         self.put('ALLOCATION', 'portfolio', {'market_binding': binding, 'fact_version': decision['fact_version'],
                  'current_fact_version': fact_version, 'fact_review': 'CURRENT' if match else 'REQUIRED',
-                 'portfolio_analysis': assessment.get('portfolio_analysis') if match else None,
-                 'portfolio': assessment.get('recommendations', {}).get('portfolio') if match else None,
-                 'recommendation_applicability': 'CURRENT' if match else 'EVIDENCE_LIMITED',
+                 'portfolio_analysis': assessment.get('portfolio_analysis') if match and not unfinished else None,
+                 'portfolio': assessment.get('recommendations', {}).get('portfolio') if match and not unfinished else None,
+                 'investment_feedback': investment_feedback,
+                 'investment_decision': assessment.get('recommendations', {}).get('portfolio', {}).get('investment_decision') if match else None,
+                 'recommendation_applicability': applicability,
                  'fact_authority': 'bound source version'}, source, checked_time, observed=frozen_time,
-                 due=review_due, scope='PERSONAL', dependencies=fact_dependencies)
+                 due=review_due, expires=deadline, scope='PERSONAL', dependencies=fact_dependencies+investment_dependencies)
         if binding:
             self.plans(assessment.get('recommendations', {}), binding, source, checked_time,
                        adopted_at=frozen_time, due=review_due, dependencies=fact_dependencies,
                        fact_fields={'fact_review': 'CURRENT' if match else 'REQUIRED',
-                                    'fact_version': decision['fact_version'], 'current_fact_version': fact_version})
+                                    'fact_version': decision['fact_version'], 'current_fact_version': fact_version,
+                                    'recommendation_applicability':applicability}, investment_deadline=deadline)
         for issue in research.context(root)['issues']:
             # Full research context can contain portfolio findings. Existing
             # independent-phase material is still prepared by the native contract.

@@ -158,7 +158,7 @@ class EvidenceReasoningWorkflowTests(unittest.TestCase):
             self.assertEqual(packet[key], original[key])
         brief = run_flow.report_brief(original)
         for key in ('cycle_report_instructions', 'method_references', 'result_instructions',
-                    'maintenance_authoring', 'applicability_instructions'):
+                    'maintenance_authoring', 'completed_analysis_review'):
             self.assertEqual(packet[key], brief[key])
         self.assertEqual(storage.current(f.f.store), before)
         self.assertEqual(list((f.f.store / 'outbox').glob('*/artifact.json')), [])

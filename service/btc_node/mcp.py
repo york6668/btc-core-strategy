@@ -10,6 +10,12 @@ from .contracts import PARAMETERS
 
 
 DESCRIPTIONS = {
+    'model.deep.status': 'Read the BTC-wide Tokyo-day deep research slot and open defect state from the authoritative node.',
+    'model.deep.claim': 'Atomically consume today\'s single high-grade BTC deep-research slot before any model launch. Replays never authorize launch.',
+    'model.deep.finish': 'Record the actual original deep-call outcome; failure and unknown remain spent.',
+    'model.deep.reconcile': 'Verify the original in-flight or unknown call outcome without launching a replacement.',
+    'model.defect.open': 'Stop the affected scope for a known deterministic, semantic, service, permission or unknown fault.',
+    'model.defect.resolve': 'Resume an affected scope only after the bound repair and recovery evidence is reviewed.',
     'context.public': 'Prepare public objects and outstanding conditions before market judgement. Personal data is withheld.',
     'market.freeze': 'Freeze the independent market judgement with version and evidence binding before personal adaptation.',
     'context.personal': 'Get confirmed fact projections, portfolio and outstanding reviews using an already frozen market binding.',

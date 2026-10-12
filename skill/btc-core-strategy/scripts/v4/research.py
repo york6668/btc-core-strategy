@@ -34,13 +34,31 @@ def _load(root, kind, identity):
 
 def _save(root, kind, key, value):
     value = dict(value)
+    if value.get('market_result') and market_state.public_schema_revision(value['market_result']['outlook']) >= 9:
+        from .forward_lifecycle import now as freeze_now
+        value.setdefault('lifecycle_frozen_at', freeze_now())
     value[key] = digest(value)
     path = Path(root) / 'research' / kind / (value[key][7:] + '.json')
     if path.exists():
         require(read(path) == value, 'research artifact collision')
     else:
         create(path, value)
+    result = value.get('market_result')
+    if result is not None:
+        from .forward_lifecycle import register
+        register(root, result['outlook']['market_assessment'], path, '/lifecycle_frozen_at')
     return value
+
+
+def _guard_completed(root, req, phase, attempt_id, rollout_path):
+    # The runtime dispatcher spends before launch. Every new result must bind
+    # its real completed ticket. Older immutable studies are read, not re-saved.
+    import model_guard
+    require(req.get('issue_id'), 'guarded research needs original issue identity')
+    try:
+        model_guard.require_success(req['issue_id'], 'btc/research', phase, attempt_id, rollout_path)
+    except model_guard.Blocked as exc:
+        require(False, str(exc))
 
 
 def context(root):
@@ -188,7 +206,7 @@ def _candidate_free(value):
 def request(root, project, spec, workflow_revision=None):
     """Freeze a bounded independent input and an explicit new/reopened question."""
     from . import evidence
-    from .storage import current
+    from .storage import current, NEW_WRITE_REVISION
     manual = isinstance(spec, dict) and isinstance(spec.get('change'), dict) and spec['change'].get('kind') == 'USER_REQUESTED_REVIEW'
     exact(spec, 'issue_key scope question decision_id evidence_id change reopen_conditions' + (' user_request' if manual else ''), 'research request')
     if manual:
@@ -338,25 +356,31 @@ def request(root, project, spec, workflow_revision=None):
                 'method_references': cycle.method_references('research', project)}
         policy_path = Path(root) / 'write-policy.json'
         minimum = read(policy_path).get('minimum_assessment_revision', 1) if policy_path.exists() else 1
-        workflow_revision = max(5, minimum, workflow_revision or 4, market_state.revision(anchor)) if market_state.enabled(root, anchor) else 4
+        workflow_revision = max(NEW_WRITE_REVISION, 5, minimum, workflow_revision or 4, market_state.revision(anchor)) if market_state.enabled(root, anchor) else 4
         if workflow_revision >= 5:
             packet.pop('fact_files', None)
             packet['historical_anchor'] = market_state.public_content(anchor)
             packet['historical_dispute_zones'] = market_state.effective(root, anchor, pinned['decision_id'])['dispute_zones']
             packet['historical_zone_review'] = 'Historical hypotheses only. Rebuild boundaries from dated public raw evidence first, then retain, revise or reject each old area. An internal level crossing is not a whole-range breakout. Record when each boundary became knowable; never backdate later evidence.'
             packet['workflow_revision'] = workflow_revision
+            if workflow_revision >= 9:
+                from .forward_lifecycle import public_feedback
+                packet['prospective_feedback'] = public_feedback(root, anchor.get('outlook', {}).get('market_assessment'))
+            public_instructions = market_state.INSTRUCTIONS
+            if workflow_revision >= 6:
+                from .closed_loop import MARKET_INSTRUCTIONS
+                public_instructions += MARKET_INSTRUCTIONS
             packet['market_result_contract'] = {
                 'output': 'Single JSON object: outlook, factor_assessment, market_report. outlook includes semantic/narrative/refs/market_assessment/dispute_zones. No portfolio or account analysis.',
-                'instructions': market_state.INSTRUCTIONS,
+                'instructions': public_instructions,
                 'schema_reference': str(Path(__file__).resolve().parents[2] / 'references/market-state.md'),
             }
             if 'cycle_assignment' in packet:
-                packet['cycle_assignment']['instructions'] = market_state.INSTRUCTIONS
+                # Share cumulative public duties; personal work stays after freezing.
+                packet['cycle_assignment']['instructions'] = public_instructions
                 packet['cycle_assignment']['required_coverage'] = [v for v in cycle.COVERAGE if v != 'portfolio_waiting']
                 packet['cycle_assignment']['method_references'].pop('recommendations', None)
             if workflow_revision >= 6:
-                from .closed_loop import MARKET_INSTRUCTIONS
-                packet['market_result_contract']['instructions'] += MARKET_INSTRUCTIONS
                 packet['historical_hypotheses'] = {key: packet.pop(key) for key in ('historical_anchor', 'historical_dispute_zones')}
                 for row in packet['report_subjects'].values():
                     if isinstance(row, dict):
@@ -402,6 +426,18 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
             from .closed_loop import INSTRUCTIONS, public_hash
             value['market_content_hash'] = public_hash(independent['market_result'])
             value['instructions'] = INSTRUCTIONS
+            if req.get('workflow_revision',4) >= 8:
+                from .storage import current
+                from .investment import decision as investment_decision, open_issues, policy_inputs
+                from .strategy_validation import feedback
+                baseline=(current(root) or {}).get('assessment',{})
+                value['investment_decision']=investment_decision(baseline)
+                value['open_investment_issues']=open_issues(baseline)
+                value['investment_feedback']=feedback(root,baseline)
+                value['recorded_policy_inputs']=policy_inputs(root,current_facts)
+                if req.get('workflow_revision',4) >= 9:
+                    from .portfolio_ledger import constraints
+                    value['account_constraints']=constraints(root, project, now())
         elif public_input.get('collector_observations'):
             value['collector_observations'] = deepcopy(public_input['collector_observations'])
         identity = digest(value)
@@ -431,18 +467,56 @@ def _strings(value):
 
 
 def _read_proofs(value):
-    decoder = json.JSONDecoder()
-    for source in _strings(value):
-        for match in re.finditer(r'\{', source):
-            try:
-                parsed, _ = decoder.raw_decode(source[match.start():])
-            except ValueError:
+    """Unwrap actual tool transport, retaining the whole frozen read contract."""
+    decoder=json.JSONDecoder()
+    pending=[(value,0)]
+    nodes=characters=0
+    while pending:
+        item,depth=pending.pop()
+        nodes+=1
+        require(depth<=12 and nodes<=20000,'research read proof transport limit exceeded')
+        if isinstance(item,dict):
+            if item.get('schema')=='BTC_RESEARCH_INPUT_READ_V4':
+                # The bridge's live status is outside the immutable contract.
+                # The caller still compares every remaining field to read_input.
+                proof=dict(item);proof.pop('continuity',None)
+                yield proof
                 continue
-            if isinstance(parsed, dict) and parsed.get('schema') == 'BTC_RESEARCH_INPUT_READ_V4':
-                # The node bridge appends live status outside the frozen read
-                # contract. Keep every identity and payload field exact.
-                parsed.pop('continuity', None)
-                yield parsed
+            if item.get('truncated') is True or item.get('output_truncated') is True:
+                continue
+            for key in ('output','stdout','text','content','value'):
+                if key in item:pending.append((item[key],depth+1))
+        elif isinstance(item,list):
+            pending.extend((child,depth+1) for child in reversed(item))
+        elif isinstance(item,str):
+            characters+=len(item)
+            require(len(item)<=16*1024*1024 and characters<=64*1024*1024,
+                    'research read proof transport limit exceeded')
+            body=item.strip()
+            if not body:continue
+            try:
+                parsed=json.loads(body)
+            except (ValueError,RecursionError):
+                # A clipped JSON wrapper cannot certify an inner receipt.
+                if body[0] in '{[\"':continue
+                # Command tools may prefix the JSON with execution headers.
+                # Decode outer objects once; do not scan inside source payloads.
+                cursor=attempts=0
+                while True:
+                    match=re.compile(r'\{').search(body,cursor)
+                    if match is None:break
+                    index=match.start()
+                    if re.search(r'(?i)(?:warning:\s*)?truncated output',body[:index]):break
+                    attempts+=1
+                    require(attempts<=1000,'research read proof transport limit exceeded')
+                    try:parsed,finish=decoder.raw_decode(body,index)
+                    except (ValueError,RecursionError):
+                        cursor=index+1
+                        continue
+                    pending.append((parsed,depth+1))
+                    cursor=finish
+            else:
+                if isinstance(parsed,(dict,list,str)):pending.append((parsed,depth+1))
 
 
 def _completed_turn(path, agent_id, turn_id):
@@ -483,9 +557,10 @@ def _completed_turn(path, agent_id, turn_id):
     return dict(completed, proof_reads=proof_reads, prior_personal_reads=prior_personal_reads)
 
 
-def independent(root, request_id, agent_id, rollout_path, turn_id, additional=None):
+def independent(root, request_id, agent_id, rollout_path, turn_id, additional=None, guard_attempt=None):
     with locked(root):
         req = _load(root, 'requests', request_id)
+        _guard_completed(root, req, 'PUBLIC', guard_attempt, rollout_path)
         packet = read(Path(root) / req['independent_input_path'])
         require(digest(packet) == req['independent_input_id'], 'independent input changed')
         _candidate_free(packet)
@@ -619,6 +694,8 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             from .common import Invalid
             directory = Path(root) / 'evidence' / (supplement or req)['evidence_id'][7:]
             package = evidence.validate(read(directory / 'evidence.json'), directory)
+            cycle.validate_candidate(candidate, evidence.forward_resolver(package, directory), root, Path(root).parent.parent,
+                                     frozen_public_cutoff=(phase.get('evidence_context') or req)['knowledge_cutoff'])
             errors = []
             for ref in refs_in(candidate):
                 try:
@@ -626,7 +703,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
                 except Invalid as exc:
                     errors.append({'reference': ref, 'error': str(exc)})
             try:
-                factors.validate(candidate['assessment']['factor_assessment'], package, directory)
+                factors.validate(candidate['assessment']['factor_assessment'], package, directory, revision=market_state.revision(candidate['assessment']))
             except Invalid as exc:
                 errors.append({'check': 'factor_assessment', 'error': str(exc)})
             pinned = current(root)
@@ -654,7 +731,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             'candidate_hash': digest(candidate), 'revealed_at': now()})
 
 
-def result(root, spec):
+def result(root, spec, guard_attempt=None):
     exact(spec, 'request_id candidate_id agent_id rollout_path turn_id coverage counterevidence unresolved reopen_conditions analysis', 'research result')
     for key in ('coverage', 'counterevidence', 'unresolved', 'reopen_conditions'):
         require(isinstance(spec[key], list), 'research ' + key + ' must be a list')
@@ -663,6 +740,7 @@ def result(root, spec):
     require(spec['coverage'] and spec['reopen_conditions'], 'research result needs coverage and future discriminators')
     with locked(root):
         req = _load(root, 'requests', spec['request_id'])
+        _guard_completed(root, req, 'APPROVAL', guard_attempt, spec['rollout_path'])
         disclosed = _load(root, 'candidates', spec['candidate_id'])
         phase = _load(root, 'independent', disclosed['independent_id'])
         _verify_market_amendment(phase)
@@ -785,10 +863,11 @@ def _main_input_review(value, request_id, input_id, dispatch_id):
     return value
 
 
-def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review):
+def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None):
     """Dispatch and actual final are verified; inner reads remain a declared main review."""
     with locked(root):
         req = _load(root, 'requests', request_id)
+        _guard_completed(root, req, 'PUBLIC', guard_attempt, rollout_path)
         read_input(root, request_id)  # Recheck immutable digest and candidate-free structure.
         proof = _orchestration_turn(rollout_path, dispatch_call_id, return_message_id, 'spawn_agent')
         require(proof['started_at'] >= instant(req['created_at']).timestamp(), 'independent dispatch predates the frozen request')
@@ -804,7 +883,7 @@ def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, r
             'inner_tool_trace_verified': False, 'os_input_isolation_verified': False})
 
 
-def orchestrated_result(root, spec):
+def orchestrated_result(root, spec, guard_attempt=None):
     exact(spec, 'request_id candidate_id rollout_path dispatch_call_id return_message_id input_review coverage counterevidence unresolved reopen_conditions', 'orchestrated research result')
     for key in ('coverage', 'counterevidence', 'unresolved', 'reopen_conditions'):
         require(isinstance(spec[key], list), 'research ' + key + ' must be a list')
@@ -813,6 +892,7 @@ def orchestrated_result(root, spec):
     require(spec['coverage'] and spec['reopen_conditions'], 'research result needs coverage and future discriminators')
     with locked(root):
         req = _load(root, 'requests', spec['request_id'])
+        _guard_completed(root, req, 'APPROVAL', guard_attempt, spec['rollout_path'])
         disclosed = _load(root, 'candidates', spec['candidate_id'])
         phase = _load(root, 'independent', disclosed['independent_id'])
         _verify_market_amendment(phase)
@@ -868,27 +948,66 @@ def validate_absorptions(root, draft):
     return values
 
 
+PUBLIC_RESULT_REF_SCHEMA='BTC_RESEARCH_PUBLIC_RESULT_REF_V1'
+
+
+def _public_result_reference(analysis):
+    from .cycle import parse_review
+    value=parse_review(analysis)
+    if value.get('schema')!=PUBLIC_RESULT_REF_SCHEMA:
+        return None
+    exact(value,'schema path content_hash','public result file reference')
+    require(isinstance(value['content_hash'],str) and
+            re.fullmatch(r'sha256:[0-9a-f]{64}',value['content_hash']),
+            'public result reference needs an actual byte hash')
+    expected='research/author_outputs/'+value['content_hash'][7:]+'.json'
+    require(value['path']==expected,'public result reference must use its root-relative hash filename')
+    return value
+
+
+def _referenced_public_result(root, reference):
+    root=Path(root).resolve()
+    directory=root/'research/author_outputs'
+    require(directory.resolve()==directory and not directory.is_symlink(),
+            'public result reference directory escapes its owner')
+    path=root/reference['path']
+    require(not path.is_symlink() and path.resolve()==directory/path.name and path.is_file(),
+            'public result reference file escapes its owner or is missing')
+    require(path.stat().st_size<=16*1024*1024,'public result reference is too large')
+    body=path.read_bytes()
+    require(digest(body)==reference['content_hash'],'public result reference bytes changed')
+    try:return body.decode('utf-8')
+    except UnicodeDecodeError:
+        require(False,'public result reference must contain UTF-8 JSON')
+
+
 def _public_result(root, req, analysis, directory=None):
     if req.get('workflow_revision', 4) < 5:
         return {}
     from . import evidence, factors
     rev = req.get('workflow_revision', 5)
+    reference=_public_result_reference(analysis)
+    if reference is not None:
+        require(rev>=9,'public result file references require revision 9')
+        analysis=_referenced_public_result(root,reference)
     result = market_state.parse_result(analysis, rev)
     directory = Path(directory) if directory is not None else Path(root) / 'evidence' / req['evidence_id'][7:]
     package = evidence.validate(read(directory / 'evidence.json'), directory)
-    resolve = lambda ref: evidence.resolve(package, directory, ref, verified=True)
+    resolve = evidence.forward_resolver(package, directory)
     packet = read(Path(root) / req['independent_input_path'])
     historical = packet.get('historical_hypotheses', packet)
     prior_market = ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment')
-    market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'], rev, prior_market)
+    market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'], rev, prior_market, lifecycle_root=root)
     previous = historical.get('historical_dispute_zones', [])
     market_state.validate_zones(result['outlook']['dispute_zones'], resolve, prior=previous, cutoff=package['cutoff'], revision=rev)
     from .assessment import validate_outlook
-    validate_outlook(result['outlook'], rev, resolve, package['cutoff'])
-    factors.validate(result['factor_assessment'], package, directory)
+    validate_outlook(result['outlook'], rev, resolve, package['cutoff'], prior_market, root)
+    factors.validate(result['factor_assessment'], package, directory, revision=rev)
     for ref in result['outlook']['refs']:
         resolve(ref)
-    return {'market_result': result, 'market_result_hash': digest(result)}
+    value={'market_result':result,'market_result_hash':digest(result)}
+    if reference is not None:value['public_result_reference']=reference
+    return value
 
 
 def _verify_market_amendment(phase):
@@ -904,10 +1023,17 @@ def _verify_market_amendment(phase):
             require(proof['dispatch_hash'] == amendment['dispatch_hash'] and proof['return_hash'] == amendment['return_hash'],
                     'public market amendment trace changed')
             analysis = proof['analysis']
-        require(market_state.parse_result(analysis) == phase['market_result'], 'public amendment output changed')
+        reference=_public_result_reference(analysis)
+        if reference is None:
+            require(market_state.parse_result(analysis)==phase['market_result'],'public amendment output changed')
+        else:
+            # The initial acceptance checked bytes and all validators. The
+            # immutable Owner contains the complete result; later readback
+            # binds its original final reference without reopening the file.
+            require(reference==phase.get('public_result_reference'),'public amendment result reference changed')
 
 
-def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None):
+def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None):
     """Continue the same research with an actual public-evidence correction.
 
     Original independent provenance stays intact; this is explicitly a later
@@ -916,6 +1042,7 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
     with locked(root):
         phase = _load(root, 'independent', independent_id)
         req = _load(root, 'requests', phase['request_id'])
+        _guard_completed(root, req, 'PUBLIC_CORRECTION', guard_attempt, rollout_path)
         require(req.get('workflow_revision', 4) >= 5, 'public amendment requires revision 5')
         if turn_id:
             require(dispatch_call_id is None and return_message_id is None, 'choose native turn or orchestrated amendment')
@@ -938,6 +1065,11 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
         market_state.validate_zones(result['market_result']['outlook']['dispute_zones'], lambda ref: None,
             phase['market_result']['outlook']['dispute_zones'], revision=req.get('workflow_revision', 5))
         updated = {k: v for k, v in phase.items() if k != 'independent_id'}
+        updated.pop('public_result_reference',None)
+        # This later immutable public owner supplies the first real freeze for
+        # new claims. Existing claim registrations keep their original owner
+        # and clock; an amendment cannot backdate new standards to that clock.
+        updated.pop('lifecycle_frozen_at', None)
         updated.update(result, **supplement, parent_independent_id=independent_id,
             independence_status='CONTINUED_PUBLIC_CORRECTION',
             initial_completed_at=phase.get('initial_completed_at', phase['completed_at']),

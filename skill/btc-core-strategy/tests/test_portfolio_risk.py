@@ -130,9 +130,7 @@ class MomentumContinuityTests(unittest.TestCase):
                     self.assertEqual(brief['portfolio_risk']['actions'],[])
                     self.assertIn(market_state.MOMENTUM_REPORT_REVIEW,brief['result_instructions'])
                     baseline=ctx['cycle_baseline'];body=summary+'\n\n'+personal
-                    quality=authored_report.QUALITY|cycle.REPORT_CHECKS|cycle.SUMMARY_CHECKS
-                    if ctx.get('report_contract_revision', 1) >= 3:
-                        quality |= {'market_independence'}
+                    quality=authored_report.quality_keys(ctx)
                     spec={'context':ctx,'result_binding':brief['result_binding'],
                           'report_basis':{'result_id':baseline['result_id'],'report_hash':baseline['report_hash'],
                               'mode':'CYCLE_SUMMARY' if baseline['status']=='CURRENT' else 'LIMITED_FEEDBACK',
@@ -142,6 +140,8 @@ class MomentumContinuityTests(unittest.TestCase):
                                           {'text':personal,'scope':'personal','refs':['/portfolio_risk/summary']}],
                               'price_status':{'lower_spot':'REVIEW_REQUIRED','upper_short':'REVIEW_REQUIRED'},
                               'quality_review':{k:'本合成案例对照已冻结判断，保留状态、依据、变化、下一验证与独立个人风险。' for k in quality}}}
+                    if ctx.get('report_contract_revision', 1) >= 5:
+                        spec['layout']['reviewed_candidate_hash'] = authored_report.candidate_hash(spec)
                     self.assertEqual(authored_report.render(spec,published)[0],body)
                     frozen=research._load(f.f.store,'independent',saved['independent_id'])
                     bad=cycle.candidate(draft)

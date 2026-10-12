@@ -20,6 +20,39 @@ from .entities import Entities
 from .projection import Projection
 
 
+RESEARCH_REGISTRATION_COMMANDS = {'research-independent', 'research-orchestrated-independent',
+                                  'research-result', 'research-orchestrated-result',
+                                  'research-market-amendment'}
+
+
+def validate_deep_result_admission(db, argv, release):
+    """Keep an older pinned CLI from bypassing the node-owned result gate."""
+    index = 0
+    while index < len(argv):
+        if argv[index] in ('--project', '--root', '--runtime-schedule'):
+            index += 2
+        elif argv[index] == '--full':
+            index += 1
+        else:
+            break
+    if index >= len(argv) or argv[index] not in RESEARCH_REGISTRATION_COMMANDS:
+        return
+    if not (Path(release) / 'skill/btc-core-strategy/scripts/model_daily.py').is_file():
+        raise Conflict('pinned release lacks daily deep-result admission; repair the original context first')
+    args = argv[index + 1:]
+    if args.count('--guard-attempt') != 1 or args.index('--guard-attempt') + 1 >= len(args):
+        raise Conflict('original completed daily deep claim required for research registration')
+    claim_id = args[args.index('--guard-attempt') + 1]
+    from . import deep_gate
+    state = deep_gate._state(db)
+    claim = next((v for v in state['days'].values() if v['claim_id'] == claim_id), None)
+    if not claim or claim['state'] != 'COMPLETE' or claim['model'] != 'gpt-6-astra':
+        raise Conflict('original completed Astra claim required for research registration')
+    if any(v['state'] == 'OPEN' and deep_gate._affected(v['scope'], 'btc/research')
+           for v in state['faults'].values()):
+        raise Conflict('known defect blocks affected research registration')
+
+
 def atomic(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
@@ -111,6 +144,7 @@ def execute(settings, request):
                 raise Conflict('recover the interrupted writer before accepting another command')
             if (db.metadata('writer') or {}).get('owner') != 'DOCKER':
                 raise Conflict('comparison mode does not execute legacy commands')
+            validate_deep_result_admission(db, argv, release)
             mysql_native = 'connect_if_configured' in (release / 'skill/btc-core-strategy/scripts/market_observation.py').read_text()
             original = Path(settings['observation_db'])
             if not readonly and not mysql_native and not original.exists() and db.one('SELECT 1 FROM mo_evidence LIMIT 1'):

@@ -8,6 +8,8 @@ from . import assessment, domain, report, semantics
 from .common import create, digest, facts, fsync_dir, locked, now, read, replace, require, sync_tree
 
 
+NEW_WRITE_REVISION = 9
+
 def current(root):
     root = Path(root)
     link = root / 'current'
@@ -60,6 +62,9 @@ def _publish(root, value, views, expected, fault=None):
         require(read(generation / 'decision.json') == value, 'generation identity collision')
     if fault:
         fault('before_pointer')
+    if (value.get('assessment') or {}).get('revision', 1) >= 9:
+        from .forward_lifecycle import register
+        register(root, value['assessment']['outlook']['market_assessment'], generation / 'decision.json', '/created_at')
     tmp = root / ('.current-' + uuid.uuid4().hex)
     tmp.symlink_to(Path('versions') / value['decision_id'], target_is_directory=True)
     os.replace(tmp, root / 'current')
@@ -71,7 +76,7 @@ def enforce_write_policy(root, draft, prior):
     policy_path = Path(root) / 'write-policy.json'
     policy = read(policy_path) if policy_path.exists() else {}
     previous = prior.get('assessment') or {}
-    require(draft.get('revision', 1) >= max(policy.get('minimum_assessment_revision', 1), previous.get('revision', 1)), 'legacy draft is replay-only after recommendation activation')
+    require(draft.get('revision', 1) >= max(NEW_WRITE_REVISION, policy.get('minimum_assessment_revision', 1), previous.get('revision', 1)), 'legacy draft is replay-only after recommendation activation')
     report_format = policy.get('required_report_format') or previous.get('report', {}).get('format')
     if report_format:
         if draft.get('revision', 1) < 3:
@@ -216,6 +221,9 @@ def validate_main(root, project, draft, evidence_dir, review, prior=None):
     for side in ('upper_short', 'lower_spot'):
         if draft['recommendations'][side]['status'] == 'RECOMMENDED':
             check(side + '_expiry', lambda side=side: require(instant(draft['recommendations'][side]['validity']['until']) > instant(now()), 'recommendation expired during main assessment'))
+    if draft.get('revision',0)>=8:
+        from .investment import decision as investment_decision
+        check('investment_expiry',lambda: require(instant(investment_decision(draft)['valid_until'])>instant(now()), 'investment decision expired during main assessment; complete a current review before adoption'))
     baseline = check('domain_baseline', lambda: main_flow.domain_validation_baseline(root, prior, draft))
     accepted = check('assessment', lambda: assessment.validate(draft, evidence_dir, baseline, project, review)) if baseline else None
     if accepted:
@@ -246,6 +254,21 @@ def _commit_main(root, project, draft, evidence_dir, review, prior, expected, fa
         fsync_dir(dest.parent)
     validate_evidence(read(dest / 'evidence.json'), dest)
     completed_at = now()
+    # Evidence archival may outlast preflight validity. Check the actual
+    # completion time again before any decision or completion pointer advances.
+    from .common import instant
+    for side in ('upper_short', 'lower_spot'):
+        recommendation = accepted['recommendations'][side]
+        if recommendation['status'] == 'RECOMMENDED':
+            require(instant(recommendation['validity']['until']) > instant(completed_at),
+                    'recommendation expired before main completion; reassess before adoption')
+    if accepted.get('revision', 0) >= 8:
+        from .investment import decision as investment_decision
+        from .closed_loop import risk
+        require(instant(investment_decision(accepted)['valid_until']) > instant(completed_at),
+                'investment decision expired before main completion; reassess before adoption')
+        require(instant(risk(accepted)['valid_until']) > instant(completed_at),
+                'risk assessment expired before main completion; reassess before adoption')
     if changed:
         body = main_flow.projection(accepted).encode()
         value = {'schema': 'BTC_DECISION_SNAPSHOT_V4', 'parent_id': expected, 'created_at': completed_at,
@@ -253,6 +276,8 @@ def _commit_main(root, project, draft, evidence_dir, review, prior, expected, fa
                  'review': review, 'evidence_id': accepted['evidence_id'], 'fact_version': accepted['fact_version'],
                  'report_required': comparison['report_required'], 'comparison': comparison}
         result = _publish(root, value, {'state.md': body, 'plan.md': body}, expected, fault)
+        if accepted.get('revision', 1) >= 9:
+            from .forward_lifecycle import register
         if fault:
             fault('after_pointer')
     else:

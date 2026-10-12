@@ -36,7 +36,7 @@ APPLICABILITY_REVIEW = (
     '市场识别、深评、通知分别判断；结构、动量或其他新证据先核对对原主因果链和当前参与价值的影响，局部变化不直接推送。真正反证不因评级未变、中期未反转或当日已送达被屏蔽；实质组合危险和重要纠错独立保留。'
     '已有研究从真实进度接续，建议到期独立维护；只有明确用户请求可使用 USER_REQUESTED_REVIEW。'
 )
-ANALYSIS_FOCUS_REVIEW = (
+ANALYSIS_FOCUS_REVIEW = market_state.PUBLIC_ANALYSIS_REVIEW + (
     '主动识别当前定价与需求、供给、融资、盈利等因素的背离，比较竞争解释与抵消因素，形成有条件的前瞻路径、判断期限和预期兑现窗口；证据不足说明时间缺口，不编造精确目标或日期。'
     '内部完整评估币安QQQ/VOO与BTC的方向、周期、结构、依据、确认程度及价格风险，完成综合判断后再适配当前组合；这些分析项不是正文必展示清单。'
     '价格判断与个人数量分开，数量未知不撤销有依据的价格判断，不为金额校验编造额度。'
@@ -87,7 +87,10 @@ APPLICABILITY_REVIEW += market_state.CYCLE_THESIS_REVIEW
 from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW
 CORE_REPORT_REVIEW += (market_state.CYCLE_FOCUS_REVIEW + market_state.MOMENTUM_REVIEW
                        + market_state.EVIDENCE_REASONING_REVIEW + CLOSED_LOOP_REVIEW)
-APPLICABILITY_REVIEW += market_state.MOMENTUM_REVIEW + market_state.EVIDENCE_REASONING_REVIEW
+APPLICABILITY_REVIEW += (market_state.PUBLIC_ANALYSIS_REVIEW + market_state.MOMENTUM_REVIEW
+                         + market_state.EVIDENCE_REASONING_REVIEW)
+MAPPING_REVIEW += market_state.PUBLIC_ANALYSIS_REVIEW
+REPORT_SCOPE_REVIEW += market_state.PUBLIC_ANALYSIS_REPORT_REVIEW
 MAPPING_REVIEW += (
     'cycle_structure逐项对照独立研究的原周期论点、同尺度应有与实际响应及历次推进/回收、原动力衰减、相反结构变化、反证和确认程度，核对方向、拐点进展及参与价值影响；方向未变不省略有据进展或不足。'
     '核对horizons/reversal、semantic、business_meaning与正文是否同义，不能把枯竭映射成反转、把反弹映射成趋势或把未知映射成中性。'
@@ -112,6 +115,7 @@ def method_references(stage, project=None):
     result = {key: str(references / value) for key, value in paths[stage].items()}
     result['market_state'] = str(references / 'market-state.md')
     result['closed_loop'] = str(references / 'closed-loop.md')
+    result['investment_process'] = str(references / 'investment-process.md')
     result['momentum_transition'] = str(references / 'core-strategy.md') + '#动量枯竭与反向趋势'
     result['report_boundary'] = str(references / 'mobile-report.md') + '#研判与报告的职责边界'
     if stage in ('research', 'mapping', 'observe'):
@@ -197,7 +201,7 @@ def candidate(assessment):
             (*SECTIONS, 'fact_version', 'temporal_scope')}}
 
 
-def validate_candidate(value):
+def validate_candidate(value, resolve=None, lifecycle_root=None, project=None, frozen_public_cutoff=None):
     exact(value, 'assessment', 'cycle candidate')
     exact(value['assessment'], ' '.join((*SECTIONS, 'fact_version', 'temporal_scope')), 'cycle candidate assessment')
     from . import assessment, recommendations
@@ -206,10 +210,20 @@ def validate_candidate(value):
     # Apply the existing recommendation contract before spending an Astra
     # review on an unpublishable mapping. Raw refs are resolved separately by
     # the evidence-bound preflight and final assessment validation.
-    assessment.validate_analysis_sections(value['assessment'], revision, lambda ref: None)
-    recommendations.validate(value['assessment']['recommendations'],
-                             value['assessment']['temporal_scope']['knowledge_cutoff'], lambda ref: None,
-                             revision, public_hash(value['assessment']) if revision >= 6 else None, value['assessment']['fact_version'])
+    if revision < 9 or resolve is not None:
+        resolver = resolve or (lambda ref: None)
+        mapped = value['assessment']
+        if frozen_public_cutoff is not None:
+            mapped = deepcopy(mapped)
+            mapped['section_provenance'] = {'outlook':{'mode':'REUSED','assessed_at':frozen_public_cutoff}}
+        assessment.validate_analysis_sections(mapped, revision, resolver, lifecycle_root, frozen_public=frozen_public_cutoff is not None)
+        recommendations.validate(value['assessment']['recommendations'],
+                                 value['assessment']['temporal_scope']['knowledge_cutoff'], resolver,
+                                 revision, public_hash(value['assessment']) if revision >= 6 else None,
+                                 value['assessment']['fact_version'], project)
+    # Revision 9 has a real owner/evidence preflight in research.reveal. Frozen
+    # review readback preserves that exact candidate rather than inventing a
+    # new prior assessment or a dummy evidence owner.
     # The existing content functions need a revision, which is not an opinion.
     content(dict(value['assessment'], revision=market_state.revision(value['assessment'])))
 
@@ -363,6 +377,9 @@ def baseline(root, assessment, fact_version=None, as_of=None):
 
 
 def validate_publication(root, prior, draft):
+    if draft.get('revision',0)>=8:
+        from .investment import decision as investment_decision
+        require(instant(investment_decision(draft)['valid_until'])>instant(now()), 'investment decision expired during review; reassess before adoption without renewing its report clock')
     if not enabled(root):
         return
     previous = (prior or {}).get('assessment')

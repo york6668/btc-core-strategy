@@ -35,6 +35,16 @@
 
 Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立深评提出的必要复核时间>)` 预检上述兼容语义，及时发现引用和时间错误；此调用不登记批准、不写入状态。正式 validate/commit 的适配参数由已核验的真实研究批准派生，候选中的文本或预检通过不能取得发布权限。
 
+## MAIN 当前原始输入绑定与维护形成时钟
+
+`main_flow.assemble` 的 components 可显式携带 `current_market_refs`，格式仍是原 RawRef 列表，不接收自报数值。MAIN 内容核验选定引用，程序在原 EvidenceBundle 上验证 PUBLIC_RAW、raw_hash/value_hash、来源 end 与当前 market.cutoff 一致及当前输入归属。完整 market 容器仍逐值匹配，只供当前 context 的独立输入身份，不因组装而提高 trust。普通真实采集的可信完整包继续支持原 `/datasets` 默认路径；FROZEN_RAW_REPLAY 归一化包必须显式引用 normalization.inputs 中同 source_id、raw_hash、原请求 URL 和取得时钟的底层原件，所引原观测须到达同一当前窗口，旧行、未完成行、其他源和不可信容器均不能回退成当前依据。`assessment.temporal_scope.current_market_refs` 逐值承接它们，最终候选不得在批准后换引用。
+
+原 CLI `assemble-main --components` 与 `run-advance --stage main` 的 authored components/answers 可提供此可选键；`material_reads.compose` 已承接作者附加字段，不增加模板默认引用，不修改冻结模板。旧真实采集 caller 不带此键继续原校验；导入 caller 必须传入其实际核验的 RawRefs。组装不猜资产方向、价格意义或阈值。
+
+`event.cycle.opened_at` 是观察维护计划实际形成壁钟，允许晚于旧锁定行情/资料截止，但不得晚于可信执行 clock；published_at/retrieved_at 仍不得超出原 observation/pricing 来源截止。未来官方日程仍须真实原来源，日期未知保留未知；公开自选观察窗口不冒充官方日程。新链仍须 2–4 个有据且严格顺序的 future pending，全部晚于真实 clock；旧 final 的原 due/completion/身份及原 deadline 消费门不变，不能把新计划当成价格周期延续。
+
+复用已正式保存的 domain 时，唯一受控 historical replay clock 从真实原始祖先 DecisionSnapshot.created_at 取值，重现该次实际 publication 的壁钟，而非较早的资料截止。这是内部不可变历史校验时钟，调用者不能提供或改变；当前 REUSED final 到期门仍先用真正 now，新的 ASSESSED domain 仍用真正 now。来源截止和旧事件截止始终原样，不能用历史模式采用新安排。
+
 ## 动态因子评估
 
 `assessment.factor_assessment`与观察review内的`factor_checks`共用以下结构：
@@ -142,7 +152,7 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
   "report_narrative": "Astra直接撰写并与候选conclusion.narrative逐字一致的完整中文报告",
   "coverage": {
     "cycle_structure": "标普500、纳指100、BTC分别给出评级、周期、当前结构、原结构到当前结构、依据和确认级别；小时、波段及中期分开，未能判断不写中性或未变",
-    "value_pricing": "当前定价背离、竞争解释及抵消因素如何支持价格风险分析；不要求预测路径或兑现日期，定量受限时说明具体未知",
+    "value_pricing": "当前定价背离、竞争解释及抵消因素如何支持价格风险分析；与当前状态区分同尺度有界未来路径、真实竞争路径及相对把握，不要求精确目标价或确定兑现日期，定量受限时说明具体未知",
     "downside_paths": "回撤、修复失败、结构重估及尾部风险的条件路径摘要",
     "price_levels": "各市场价格用途、当前适用性、单位、依据、主要风险、失效或重评条件及核验结果；个人数量未知不撤销市场价格判断，也不伪造有金额的tiers",
     "portfolio_waiting": "持续组合的增减、持有或恢复投入、动态成员及权重、独立BTC与黄金机会和保护；五模块、两侧先后占资与等待成本；下行风险时分别审阅已成交现货篮子和独立BTC阶梯批次的减仓判断、条件与减仓后保护覆盖；未记录保持未知",
@@ -237,4 +247,32 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 revision 7 的 risk_assessment、可选风险应对及独立 strategy_advice，风险结论不要求操作清单。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。
 
-新报告 report_contract_revision=3 要求首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings，并增加 quality_review.market_independence；允许忠实改写冻结判断，旧冻结契约继续原验证。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。
+旧冻结 report_contract_revision=4 及新报告 report_contract_revision=5 保留契约3的首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings及 quality_review.market_independence，并增加 decision_delivery、evidence_priority、maintenance_separation、narrative_focus 四项实际全文阅读审阅；它们分别核对直接结论与取舍、关键证据优先、内部维护没有挤占正文、重复结论没有掩盖主线。生成入口与校验共用同一审阅键集合，模型按手机表达方法对照正文与冻结结果作实质裁决，程序不判断文风、字数或投资结论。允许忠实改写冻结判断，旧冻结契约继续原验证。新稿5在正式记录前 --check-only 导出完整候选和 review_read，模型实际回读全文与绑定来源完成审阅，填入 reviewed_candidate_hash；哈希仅绑定该候选，不证明语义通过。补填审阅说明或更新滚动时钟产生独立不可变材料，不改正文身份；任何正文、证据范围或冻结结果改动重新预检与审阅。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。
+
+## revision 8 兼容与完整组合决定
+
+外层schema与唯一current不变，可读1–8；新内容在 recommendations.portfolio 中保留 risk_assessment/strategy_advice，增加 investment_decision，字段与语义按[投资决策及反馈](investment-process.md)。每个市场期限新增 momentum、price_attractiveness、strategy_applicability，因素新增 decision_review；均是模型形成的业务判断，程序不计算方向或解析方法文档。allocation_review 增加 investment_decision_hash 与逐项 issue_reviews；正式判断缺失/过期不能声明VALID，旧未决不能被required=false关闭。报告绑定同时覆盖综合结果，只传完成的取舍与必要限制；旧上下文仍按原格式恢复。账本与评价只作为已有事实/决定的源绑定视图，不升级为账户事实或第二策略Owner。
+
+新稿报告契约5通过run-advance --stage report --check-only导出实际全文候选及review_read；预检不记录正式报告、不发送，也不证明语义。实际通读来源和全文后填写具体quality_review和reviewed_candidate_hash，再记录同一正文。改写使旧绑定失效；旧冻结3/4及UNKNOWN仍按原内容恢复。完整职责、有限反馈边界及最终接口统一见[手机表达](mobile-report.md)，不在汇报阶段重新研究。
+
+## 内容 revision 9：可验证预期与后继依赖
+
+新入口使用 revision 9，原 revision 1–8 的不可变记录按原接口读取和恢复；它们没有原始形成及检验记录时只提供事后复核，不补填为前瞻通过。既有 DecisionSnapshot、研究与观察继续拥有结论，`market-lifecycle/claims` 仅保存首次公开记录的原条件及保守时间，不是第二份策略或结论 Owner。
+
+`horizon.forward.lifecycle` 包含 `claim`、`reviews`、`dependencies`。`claim` 固定 `id`、`formed_at`、`data_cutoff`、`scope`、`basis_kind`、`basis_refs`、`scale`、`expectations`。实际首次登记时间另由程序记录；前瞻事实必须晚于声明形成与首次登记两者，不能借声明时间回填。已有结论及原标准不能修改；新预期使用有关联的新身份。
+
+`basis_kind` 为 FACTS、VALIDATED_PREDECESSOR、FACT_CORRECTION、INDEPENDENT_NEW_FACTS 或 RISK_RESPONSE。后三类及独立事实初判不依赖尚未验证的前序；真正递推必须引用实际注册的前序散列、expectation_id、review_hash 和获支持的 scope。单所、产品、主体或数据维度的支持不得扩成更大范围。
+
+`scale` 为 `process/end/end_ref`：通常按机制过程检验，end 与 end_ref 均为 null；确有事件终点时，end_ref 必须绑定实际日期原件。新的 judgement_window 从形成后开始，不能复制旧预测起点。`outlook.semantic` 的过程尺度可使用 `unit=PROCESS, minimum=null, maximum=null`，不能仅因历史存在日期就重新给出数周或数月延续。
+
+每个 expectations 项为 `id/mechanism/scope/support/falsification`。支持和证伪条件使用可核验原始值的比较表达式：`all` 或 `any` 组合；叶项为 `left/op/right`，op 支持 EQ、NE、GT、GE、LT、LE。操作数是 `anchor` 原始引用或 `sample/path` 后续观察角色。业务模型选择条件和尺度，程序检查引用值及结果，不选择市场方向、交易阈值或构造指数。不能将字段标签、同一样本重复审阅或报告文本当观测值。
+
+review 固定 `prior_claim_hash/kind/evaluated_at/samples/outcomes`。样本指定 `id/ref/time_pointer/scope`，时间指向同一实际观测而非抓取时钟；业务事实适配器返回真实范围、发生与获知时间及字段维度。outcome 逐项说明 expectation_id、verdict、supported_scope 和 explanation。缺证、矛盾或未触发保留 UNKNOWN；POSTHOC、ENGINEERING、BACKTEST、FROZEN_REPLAY 不提供前瞻支持。SUPPORTED/PARTIAL 要通过原条件的实际值检查，证伪后不得继续引用；获支持范围不得超出实际使用的观测字段。
+
+公开材料中的 prospective_feedback 来自公开结论注册与实际机制复核，不含个人资料、账本或收益模拟。个人投资反馈仍在冻结后的个人阶段读取，不能替代公开周期验证。
+
+revision 9 的 investment_decision 另带 account_constraints，每个候选带 execution_role，区分 INVENTORY_MAINTENANCE、INVENTORY_ADJUSTMENT、INCREMENTAL、POLICY 和 INDEPENDENT_RISK_RESPONSE。约束来自当前确认文件绑定的已提交 RISK_CONSTRAINTS 视图；没有记录、事实版本变化或后续成交/资金事项使其失效时保持未知。完整敞口或全仓状态未知可能改变调哪一侧，不能选成存量维持；POLICY 只表达用途，不能授权实际 HOLD。必要独立风险响应保留自身证据、能力缺口和范围，不受公开前序验证门槛阻塞。
+
+工程回归及本轮锁定重放只验收调用、身份、依赖与表达保护；真实预测和投资效果仍待对应后续事实或真实绩效验证。完整正文按主题、结论先行及自然段表达，不输出上述内部字段和运行记录。
+
+新完整链验收必须实际经过原 `research.request/read_input/_public_result` 的市场、前景和完整 `factor_assessment={items,summary}` 合同，冻结公开阶段后才读取个人事实并完成同一原研究的候选审阅、主Owner映射与报告消费。只把已有散文填成固定 semantic、旁路 factors 或造空 legacy Owner 的消费者回放，不能代替原链完成。事实、后续反馈和成稿须分别保留原身份及实际时钟；无新形成后市场事实时说明尚无自然后验。合成支持/部分/证伪/未知及范围测试单独标记，验收模型是否维持、降级、替代或撤回对应命题，不能只验反馈进入payload。独立语义审阅对照实际主因形成、一步前瞻、反证影响、原入口/消费者和正文；失败全文与实质正例均需判定，字段、关键词、测试通过不提供语义评分。

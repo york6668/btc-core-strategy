@@ -57,6 +57,36 @@ class NodeContract(unittest.TestCase):
     def at(self, hours=0):
         return (self.now - timedelta(hours=hours)).isoformat()
 
+    def test_daily_deep_claim_uses_existing_mysql_writer_across_clients(self):
+        day_ms = int(datetime(2030, 3, 2, 12, tzinfo=timezone.utc).timestamp() * 1000)
+        def attempt(index):
+            claim_id = self.id + '-' + str(index)
+            request = {'method':'model.deep.claim','operation_id':'claim-op-' + claim_id,
+                       'params':{'claim_id':claim_id,'issue_id':self.id,'scope':'btc/research',
+                                 'phase':'PUBLIC','input_digest':'sha256:'+'a'*64,'model':'gpt-6-astra'}}
+            try: return request, dispatch(self.settings,request)
+            except Conflict as exc: return request, str(exc)
+        with patch('btc_node.deep_gate.millis',return_value=day_ms):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(attempt,range(2)))
+            winners=[pair for pair in results if isinstance(pair[1],dict)]
+            self.assertEqual(1,len(winners))
+            claimed,result=winners[0]
+            self.assertEqual('CLAIMED_NEW',result['action'])
+            replay=dispatch(self.settings,claimed)
+            self.assertEqual('RECONCILE_EXISTING_NO_LAUNCH',replay['action'])
+            self.assertEqual(result['claim']['claim_id'],replay['claim']['claim_id'])
+            settlement=dispatch(self.settings,{'method':'model.deep.finish',
+                'operation_id':'finish-op-' + result['claim']['claim_id'],
+                'params':{'claim_id':result['claim']['claim_id'],'outcome':'COMPLETE',
+                          'result_ref':'sha256:'+'b'*64}})
+            self.assertEqual('COMPLETE',settlement['claim']['state'])
+            self.assertEqual('REUSE',dispatch(self.settings,{
+                'method':'model.deep.claim','operation_id':'new-op-' + self.id,
+                'params':{'claim_id':self.id+'-later','issue_id':self.id+'-different',
+                          'scope':'btc/research','phase':'PUBLIC','input_digest':'sha256:'+'c'*64,
+                          'model':'gpt-6-astra'}})['action'])
+
     def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
         product = self.id
         self.prices.instrument(product, {'market':'synthetic','symbol':'BTC',

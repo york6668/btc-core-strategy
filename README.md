@@ -60,3 +60,5 @@ GitHub Actions 执行本仓库可独立重建的真实 Docker 数据层与恢复
 CI 的 reader 输入保存在 `test_support/ci_reader/`，仅供测试，不加入 `export-manifest.json`。`scripts/ci_reader.py` 先核对 `test_support/reader.lock.json` 固定的上游提交、完整 Git tree 和 `SNAPSHOT.json` 中逐文件 Git/SHA-256 摘要，再构建真实 reader 镜像并向原数据服务检查传入目录与镜像；缺项、改动或额外运行数据均明确失败。CI 不读取跨仓凭据，也不递归获取核心依赖。
 
 该目录是固定版本的生成快照，不手工维护第二套 reader。重建时从锁定的 `market-roles` 提交取得 `roles/source-map.json` 的 analysis 中所有 `telegram_reader/` 映射，再取同提交的 `requirements.txt`、`roles/containers/Dockerfile` 和 `roles/containers/entrypoint.py`；按 `SNAPSHOT.json` 保存的来源路径、模式与摘要逐一复核，生成仅排除 `.git` 的 `.dockerignore`。来源提交、来源 tree、映射 blob 和全部文件摘要随快照记录；版本变化时同步更新来源记录和锁中的快照 tree。源码可含测试程序与样本构造逻辑，运行状态、配置实例、凭据及生成的测试数据不得进入快照。
+
+当前开发入口准备内容 revision 9；原内容 1–8 保留读取与恢复，不补造其前瞻通过。新增条件首次注册、后续真实事实的值/时间/范围检验及后继依赖保护见判断生命周期与 v4 契约。锁定复测只验证接口、依赖和报告保护，不证明市场预期或策略有效。

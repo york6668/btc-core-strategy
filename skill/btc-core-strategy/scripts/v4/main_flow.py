@@ -30,7 +30,7 @@ def validate_completion(value, path):
 
 
 def sections_for_revision(revision):
-    require(revision in (3, 4, 5, 6, 7), 'unsupported main assessment revision')
+    require(revision in (3, 4, 5, 6, 7, 8, 9), 'unsupported main assessment revision')
     return SECTIONS + (('factor_assessment',) if revision >= 4 else ())
 
 
@@ -65,8 +65,8 @@ def validate_contract(draft, *, historical=False):
             text(provenance['evidence_id'], 'reused evidence version')
 
 
-def validate_publication(root, prior, draft):
-    """A carried section keeps its actual original evidence time and identical payload."""
+def validate_reuse(root, prior, draft):
+    """Read exact ancestor fields under their original evidence identity."""
     for section, p in draft['section_provenance'].items():
         if p['mode'] != 'REUSED':
             continue
@@ -80,14 +80,30 @@ def validate_publication(root, prior, draft):
         actual_time = origin['assessed_at'] if origin else original['temporal_scope']['knowledge_cutoff']
         actual_evidence = origin['evidence_id'] if origin else original['evidence_id']
         require(instant(p['assessed_at']) == instant(actual_time) and p['evidence_id'] == actual_evidence, 'reused section falsifies evidence provenance')
+
+
+def validate_publication(root, prior, draft):
+    """Preserve reused fields, then validate newly assessed publication."""
+    validate_reuse(root, prior, draft)
     if draft.get('revision', 1) >= 5:
         from . import market_state
         previous_zones = market_state.effective(root, prior['assessment'], prior['decision_id'])['dispute_zones']
         # Identical carried market sections retain their original validation.
         if draft['section_provenance']['outlook']['mode'] != 'REUSED':
             market_state.validate_zones(draft['outlook']['dispute_zones'], lambda ref: None, prior=previous_zones, revision=draft['revision'])
-            market_state.validate_assessment(draft['outlook']['market_assessment'], lambda ref: None,
-                draft['temporal_scope']['knowledge_cutoff'], draft['revision'], prior['assessment'].get('outlook', {}).get('market_assessment'))
+            if draft['revision'] >= 9:
+                from . import evidence
+                directory = Path(root) / 'evidence' / draft['evidence_id'][7:]
+                package = evidence.validate(read(directory / 'evidence.json'), directory)
+                resolve = evidence.forward_resolver(package, directory)
+            else:
+                resolve = lambda ref: None
+            market_state.validate_assessment(draft['outlook']['market_assessment'], resolve,
+                draft['temporal_scope']['knowledge_cutoff'], draft['revision'],
+                prior['assessment'].get('outlook', {}).get('market_assessment'), lifecycle_root=root)
+    if draft.get('revision', 1) >= 8:
+        from .investment import decision, validate_issue_review
+        validate_issue_review(decision(draft)['issues'], prior['assessment'], True)
     from .research import validate_absorptions
     validate_absorptions(root, draft)
     from .cycle import validate_publication as validate_cycle_publication
@@ -139,7 +155,11 @@ def domain_validation_baseline(root, prior, draft):
     require(origin.get('parent_id'), 'reused domain has no original transition baseline')
     parent = read(Path(root) / 'versions' / origin['parent_id'] / 'decision.json')
     baseline = dict(domain_baseline(root, parent))
-    baseline['_verified_domain_replay_clock'] = instant(origin['assessment']['temporal_scope']['knowledge_cutoff'])
+    # Replay the actual original publication, not its older market/source
+    # cutoff. A maintenance plan can honestly form after its locked inputs.
+    # This clock is derived only from the immutable ancestor snapshot; it is
+    # never supplied by the caller or used to publish a new domain.
+    baseline['_verified_domain_replay_clock'] = instant(origin['created_at'])
     return baseline
 
 
@@ -171,6 +191,9 @@ def content(assessment):
         value[field] = assessment[field]['narrative']
     value['portfolio'] = {k: v['narrative'] for k, v in assessment['portfolio_analysis'].items()}
     value['recommendations'] = {s: {k: assessment['recommendations'][s][k] for k in ('rationale', 'impact')} for s in ('upper_short', 'lower_spot')} if 'recommendations' in assessment else None
+    if assessment.get('revision', 1) >= 8:
+        from .investment import decision
+        value['investment_decision'] = decision(assessment)
     value['conclusion'] = assessment.get('conclusion')
     value['research_absorptions'] = assessment.get('research_absorptions', [])
     # Model-authored factor analysis can change the internal current assessment
@@ -198,6 +221,10 @@ def projection(assessment):
         lines += [action['scope'] + '：' + action['arrangement'] for action in decision['actions']]
         if assessment.get('revision', 1) >= 7:
             lines += [action['scope'] + '：' + action['arrangement'] for action in assessment['recommendations']['portfolio']['strategy_advice']]
+    if assessment.get('revision', 1) >= 8:
+        from .investment import decision as investment_decision
+        whole = investment_decision(assessment)
+        lines += ['整体投资取舍：' + whole['summary'], ''] + whole['priorities']
     lines += ['- ' + v for v in assessment['conclusion']['business_meaning'].values()]
     for side, title, unit in (('upper_short', '溢价区空单', 'U名义额'), ('lower_spot', '超卖区现货篮子', 'U投入')):
         v = assessment['recommendations'][side]
@@ -227,7 +254,122 @@ def projection(assessment):
     return '\n'.join(lines) + '\n'
 
 
-def assemble(root, project, components, evidence_dir, market, identity, checks):
+def current_market_sources(package, directory, market):
+    """Verify source ownership shared by MAIN and sensing input consumers.
+
+    A normalization wrapper is derived material. Its original sources must
+    independently match every byte/URL/retrieval binding; it is not promoted
+    to PUBLIC_RAW. Ordinary collector containers retain their original trust.
+    Reference selection and current-row checks belong to the caller below.
+    """
+    from . import evidence
+    import market_observation as observation
+    evidence.validate(package, directory)
+    observation.validate_evidence(market)
+    sources = {s['id']: s for s in package['sources']}
+    payloads = {sid: read(Path(directory) / 'raw' / (s['raw_hash'][7:] + '.json'))
+                for sid, s in sources.items()}
+    containers = current_market_source_ownership(sources, payloads, market)
+    return sources, payloads, containers
+
+
+def current_market_source_ownership(sources, payloads, market):
+    """Check an already byte-verified source set before freezing or consuming it."""
+    containers = [sid for sid, raw in payloads.items() if raw == market]
+    require(containers, 'assembly needs the exact complete current market package in evidence')
+    normalization = market.get('normalization')
+    if normalization is None:
+        require(any(sources[sid]['trust'] == 'PUBLIC_RAW' for sid in containers),
+                'current market package is not verified PUBLIC_RAW')
+    else:
+        for raw in normalization['inputs'].values():
+            source = sources.get(raw['source_id'])
+            require(source is not None, 'current original source is absent from factor evidence')
+            require(source['trust'] == 'PUBLIC_RAW', 'untrusted lead cannot support verified fact')
+            require(source['raw_hash'] == raw['raw_hash'] and source['url'] == raw['url']
+                    and instant(source['retrieved_at']) == instant(raw['retrieved_at']),
+                    'current original source identity differs from the locked input')
+    return containers
+
+
+def current_market_references(package, directory, market, refs=None):
+    """Bind the current input's real raw window without inferring its meaning.
+
+    Ordinary collected packages retain their original PUBLIC_RAW /datasets
+    path. Locked normalization is derived and always needs explicit references
+    into the exact source bytes recorded in normalization.inputs.
+    """
+    from . import evidence
+    import market_observation as observation
+    sources, payloads, containers = current_market_sources(package, directory, market)
+    locked = market.get('normalization')
+    if refs is None:
+        require(locked is None, 'locked normalization requires explicit current_market_refs from its original sources')
+        trusted = [sid for sid in containers if sources[sid]['trust'] == 'PUBLIC_RAW']
+        require(trusted, 'current market package is not verified PUBLIC_RAW')
+        refs = [{'source_id': trusted[0], 'pointer': '/datasets', 'value_hash': digest(market['datasets'])}]
+    require(isinstance(refs, list) and refs, 'current_market_refs must contain actual raw references')
+    cutoff = instant(market['cutoff'])
+    for ref in refs:
+        evidence.resolve(package, directory, ref, verified=True)
+        source = sources[ref['source_id']]
+        require(instant(source['end']) == cutoff, 'current market reference has a different cutoff')
+        if locked is None:
+            require(ref['source_id'] in containers, 'current reference belongs to another market input')
+            require(ref['pointer'] == '/datasets' or ref['pointer'].startswith('/datasets/'),
+                    'current reference must bind the actual market datasets')
+            # A row-level reference must reach this input's current interval,
+            # not an older bar merely present in the same response.
+            parts = ref['pointer'].split('/')
+            if len(parts) >= 5 and parts[3] == 'rows':
+                row = pointer(market, '/'.join(parts[:5]))
+                require(instant(row.get('end', row['time'])) == cutoff,
+                        'current reference does not reach the current market window')
+            continue
+        matches = [(key, raw) for key, raw in locked['inputs'].items()
+                   if raw['source_id'] == source['id']]
+        require(matches, 'current reference is not an original source of this locked market input')
+        for key, raw in matches:
+            require(source['raw_hash'] == raw['raw_hash'] and source['url'] == raw['url']
+                    and instant(source['retrieved_at']) == instant(raw['retrieved_at']),
+                    'current original source identity differs from the locked input')
+        # Resolve only an actual referenced observation row/point. Its original
+        # provider grammar owns the clock; a declared source.end cannot make a
+        # stale row or an entire historical response into the current window.
+        parts = ref['pointer'].split('/')
+        reached = False
+        for key, _ in matches:
+            ds = market['datasets'][key]
+            for depth in range(len(parts), 1, -1):
+                item = pointer(payloads[source['id']], '/'.join(parts[:depth]))
+                start = end = None
+                if isinstance(item, list) and ds['kind'] in ('CANDLES', 'MARK', 'INDEX'):
+                    if ds['source'].startswith('binance') and len(item) >= 7 and type(item[0]) is int and type(item[6]) is int:
+                        start, end = item[0] / 1000, (item[6] + 1) / 1000
+                        require(end - start == ds['interval_seconds'], 'original candle interval differs from its current input')
+                    elif ds['source'] in ('coinbase_spot', 'kraken_spot') and item and isinstance(item[0], (int, float, str)):
+                        start = float(item[0])
+                        end = start + ds['interval_seconds']
+                elif isinstance(item, dict) and ds['kind'] in ('OI', 'FUNDING'):
+                    stamp = item.get('timestamp' if ds['kind'] == 'OI' else 'fundingTime')
+                    if type(stamp) is int:
+                        start = end = stamp / 1000
+                if start is not None and end == cutoff.timestamp():
+                    require(instant(source['start']).timestamp() <= start <= end,
+                            'current original observation exceeds its frozen source period')
+                    require(any(observation.timestamp(row['time']) == start
+                                and observation.timestamp(row.get('end', row['time'])) == end
+                                for row in ds['rows']),
+                            'current original observation is absent from the validated current input')
+                    reached = True
+                    break
+            if reached:
+                break
+        require(reached, 'current reference does not reach the current locked market window')
+    return deepcopy(refs)
+
+
+def assemble(root, project, components, evidence_dir, market, identity, checks, workflow_revision=None):
     """Mechanically carry unchanged sections and seal main-authored changes once."""
     from .storage import current
     from . import evidence, sensing
@@ -235,29 +377,30 @@ def assemble(root, project, components, evidence_dir, market, identity, checks):
     pinned = current(root)
     require(pinned and pinned.get('assessment'), 'assembly requires an existing complete assessment')
     previous = pinned['assessment']
-    exact(components, 'updates section_reviews evidence_bindings domain_market_cutoff stop_reason', 'main authored components')
+    exact(components, 'updates section_reviews evidence_bindings domain_market_cutoff stop_reason'
+          + (' current_market_refs' if 'current_market_refs' in components else ''), 'main authored components')
     require(isinstance(components['updates'], dict), 'main updates must be a mapping')
     from .closed_loop import allocation, risk
     proposed = {'recommendations': components['updates'].get('recommendations', previous.get('recommendations'))}
-    revision = (7 if risk(proposed) is not None else 6 if allocation(proposed) is not None
+    from .investment import decision as investment_decision
+    revision = (8 if investment_decision(proposed) is not None else 7 if risk(proposed) is not None else 6 if allocation(proposed) is not None
                 else 5 if 'market_assessment' in components['updates'].get('outlook', previous.get('outlook', {}))
                 else 4 if previous.get('revision', 1) >= 4 or 'factor_assessment' in components['updates'] else 3)
+    proposed_outlook = components['updates'].get('outlook', previous.get('outlook', {}))
+    from .market_state import public_schema_revision
+    if proposed_outlook.get('market_assessment') and public_schema_revision(proposed_outlook) >= 9:
+        revision = 9
+    from .storage import NEW_WRITE_REVISION
+    revision = max(NEW_WRITE_REVISION, workflow_revision or 1, revision, previous.get('revision', 1))
     sections = sections_for_revision(revision)
     require(set(components['updates']) <= set(sections) | {'research_absorptions'}, 'unknown main update section')
     exact(components['section_reviews'], ' '.join(sections), 'main section reviews')
-    package = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
-    for source in package['sources']:
-        path = Path(evidence_dir) / 'raw' / (source['raw_hash'][7:] + '.json')
-        payload = read(path)
-        if isinstance(payload, dict) and payload.get('evidence_id') == market['evidence_id'] and payload == market:
-            ref = {'source_id': source['id'], 'pointer':'/datasets', 'value_hash':digest(payload['datasets'])}
-            break
-    else:
-        require(False, 'assembly needs the exact complete current market package in evidence')
+    package = read(Path(evidence_dir) / 'evidence.json')
+    refs = current_market_references(package, evidence_dir, market, components.get('current_market_refs'))
     value = {'schema':'BTC_ASSESSMENT_DRAFT_V4', 'revision':revision, 'evidence_id':package['evidence_id'],
              'evidence_bindings':components['evidence_bindings'], 'fact_version':facts(project),
              'temporal_scope':{'market_cutoff':market['cutoff'], 'knowledge_cutoff':package['cutoff'],
-                               'domain_market_cutoff':components['domain_market_cutoff'], 'current_market_refs':[ref]},
+                               'domain_market_cutoff':components['domain_market_cutoff'], 'current_market_refs':refs},
              'provenance':identity, 'stop_reason':components['stop_reason'], 'section_provenance':{}}
     for key in sections:
         if key in components['updates']:
@@ -273,7 +416,7 @@ def assemble(root, project, components, evidence_dir, market, identity, checks):
                 'evidence_id':origin.get('evidence_id',previous['evidence_id']),'explanation':components['section_reviews'][key]}
     value['research_absorptions'] = deepcopy(components['updates'].get('research_absorptions',previous.get('research_absorptions',[])))
     kwargs = {'evidence_dir': evidence_dir} if revision >= 4 else {}
-    ctx = sensing.context(root, Path(project)/'.strategy/market_observation.sqlite3', project, market, frozen_review=True, **kwargs)
+    ctx = sensing.context(root, Path(project)/'.strategy/market_observation.sqlite3', project, market, frozen_review=True, workflow_revision=revision, **kwargs)
     value['maintenance_binding'] = {'context_id':ctx['context_id'],'market_evidence_id':market['evidence_id']}
     value['draft_id'] = digest(value)
     exact(checks, 'checks unresolved_issues material_new_outlook', 'main review content')

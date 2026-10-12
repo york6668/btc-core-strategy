@@ -489,6 +489,24 @@ class ReportStageTests(RunFlowTests):
             a['layout']['quality_review']={k:'已核对核心市场评级、结构及确认程度、价格用途和个人应对，未因手机简短而删除重要限制。' for k in a['layout']['quality_review']}
         return a
 
+    def test_body_stage_supplies_reading_method_and_matching_review_template(self):
+        from v4 import authored_report
+        self.observe()
+        context = reporting.context(self.f.store)
+        context['report_contract_revision'] = authored_report.REPORT_CONTRACT_REVISION
+        context['identity']['report_contract_revision'] = context['report_contract_revision']
+        with mock.patch('v4.reporting.context', return_value=context):
+            out = run_flow.phase_material(read(self.d/'run.json'), 'reading-review', 'report-body')
+        brief = read(out['report_context'])
+        layout = read(out['layout_template'])
+        self.assertEqual(set(layout['quality_review']), authored_report.quality_keys(context))
+        self.assertEqual(brief['reading_review_instructions'], authored_report.READING_REVIEW)
+        self.assertEqual(brief['body_authoring_instructions'], authored_report.BODY_AUTHORING_INSTRUCTIONS)
+        self.assertIsNone(layout['body'])
+        # Guidance is backstage material, never automatically added to the body.
+        legacy = dict(context, report_contract_revision=3)
+        self.assertNotIn('reading_review_instructions', reporting.authoring_guidance(legacy))
+
     def test_report_silence_retry_does_not_advance_delivered_baseline(self):
         out,_=self.observe();p=self.file(self.report_input(out));r=run_flow.advance(self.d/'run.json','report',p)
         self.assertEqual(r['action'],'SILENT');self.assertTrue(run_flow.advance(self.d/'run.json','report',p)['replayed'])
@@ -536,8 +554,57 @@ class ReportStageTests(RunFlowTests):
         with self.assertRaisesRegex(Invalid, 'stage context changed|stale report maintenance review'):
             run_flow.advance(self.d / 'run.json', 'report', template_path=out['report_template'], answers_path=self.file(authored))
 
+    def test_report_preflight_binds_full_text_without_recording_or_sending(self):
+        from v4 import authored_report
+        self.observe()
+        ctx = reporting.context(self.f.store)
+        ctx['report_contract_revision'] = 5
+        ctx['identity']['report_contract_revision'] = 5
+        ctx['context_id'] = digest(ctx['identity'])
+        with mock.patch('v4.reporting.context', return_value=ctx):
+            out = run_flow.phase_material(read(self.d/'run.json'), 'new-review', 'report-body')
+            value = self.report_input(out, 'REPORT')
+            quote = '当前公开小时材料只提供有限反馈，不补造未完成的判断。'
+            value['layout'].update(body=quote,
+                bindings=[{'text':quote,'scope':'market','refs':['/observation/review/factor_checks/summary']}],
+                quality_review={key:None for key in authored_report.quality_keys(ctx)}, reviewed_candidate_hash=None)
+            value['information'] = {'market':quote}
+            before = run_flow.anchors(self.f.store,self.f.project)
+            checked = run_flow.advance(self.d/'run.json','report',self.file(value),check_only=True)
+            self.assertEqual(checked['semantic_review'], 'PENDING_ACTUAL_FULL_BODY_REVIEW')
+            candidate = read(checked['review_material'])['candidate']
+            self.assertEqual(candidate['layout']['body'],quote)
+            self.assertEqual(candidate['layout']['bindings'],value['layout']['bindings'])
+            self.assertEqual(before,run_flow.anchors(self.f.store,self.f.project))
+            self.assertFalse((self.f.store/'report-review-current.json').exists())
+            self.assertFalse((self.f.store/'reported-current.json').exists())
+            value['layout']['quality_review'] = {key:'Synthetic actual-candidate record; semantic correctness is independently reviewed.'
+                                               for key in authored_report.quality_keys(ctx)}
+            reviewed = run_flow.advance(self.d/'run.json','report',self.file(value),check_only=True)
+            self.assertEqual(reviewed['reviewed_candidate_hash'], checked['reviewed_candidate_hash'])
+            self.assertNotEqual(reviewed['review_material'], checked['review_material'])
+            self.assertIsNone(read(checked['review_material'])['candidate']['layout']['quality_review']['evidence_priority'])
+            self.assertEqual(run_flow.advance(self.d/'run.json','report',self.file(value),check_only=True)['review_material'], reviewed['review_material'])
+            # A rolling clock creates new immutable evidence while keeping the same text identity.
+            ctx['evaluated_at'] = '2030-03-01T13:06:00Z'
+            refreshed = run_flow.phase_material(read(self.d/'run.json'), 'new-review-clock', 'report-body')
+            current = deepcopy(value)
+            current['_binding'] = read(refreshed['report_template'])['_binding']
+            rechecked = run_flow.advance(self.d/'run.json','report',self.file(current),check_only=True)
+            self.assertEqual(rechecked['reviewed_candidate_hash'], checked['reviewed_candidate_hash'])
+            self.assertNotEqual(rechecked['review_material'], reviewed['review_material'])
+            self.assertEqual(before,run_flow.anchors(self.f.store,self.f.project))
+            with self.assertRaisesRegex(Invalid,'has not been reviewed'):
+                run_flow.advance(self.d/'run.json','report',self.file(value))
+            value['layout']['reviewed_candidate_hash'] = checked['reviewed_candidate_hash']
+            final = run_flow.advance(self.d/'run.json','report',self.file(value))
+            self.assertEqual(final['body'],quote)
+            self.assertFalse((self.f.store/'reported-current.json').exists())
+            self.assertFalse((self.f.store/'outbox').exists())
+
+if __name__=='__main__':unittest.main()
+
+
 # Do not run the parent scenarios twice through inheritance.
 for _name in tuple(RunFlowTests.__dict__):
     if _name.startswith('test_'):setattr(ReportStageTests,_name,None)
-
-if __name__=='__main__':unittest.main()

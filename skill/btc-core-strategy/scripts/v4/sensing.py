@@ -28,19 +28,37 @@ def deep(root):
 
 
 def raw_market(directory, assessment):
-    from . import evidence
+    from . import evidence, main_flow
     from .market_runtime import validate_file
     directory = Path(directory)
     package = evidence.validate(read(directory / 'evidence.json'), directory)
     sources = {s['id']: s for s in package['sources']}
-    for ref in assessment['temporal_scope']['current_market_refs']:
+    refs = assessment['temporal_scope']['current_market_refs']
+    for ref in refs:
         evidence.resolve(package, directory, ref, verified=True)
-        path = directory / 'raw' / (sources[ref['source_id']]['raw_hash'][7:] + '.json')
+    referenced = {ref['source_id'] for ref in refs}
+    cutoff = instant(assessment['temporal_scope']['market_cutoff'])
+    matched, binding_errors = {}, []
+    for sid, source in sources.items():
+        path = directory / 'raw' / (source['raw_hash'][7:] + '.json')
         value = read(path)
-        if value.get('schema') == market.EVIDENCE_SCHEMA:
+        if not isinstance(value, dict) or value.get('schema') != market.EVIDENCE_SCHEMA:
+            continue
+        if instant(value['cutoff']) != cutoff:
+            continue
+        if value.get('normalization') is None and (sid not in referenced or source['trust'] != 'PUBLIC_RAW'):
+            continue
+        try:
             validate_file(path)
-            require(instant(value['cutoff']) == instant(assessment['temporal_scope']['market_cutoff']), 'raw deep cutoff mismatch')
-            return value
+            main_flow.current_market_references(package, directory, value, refs)
+        except (ValueError, TypeError) as exc:
+            binding_errors.append(str(exc))
+            continue
+        matched[digest(value)] = value
+    require(len(matched) <= 1, 'ambiguous complete market inputs for the bound current references')
+    if matched:
+        return next(iter(matched.values()))
+    require(not binding_errors, 'bound market input failed its original source checks: ' + '; '.join(binding_errors))
     return None
 
 
@@ -136,15 +154,15 @@ def accumulation(prior, history, current):
 
 
 def context(root, db, project, current_market, limit=240, compact=True, evidence_dir=None, *, frozen_review=False, workflow_revision=None, fact_snapshot=None):
-    from .storage import current
+    from .storage import current, NEW_WRITE_REVISION
     root = Path(root)
     market.validate_evidence(current_market)
     require(1 <= limit <= 10000, 'context limit out of range')
     pinned = current(root)
     policy = read(root / 'write-policy.json') if (root / 'write-policy.json').exists() else {}
-    active_revision = max(((pinned or {}).get('assessment') or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1))
+    active_revision = max(NEW_WRITE_REVISION if not frozen_review else (workflow_revision or NEW_WRITE_REVISION), ((pinned or {}).get('assessment') or {}).get('revision', 1), policy.get('minimum_assessment_revision', 1))
     if workflow_revision is not None:
-        require(workflow_revision in (5, 6, 7), 'invalid requested workflow revision')
+        require(workflow_revision in range(1, 10), 'invalid requested workflow revision')
         active_revision = max(active_revision, workflow_revision)
     factor_workflow = active_revision >= 4 or evidence_dir is not None
     require(not factor_workflow or evidence_dir is not None, 'revision 4 context requires frozen --evidence')
@@ -204,7 +222,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
                 'market_evidence_id': current_market['evidence_id'], 'retrieval_id': current_market['retrieval_id'],
                 'history_ids': [p['evidence_id'] for p in history]}
     if active_revision >= 6:
-        identity['workflow_revision'] = min(7, active_revision)
+        identity['workflow_revision'] = min(9, active_revision)
     research_context = None
     if workflow:
         from . import research
@@ -219,9 +237,11 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     if factor_workflow:
         from . import factors
         factor_context = factors.context(root, project, evidence_dir)
-        require(any(source['trust'] == 'PUBLIC_RAW' and read(source['raw_path']) == current_market
-                    for source in factor_context['evidence']['sources']),
-                'factor evidence must contain the exact current public market package')
+        from . import evidence, main_flow
+        package = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
+        require(package['evidence_id'] == factor_context['evidence']['evidence_id'],
+                'factor evidence changed while binding current market sources')
+        main_flow.current_market_sources(package, evidence_dir, current_market)
         identity['factor_evidence_id'] = factor_context['evidence']['evidence_id']
         identity['factor_guide_hash'] = factor_context['guide']['hash']
     legacy_previous = legacy['previous_hour']
@@ -244,12 +264,17 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         value['post_evidence_review_required'] = 'Review later observation applicability separately; it is not evidence available at the frozen study cutoff.'
     value['event_cycle'] = core.get('domain', {}).get('event') if workflow else (completed['assessment']['domain']['event'] if completed else None)
     event_cutoff = event_review['market_cutoff'] if workflow else baseline_cutoff
+    if active_revision >= 9:
+        from . import market_state
+        from .forward_lifecycle import public_feedback
+        basis = market_state.effective(root, core, (pinned or {}).get('decision_id'))
+        value['prospective_feedback'] = public_feedback(root, basis.get('market_assessment'))
     value['due_event_reviews'] = [event['event_id'] for event in ((value['event_cycle'] or {}).get('cycle') or {}).get('events', [])
                                   if event_cutoff and instant(event_cutoff) < instant(event['due_at']) <= instant(current_market['cutoff'])]
     # This is an observation of conditions, never a maintained/withdrawn conclusion.
     value['measurements'] = measure(value, current_market)
     if workflow:
-        value['revision'] = min(7, active_revision) if active_revision >= 5 else 4 if factor_workflow else 3
+        value['revision'] = min(9, active_revision) if active_revision >= 5 else 4 if factor_workflow else 3
         if factor_workflow:
             value['factor_context'] = factor_context
         value['current_conclusion'] = core.get('conclusion')
@@ -288,6 +313,15 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
             value['market_baseline'] = market_state.effective(root, core, (pinned or {}).get('decision_id'))
         if compact:
             value = compact_context(value)
+    if active_revision >= 9:
+        from .portfolio_ledger import constraints
+        value['account_constraints'] = constraints(root, project, now())
+    if active_revision >= 8:
+        from .investment import open_issues, POLICY_INSTRUCTIONS, policy_inputs
+        value['investment_review'] = {'open_issues': open_issues(core), 'instructions': POLICY_INSTRUCTIONS}
+        from .strategy_validation import feedback
+        value['investment_feedback'] = feedback(root, core)
+        value['recorded_policy_inputs'] = policy_inputs(root,value['identity']['fact_version'])
     return value
 
 
@@ -363,13 +397,13 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
     """The same public preflight runs before freeze and before observation commit."""
     from . import evidence, factors, market_state, cycle, research
     bundle = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
-    resolve = lambda ref: evidence.resolve(bundle, evidence_dir, ref, verified=True)
+    resolve = evidence.forward_resolver(bundle, evidence_dir)
     rev = ctx.get('revision', 5)
     market_state.validate_assessment(authored['market_assessment'], resolve, bundle['cutoff'], rev,
-        ctx.get('market_baseline', {}).get('market_assessment'))
+        ctx.get('market_baseline', {}).get('market_assessment'), lifecycle_root=root)
     market_state.validate_zones(authored['dispute_zones'], resolve,
         ctx.get('market_baseline', {}).get('dispute_zones', []), bundle['cutoff'], rev)
-    factors.validate(authored['factor_checks'], bundle, evidence_dir)
+    factors.validate(authored['factor_checks'], bundle, evidence_dir, revision=rev)
     if 'cycle_baseline' in ctx:
         cycle.validate_applicability(authored['applicability_review'], ctx, bundle, evidence_dir)
     candidate = deepcopy(authored['market_review'])
@@ -388,6 +422,8 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
 
 
 def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=None):
+    from .storage import NEW_WRITE_REVISION
+    require(review.get('revision', 1) >= NEW_WRITE_REVISION, 'legacy observation is read-only; new observations require the active lifecycle contract')
     root = Path(root)
     if evidence_dir is not None:
         from .storage import archive_evidence
@@ -412,7 +448,7 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
         if factor_workflow:
             from . import evidence, factors
             factor_package = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
-            factors.validate(review['factor_checks'], factor_package, evidence_dir)
+            factors.validate(review['factor_checks'], factor_package, evidence_dir, revision=ctx.get('revision',4))
         if ctx.get('revision', 1) >= 5:
             from . import market_state
             validate_public(root, ctx, raw, review, evidence_dir)
@@ -422,7 +458,8 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             require(review['market_result_hash'] == digest(public), 'portfolio stage changed the frozen market result')
             if ctx['revision'] >= 6:
                 from .closed_loop import validate_allocation_review
-                validate_allocation_review(review['allocation_review'], ctx, review['market_result_hash'])
+                validate_allocation_review(review['allocation_review'], ctx, review['market_result_hash'],
+                                           review['main_evaluation']['required'])
         if cycle_workflow:
             from .cycle import validate_applicability
             validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir)
@@ -533,6 +570,9 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             value.update(revision=ctx['revision'], main_eligible=gate['main_eligible'], research_eligible=gate['research_eligible'], research_findings=research_issues)
         value['observation_id'] = digest(value)
         create(root / 'sensing' / (value['observation_id'][7:] + '.json'), value)
+        if ctx.get('revision', 1) >= 9:
+            from .forward_lifecycle import register
+            register(root, review['market_assessment'], root / 'sensing' / (value['observation_id'][7:] + '.json'), '/created_at')
         replace(root / 'sensing-current.json', {'observation_id': value['observation_id'], 'observed_hour': value['observed_hour']})
         result = {'observation_id': value['observation_id'], 'deep_eligible': value['deep_eligible'], 'triggers': value['triggers'], 'maintenance_status': 'OBSERVATION_ONLY'}
         if workflow:
@@ -581,7 +621,7 @@ def assert_current(root, project, draft, evidence_dir):
     require(raw is not None, 'recommendation assessment requires full current public market package')
     ctx = context(root, Path(project) / '.strategy/market_observation.sqlite3', project, raw,
                   evidence_dir=evidence_dir if draft.get('revision', 1) >= 4 else None,
-                  frozen_review=draft.get('revision', 1) >= 3)
+                  frozen_review=draft.get('revision', 1) >= 3, workflow_revision=draft.get('revision'))
     require(binding == {'context_id': ctx['context_id'], 'market_evidence_id': raw['evidence_id']}, 'new observation, fact, recommendation or deep baseline requires main review before commit')
     if draft['domain']['runtime']['trigger_type'] == 'SCHEDULED_STRATEGY_BOUNDARY':
         require(ctx['identity']['observation_id'] is not None, 'scheduled assessment requires actual sensing observation')

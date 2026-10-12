@@ -1,5 +1,6 @@
 """Main strategy publication is independent from research and reporting."""
 from copy import deepcopy
+from datetime import timezone
 from pathlib import Path
 import sys, unittest
 from unittest import mock
@@ -19,6 +20,11 @@ def seal(value):
 class MainTests(unittest.TestCase):
     def setUp(self):
         base.RecommendationTests.setUp(self)
+        # Persist constructed Owners under the same simulated wall clock as
+        # their events. A real 2026 timestamp cannot own a 2030 test plan.
+        import strategy_contract as legacy
+        clock = mock.patch('v4.storage.now', side_effect=lambda: legacy.datetime.now(timezone.utc).isoformat())
+        clock.start(); self.addCleanup(clock.stop)
         base.RecommendationTests.upgrade(self)
         self.draft.update(revision=3, provenance={'role':'MAIN','model':'gpt-6.1-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_TRACE'},
                           conclusion={'business_meaning':{'value':'合成价值结构保持，超卖与溢价方案分别受组合预算约束。'},'narrative':'合成当前解释。'}, research_absorptions=[])
@@ -270,7 +276,7 @@ class MainTests(unittest.TestCase):
         import test_production_strategy as production
         import test_event_contract as events
         from v4 import domain, evidence
-        clock = production.frozen_clock(events.AFTER_FINAL)
+        clock = production.frozen_clock('2030-03-01T15:07:00Z')
         clock.__enter__(); self.addCleanup(clock.__exit__, None, None, None)
         timer = mock.patch('v4.evidence.now', return_value='2030-03-01T15:10:00Z')
         timer.start(); self.addCleanup(timer.stop)
@@ -309,7 +315,8 @@ class MainTests(unittest.TestCase):
         draft, review = self.reused_assembly('New main explanation retaining the prior event transition as history.')
         baseline = main_flow.domain_validation_baseline(self.store, initial, draft)
         self.assertEqual(baseline['decision_id'], self.prior['decision_id'])
-        self.assertEqual(baseline['_verified_domain_replay_clock'].isoformat(), '2030-03-01T15:06:00+00:00')
+        self.assertEqual(baseline['_verified_domain_replay_clock'].isoformat(), initial['created_at'])
+        self.assertEqual(initial['created_at'], '2030-03-01T15:07:00+00:00')
         result = storage.commit(self.store,self.project,draft,self.evidence_dir,review,initial['decision_id'])
         self.assertTrue(result['assessment']['domain']['event']['final_event_reached'])
         self.assertEqual(result['assessment']['domain'], initial['assessment']['domain'])

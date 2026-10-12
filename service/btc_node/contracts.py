@@ -21,6 +21,17 @@ SPEC = obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'product': {'type':
     ['kind','object_id','scope','observed_at','known_at','change_reason','source_ref','method_version','payload','dependencies'])
 
 PARAMETERS = {
+    'model.deep.status': obj({}),
+    'model.deep.claim': obj({'claim_id':TEXT,'issue_id':TEXT,'scope':TEXT,'phase':TEXT,'input_digest':TEXT,'model':TEXT},
+                             ['claim_id','issue_id','scope','phase','input_digest','model']),
+    'model.deep.finish': obj({'claim_id':TEXT,'outcome':{'type':'string','enum':['COMPLETE','FAILED','UNKNOWN','CANCELED']},
+        'result_ref':TEXT,'failure_kind':TEXT,'failure_ref':TEXT},['claim_id','outcome']),
+    'model.deep.reconcile': obj({'claim_id':TEXT,'outcome':{'type':'string','enum':['COMPLETE','FAILED','CANCELED']},
+        'evidence_ref':TEXT,'result_ref':TEXT},['claim_id','outcome','evidence_ref']),
+    'model.defect.open': obj({'scope':TEXT,'kind':TEXT,'signature':TEXT,'fault_digest':TEXT,'evidence_ref':TEXT},
+                              ['scope','kind','signature','fault_digest','evidence_ref']),
+    'model.defect.resolve': obj({'fault_id':TEXT,'repair_digest':TEXT,'verification_ref':TEXT,'verification_status':TEXT},
+                                 ['fault_id','repair_digest','verification_ref','verification_status']),
     'failure.get': obj({'document_key':TEXT}, ['document_key']),
     'failure.list': obj({'after':TEXT,'limit':{'type':'integer','minimum':1,'maximum':500}}),
     'failure.resolve': obj({'document_key':TEXT,'expected_digest':TEXT,'expected_version':VERSION,

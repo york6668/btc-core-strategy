@@ -4,6 +4,8 @@
 
 `btc_node.api` 是 CLI/MCP 的同一服务层。entities 管理对象版本、引用及复核；series 保存产品身份和双时间序列；projection/history 读取已验证的既有契约；fact_views 绑定文件版本及逐行来源；catalog 保留旧 ID、原字节、SQLite 行及游标；execution 对实际旧 CLI 做持久准入、唯一写入及中断恢复。报告与研究仍使用原状态机，触价不会推导确认或成交。完整业务使用见 [持续分析契约](../skill/btc-core-strategy/references/continuous-analysis.md)。
 
+`model.deep.status/claim/finish/reconcile` 将整个 BTC 系统的高等级深评按东京自然日限制为一次，复用本服务的 MySQL 写入锁和 `node_metadata`，不另建本地任务预算。丢失 claim 响应的同 operation 重放只返回核查提示，不授权再次启动；跨午夜在途和 UNKNOWN 阻断次日名额直至原调用核清。`model.defect.open/resolve` 保留受影响范围的故障与实际修复证据。研究登记还须绑定同一已完成票据与真实模型轨迹；旧固定发布若无票据入口，服务拒绝其新结果登记并保留原研究供兼容修复。平台代理工具的启动不经过本服务，调用者须先在本节点取得 claim；服务本身不能拦截未经它发起的外部模型调用。
+
 ## 准备与迁移
 
 `python3 service/setup_node.py --node <现有 node.json> --data <节点专属目录> --docker <实际 Docker CLI> --compose-project <节点名>` 只准备关闭的接入配置。使用生成的 compose.env 与覆盖文件启动 mysql/core，检查实际健康。镜像从本仓库 service 源码构建；reader/collector 镜像由 market-roles 的 `roles/containers/build.py` 从源码白名单导出构建。

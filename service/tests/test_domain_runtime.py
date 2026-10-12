@@ -33,6 +33,57 @@ class DomainRuntime(unittest.TestCase):
                      ['--project','/p','--root','/r','--unknown','--help']):
             self.assertFalse(help_only(argv))
 
+    def test_expired_joint_decision_reaches_allocation_due_and_formal_plan_limit(self):
+        from unittest import mock
+        source=Path(os.environ['BTC_TEST_SOURCE'])
+        sys.path[:0]=[str(source/'skill/btc-core-strategy/scripts')]
+        from v4.common import facts
+        from btc_node.projection import Projection
+        from btc_node.codec import millis
+        with tempfile.TemporaryDirectory(prefix='btc-expiry-projection-') as directory:
+            project=Path(directory);root=project/'.strategy/v4'
+            for name in ('资产配置.md','操作记录.md','纠正记录.md'):
+                (project/name).write_text('SYNTHETIC CONFIRMED FACTS ONLY\n')
+            version=facts(project)
+            deadline='2030-03-01T12:00:00Z';checked='2030-03-05T00:00:00Z'
+            whole={'valid_until':deadline,'evaluation_windows':[],'policy':{'version':'synthetic-policy'}}
+            assessment={'revision':8,'fact_version':version,'recommendations':{
+                'portfolio':{'investment_decision':whole},
+                'upper_short':{'status':'RECOMMENDED','validity':{'until':'2030-03-08T00:00:00Z'}},
+                'lower_spot':{'status':'RECOMMENDED','validity':{'until':'2030-03-08T00:00:00Z'}}}}
+            original={'decision_id':'b'*64,'created_at':'2030-03-01T00:00:00Z','fact_version':version,'assessment':assessment}
+            path=root/'versions'/original['decision_id']/'decision.json';path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(original))
+            db=mock.Mock();db.put_blob.side_effect=fingerprint
+            projection=Projection(db,'synthetic-candidate')
+            projection.objects=mock.Mock()
+            projection.objects.get.side_effect=lambda kind,object_id: {'known_ms':millis(checked)} if kind=='FACT_PROJECTION' else None
+            projection.objects.list.return_value={'objects':[],'next':None}
+            calls=[]
+            def capture(kind,object_id,payload,source,known,**kwargs):
+                calls.append((kind,object_id,payload,kwargs))
+                return {'object_id':object_id,'version':1,'digest':fingerprint(encode(payload)),'known_ms':millis(known)}
+            projection.put=capture
+            public={'outlook':{'market_assessment':None,'dispute_zones':[]},'factor_assessment':{'items':[]}}
+            with mock.patch('v4.storage.current',return_value=original), mock.patch('v4.market_state.public_content',return_value=public), \
+                 mock.patch('v4.market_state.effective',return_value={}), mock.patch('v4.research.context',return_value={'issues':[]}), \
+                 mock.patch('v4.delivery.attempt_recovery',return_value=[]), mock.patch('v4.delivery.recovery_actions',return_value=[]), \
+                 mock.patch('btc_node.reader_prices.project',return_value={}), mock.patch('btc_node.history.project_history',return_value={}), \
+                 mock.patch('btc_node.projection.stamp',return_value=checked):
+                projection.refresh(project,root)
+            allocation=next(c for c in calls if c[0]=='ALLOCATION')
+            self.assertEqual(allocation[2]['recommendation_applicability'],'REVISE')
+            self.assertIsNone(allocation[2]['portfolio'])
+            self.assertEqual(allocation[3]['expires'],deadline)
+            self.assertEqual(allocation[3]['due'],deadline)
+            plans=[c for c in calls if c[0]=='PLAN']
+            self.assertEqual(len(plans),2)
+            for plan in plans:
+                self.assertEqual(plan[3]['expires'],deadline)
+                self.assertIsNone(plan[2]['recommendation'])
+                self.assertEqual(plan[2]['recommendation_applicability'],'REVISE')
+                self.assertEqual(plan[2]['formal_recommendation']['validity']['until'],'2030-03-08T00:00:00Z')
+
     def test_actual_prepare_observe_and_interrupted_result_recovery(self):
         source = Path(os.environ['BTC_TEST_SOURCE'])
         settings = json.loads(Path(os.environ['BTC_TEST_CONFIG']).read_text())
@@ -54,10 +105,12 @@ class DomainRuntime(unittest.TestCase):
                 import test_run_flow as fixture
                 sample = fixture.RunFlowTests('test_prepare_never_calls_network_with_frozen_input_or_changes_owners')
                 try:
-                    sample.setUp()
+                    with patch('v4.storage.NEW_WRITE_REVISION',1):sample.setUp()
                     # Reuse the domain's dated replay builder. Advance only the
-                    # test clock, never relax production validation or fake a
-                    # subprocess result; the real CLI still executes its body.
+                    # test clock and original historical contract floor in
+                    # the disposable test release; the real CLI executes its
+                    # body and every original storage/recovery guard. Current9
+                    # lifecycle writes are covered by the unmocked core suite.
                     from btc_node import codec
                     actual_utc = codec.utc
                     clock = patch.object(codec, 'utc', side_effect=lambda value=None:
@@ -69,6 +122,7 @@ class DomainRuntime(unittest.TestCase):
                             bootstrap = ('import runpy,sys,time; time.time=lambda:1900000000; p=sys.argv.pop(1); '
                                 'sys.argv[0]=p; sys.path.insert(0,str(__import__("pathlib").Path(p).parent)); '
                                 'import v4.common as c; c.now=lambda:"2030-03-01T14:00:00+00:00"; '
+                                'import v4.storage as historical; historical.NEW_WRITE_REVISION=1; '
                                 'runpy.run_path(p,run_name="__main__")')
                             command=[command[0],'-c',bootstrap,*command[1:]]
                         return actual_run(command,**kwargs)
@@ -295,6 +349,11 @@ class DomainRuntime(unittest.TestCase):
                                 self.assertIsNone(fact['payload']['structured_view'])
                                 self.assertIn('AVAILABILITY_CHECK',{d['relation'] for d in fact['dependencies']})
                                 portfolio=Entities(db).get('ALLOCATION','portfolio')['payload']
+                                self.assertIn('investment_decision',portfolio)
+                                self.assertIn('investment_feedback',portfolio)
+                                if portfolio['investment_feedback'] is not None:
+                                    self.assertEqual(portfolio['investment_feedback']['actual_performance'],'REQUIRES_COMPLETE_CONFIRMED_LEDGER')
+                                    self.assertIn('available_method_validations',portfolio['investment_feedback'])
                                 self.assertEqual(portfolio['fact_review'],'REQUIRED')
                                 self.assertEqual(portfolio['recommendation_applicability'],'EVIDENCE_LIMITED')
                                 self.assertIsNone(portfolio['portfolio_analysis'])

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+
 import test_closed_loop as fixture
 import test_workflow_research as native
 import test_portfolio_risk as risk_fixture
