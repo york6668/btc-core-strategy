@@ -1388,6 +1388,42 @@ class NodeContract(unittest.TestCase):
             with self.db.transaction():
                 self.db.metadata(deep_gate.STATE_NAME, previous, write=True)
 
+    def test_crashed_maintenance_attempt_survives_process_restart(self):
+        from btc_node import deep_gate
+        from btc_node.lifecycle import loop_daily
+        before_gate = self.db.metadata(deep_gate.STATE_NAME)
+        before_attempt = self.db.metadata('maintenance.attempt')
+        before_daily = self.db.metadata('maintenance.daily')
+        self.db.settings = {**self.db.settings, 'maintenance_enabled': False}
+        try:
+            with self.db.transaction():
+                self.db.metadata('maintenance.daily', None, write=True)
+                self.db.metadata('maintenance.attempt', {
+                    'attempt_id':self.id,'day':'2000-01-01','state':'RUNNING',
+                    'started_ms':1,'finished_ms':None}, write=True)
+            with patch('btc_node.lifecycle.maintain', side_effect=AssertionError('replayed maintenance')):
+                with self.assertRaisesRegex(Conflict, 'interrupted maintenance attempt'):
+                    loop_daily(self.db)
+            attempt = self.db.metadata('maintenance.attempt')
+            self.assertEqual(attempt['state'], 'FAILED')
+            blocked = deep_gate.check_scope(self.db, scope='btc/maintenance')
+            self.assertFalse(blocked['allowed'])
+            with self.assertRaisesRegex(Conflict, 'known maintenance defect'):
+                loop_daily(self.db)
+            fault_id = blocked['faults'][0]['fault_id']
+            with self.db.transaction():
+                deep_gate.resolve_fault(self.db, fault_id=fault_id,
+                    repair_digest='sha256:'+'4'*64, verification_ref='synthetic recovery',
+                    verification_status='PASS')
+            with patch('btc_node.lifecycle.maintain', return_value={'synthetic':'recovered'}):
+                self.assertEqual(loop_daily(self.db), {'synthetic':'recovered'})
+            self.assertEqual(self.db.metadata('maintenance.attempt')['state'], 'COMPLETE')
+        finally:
+            with self.db.transaction():
+                self.db.metadata(deep_gate.STATE_NAME, before_gate, write=True)
+                self.db.metadata('maintenance.attempt', before_attempt, write=True)
+                self.db.metadata('maintenance.daily', before_daily, write=True)
+
     def test_paged_backup_rows_keep_the_original_snapshot_during_live_write(self):
         import gzip
         with self.db.transaction():

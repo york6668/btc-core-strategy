@@ -60,8 +60,9 @@ services:
     <<: *app
     profiles: [analysis]
     command: [maintenance-loop]
-    # A failed daily backup needs investigation, not an unbounded restart.
-    restart: "no"
+    # Host boot restores the loop; the durable attempt/fault gate prevents
+    # repeating an interrupted or failed daily backup automatically.
+    restart: unless-stopped
   reader:
     image: btc-reader:${BTC_READER_IMAGE_TAG:-${BTC_IMAGE_TAG:-local}}
     profiles: [reader]

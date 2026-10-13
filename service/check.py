@@ -68,8 +68,8 @@ def run(docker, reader, reader_image=None):
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
         effective = json.loads(subprocess.check_output(command+['config','--format','json'], text=True))
-        if effective['services']['maintenance']['restart'] != 'no':
-            raise AssertionError('failed maintenance must not restart automatically')
+        if effective['services']['maintenance']['restart'] != 'unless-stopped':
+            raise AssertionError('normal host restart must restore guarded maintenance')
         subprocess.run(command+['build','core'], check=True, timeout=600)
         # Match the owner seen through this daemon's bind mount. Linux retains
         # the runner UID; Desktop file sharing can map it differently. This
@@ -104,7 +104,7 @@ def run(docker, reader, reader_image=None):
                        '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
                        'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True)
         # Recreate a known failure across two real maintenance process starts.
-        # Neither process may enter backup or be restarted by Docker.
+        # The service must stay idle until a reviewed fault is resolved.
         fault = {'method':'model.defect.open','operation_id':'synthetic-maintenance-lockout',
                  'params':{'scope':'btc/maintenance','kind':'UNKNOWN',
                            'signature':'sha256:'+'d'*64,'fault_digest':'sha256:'+'d'*64,
@@ -119,17 +119,14 @@ def run(docker, reader, reader_image=None):
                 raise AssertionError('maintenance container was not created')
             return json.loads(subprocess.check_output([docker,'inspect','--format','{{json .State}}',container],text=True))
         for attempt in range(2):
-            subprocess.run(command+(['up','-d','maintenance'] if attempt == 0 else ['start','maintenance']),check=True)
-            for _ in range(50):
-                state = maintenance_state()
-                if state['Status'] == 'exited':
-                    break
-                time.sleep(0.2)
-            if state['Status'] != 'exited' or state['ExitCode'] != 1 or state['OOMKilled']:
-                raise AssertionError('known maintenance fault was not rejected on process start')
+            subprocess.run(command+(['up','-d','maintenance'] if attempt == 0 else ['restart','maintenance']),check=True)
             time.sleep(0.5)
-            if maintenance_state()['Status'] != 'exited':
-                raise AssertionError('Docker retried failed maintenance')
+            state = maintenance_state()
+            if state['Status'] != 'running' or state['OOMKilled']:
+                raise AssertionError('guarded maintenance did not remain idle and running')
+            time.sleep(0.5)
+            if maintenance_state()['Pid'] != state['Pid']:
+                raise AssertionError('known maintenance fault caused process restart')
         fault_check = json.loads(subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
             input=b'{"method":"model.defect.check","params":{"scope":"btc/maintenance"}}'))
         if fault_check['result']['allowed'] or len(fault_check['result']['faults']) != 1:

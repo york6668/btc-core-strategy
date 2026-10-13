@@ -9,11 +9,12 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import uuid
 from stat import S_ISLNK
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from .codec import Conflict, fingerprint, identity, millis
+from .codec import Conflict, encode, fingerprint, identity, millis
 
 
 DAY = 86400000
@@ -451,3 +452,59 @@ def daily(db):
     if db.settings.get('maintenance_enabled'):
         with db.writer(),db.transaction(): db.metadata('maintenance.daily',{'day':day,'result':result},write=True)
     return result
+
+
+def loop_daily(db):
+    """Durable admission for the automatically restarted maintenance process.
+
+    The process lock distinguishes a live peer from a crashed predecessor;
+    the attempt record makes a crash before the daily marker fail closed after
+    Docker restarts the process. Both live in the existing MySQL authority.
+    """
+    from .deep_gate import check_scope, open_fault
+    if not check_scope(db, scope='btc/maintenance')['allowed']:
+        raise Conflict('known maintenance defect blocks daily work')
+    day = datetime.now(ZoneInfo('Asia/Tokyo')).date().isoformat()
+    if (db.metadata('maintenance.daily') or {}).get('day') == day:
+        return {'day':day,'already_maintained':True}
+    db.connection.rollback()
+    lock = 'btc-maintenance:' + db.settings['mysql']['database']
+    if db.one('SELECT GET_LOCK(%s,0) AS acquired', (lock,))['acquired'] != 1:
+        raise Conflict('another maintenance process is active')
+    try:
+        interrupted = False
+        with db.writer(), db.transaction():
+            # Another process may have completed the day while this process
+            # waited to enter the writer transaction.
+            if (db.metadata('maintenance.daily') or {}).get('day') == day:
+                return {'day':day,'already_maintained':True}
+            prior = db.metadata('maintenance.attempt') or {}
+            if prior.get('state') == 'RUNNING':
+                prior['state'] = 'FAILED'
+                prior['failed_ms'] = millis()
+                db.metadata('maintenance.attempt', prior, write=True)
+                signature = 'sha256:' + fingerprint(encode(prior))
+                open_fault(db, scope='btc/maintenance', kind='UNKNOWN',
+                           signature=signature, fault_digest=signature,
+                           evidence_ref='node:maintenance.attempt:' + prior['attempt_id'])
+                interrupted = True
+            else:
+                db.metadata('maintenance.attempt', {
+                    'attempt_id':uuid.uuid4().hex,'day':day,'state':'RUNNING',
+                    'started_ms':millis(),'finished_ms':None}, write=True)
+        if interrupted:
+            raise Conflict('interrupted maintenance attempt requires fault review')
+        result = daily(db)
+        with db.writer(), db.transaction():
+            attempt = db.metadata('maintenance.attempt')
+            attempt['state'] = 'COMPLETE'
+            attempt['finished_ms'] = millis()
+            db.metadata('maintenance.attempt', attempt, write=True)
+        return result
+    finally:
+        try:
+            db.one('SELECT RELEASE_LOCK(%s) AS released', (lock,))
+        except Exception:
+            # Connection loss releases the named lock server-side. The
+            # persistent RUNNING record still blocks an automatic retry.
+            pass

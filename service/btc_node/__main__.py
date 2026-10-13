@@ -11,9 +11,10 @@ import socket
 import socketserver
 import sys
 import time
+import traceback
 
 from .api import dispatch
-from .codec import Conflict, encode
+from .codec import Conflict, encode, millis
 from .database import Database
 
 
@@ -30,6 +31,11 @@ def record_maintenance_failure(settings, error):
     db = Database(settings)
     try:
         with db.writer(), db.transaction():
+            attempt = db.metadata('maintenance.attempt') or {}
+            if attempt.get('state') == 'RUNNING':
+                attempt['state'] = 'FAILED'
+                attempt['failed_ms'] = millis()
+                db.metadata('maintenance.attempt', attempt, write=True)
             open_fault(db, scope='btc/maintenance', kind='UNKNOWN',
                        signature=signature, fault_digest=signature,
                        evidence_ref=reference)
@@ -145,26 +151,33 @@ def main():
         finally:
             db.close()
     elif args.command.startswith('maintenance'):
-        from .lifecycle import daily
+        from .lifecycle import daily, loop_daily
         while True:
-            db = Database(settings)
+            db = None
             try:
-                try:
-                    result = daily(db)
-                    print(json.dumps(result, ensure_ascii=False), flush=True)
-                except Exception as error:
-                    if args.command == 'maintenance-loop' and not (
-                            isinstance(error, Conflict)
-                            and str(error) == 'known maintenance defect blocks daily work'):
-                        try:
-                            record_maintenance_failure(settings, error)
-                        except Exception:
-                            # A broken DB may prevent the durable fault write;
-                            # Compose still leaves this container stopped.
-                            pass
+                db = Database(settings)
+                result = loop_daily(db) if args.command == 'maintenance-loop' else daily(db)
+                print(json.dumps(result, ensure_ascii=False), flush=True)
+            except Exception as error:
+                if args.command != 'maintenance-loop':
                     raise
+                if db is not None:
+                    try: db.close()
+                    except Exception: pass
+                    db = None
+                if not (isinstance(error, Conflict) and str(error) in {
+                        'known maintenance defect blocks daily work',
+                        'interrupted maintenance attempt requires fault review'}):
+                    try: record_maintenance_failure(settings, error)
+                    except Exception: pass
+                traceback.print_exception(error)
+                # Stay idle until a reviewed repair and explicit process
+                # restart. Docker may revive this service after host reboot;
+                # the persistent attempt/fault gate prevents backup replay.
+                while True: time.sleep(3600)
             finally:
-                db.close()
+                if db is not None:
+                    db.close()
             if args.command != 'maintenance-loop':
                 break
             time.sleep(3600)
