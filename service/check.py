@@ -114,7 +114,7 @@ def run(docker, reader, reader_image=None):
         if not opened.get('ok'):
             raise AssertionError('maintenance fault could not be recorded')
         def maintenance_state():
-            container = subprocess.check_output(command+['ps','-q','maintenance'],text=True).strip()
+            container = subprocess.check_output(command+['ps','-a','-q','maintenance'],text=True).strip()
             if not container:
                 raise AssertionError('maintenance container was not created')
             return json.loads(subprocess.check_output([docker,'inspect','--format','{{json .State}}',container],text=True))
