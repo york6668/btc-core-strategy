@@ -836,6 +836,9 @@ class NodeContract(unittest.TestCase):
             self.assertEqual(sample['allocated_file_bytes_status'], 'NOT_MEASURED')
             self.assertNotIn('allocated_file_bytes', sample)
             self.assertIn('unique_content_bytes', sample)
+            self.assertTrue(sample['filesystem_headroom'])
+            self.assertIn('available_bytes', sample['filesystem_headroom'][0])
+            self.assertTrue(status(self.db)['live_filesystem_headroom']['volumes'])
             audit = subprocess.run([sys.executable, '-B', '-m', 'btc_node', '--config',
                                     os.environ['BTC_TEST_CONFIG'], 'capacity-audit'],
                                    capture_output=True, text=True, check=True)
@@ -847,6 +850,37 @@ class NodeContract(unittest.TestCase):
             with self.db.transaction():
                 self.db.metadata('capacity.daily', previous_daily, write=True)
                 self.db.metadata('maintenance.daily', previous_maintenance, write=True)
+
+    def test_capacity_health_detects_external_volume_loss_without_tree_walk(self):
+        from btc_node.lifecycle import filesystem_headroom, record_capacity, status
+        previous = self.db.metadata('capacity.daily')
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root/'same-volume').mkdir()
+                blocks = type('Blocks', (), {'f_blocks':1000, 'f_bavail':400,
+                    'f_bfree':500, 'f_frsize':4096})()
+                with patch('btc_node.lifecycle.os.walk', side_effect=AssertionError('file walk')), \
+                        patch('btc_node.lifecycle.os.statvfs', return_value=blocks) as probe:
+                    sampled = filesystem_headroom([root, root/'same-volume'])
+                self.assertEqual(probe.call_count, 1)
+                self.assertEqual(len(sampled), 1)
+                self.assertEqual(sampled[0]['available_bytes'], 400*4096)
+            with self.db.transaction():
+                self.db.metadata('capacity.daily', [], write=True)
+            first = [{'device':'fixture', 'roots':['/fixture'], 'total_bytes':4096000,
+                      'available_bytes':2000000, 'free_bytes':2100000}]
+            later = [{**first[0], 'available_bytes':1200000, 'free_bytes':1300000}]
+            with patch('btc_node.lifecycle.filesystem_headroom', side_effect=[first, later, later]):
+                record_capacity(self.db, now=self.now)
+                second = record_capacity(self.db, now=self.now+timedelta(days=1))
+                live = status(self.db)['live_filesystem_headroom']['volumes']
+            self.assertEqual(second['filesystem_headroom'][0]['available_change_bytes'], -800000)
+            self.assertEqual(live[0]['available_bytes'], 1200000)
+            self.assertEqual(second['allocated_file_bytes_status'], 'NOT_MEASURED')
+        finally:
+            with self.db.transaction():
+                self.db.metadata('capacity.daily', previous, write=True)
 
     def test_capacity_spill_preserves_exact_hardlink_accounting(self):
         from btc_node.lifecycle import allocated
@@ -1306,6 +1340,37 @@ class NodeContract(unittest.TestCase):
                 self.assertFalse(self.db.rows('SELECT name FROM metadata_blobs WHERE name LIKE %s',
                                               (backup.PIN_PREFIX+'%',)))
                 self.assertGreaterEqual(saved['completed_ms'], saved['created_ms'])
+        finally:
+            other.close()
+
+    def test_streamed_backup_rows_keep_the_original_snapshot_during_live_write(self):
+        import gzip
+        with self.db.transaction():
+            self.db.metadata(self.id, {'cursor': 17, 'delivery': 'UNKNOWN'}, write=True)
+        other = Database(self.settings)
+        original = Database.iter_rows
+        changed = []
+        def stream_with_live_write(snapshot, sql, args=()):
+            for row in original(snapshot, sql, args):
+                if sql.startswith('SELECT * FROM `node_metadata`') and not changed:
+                    with other.writer(timeout=0), other.transaction():
+                        other.metadata(self.id, {'cursor': 19, 'delivery': 'DELIVERED'}, write=True)
+                    changed.append(True)
+                yield row
+        try:
+            with tempfile.TemporaryDirectory(prefix='btc-backup-stream-') as directory:
+                target = Path(directory)/'snapshot'
+                with patch.object(Database, 'iter_rows', stream_with_live_write):
+                    backup.create(self.db, target)
+                self.assertEqual(changed, [True])
+                with gzip.open(target/'database.jsonl.gz', 'rt') as stream:
+                    archived = [json.loads(line) for line in stream]
+                row = next(r['row'] for r in archived if r.get('table') == 'node_metadata'
+                           and r.get('row', {}).get('name') == self.id)
+                self.assertEqual(json.loads(backup.Blobs(target/'objects').get(row['digest'])),
+                                 {'cursor': 17, 'delivery': 'UNKNOWN'})
+                self.db.connection.rollback()
+                self.assertEqual(self.db.metadata(self.id), {'cursor': 19, 'delivery': 'DELIVERED'})
         finally:
             other.close()
 

@@ -31,9 +31,31 @@ def status(db):
             'logical_documents': {k: int(v) for k, v in views.items()},
             'observations': observation['rows_count'],
             'maintenance': db.metadata('maintenance'), 'daily': daily,
+            'live_filesystem_headroom': {'at_ms': millis(), 'volumes': filesystem_headroom(
+                [db.blobs.root, *db.settings.get('capacity_paths', [])])},
             'last_physical_measurement': next((r for r in reversed(daily)
                                                if 'allocated_file_bytes' in r), None),
             'host_capacity': db.metadata('capacity.host'), 'host_daily': db.metadata('capacity.host.daily')}
+
+
+def filesystem_headroom(paths):
+    """Read live capacity pressure per filesystem without enumerating its files.
+
+    This includes writes by processes outside the catalog. It is a filesystem
+    health signal, not an attribution of shared-volume usage to this node.
+    """
+    volumes = {}
+    for raw in paths:
+        path = Path(raw).resolve(strict=True)
+        device = str(path.stat().st_dev)
+        if device not in volumes:
+            blocks = os.statvfs(path)
+            volumes[device] = {'device': device, 'roots': [],
+                'total_bytes': blocks.f_blocks * blocks.f_frsize,
+                'available_bytes': blocks.f_bavail * blocks.f_frsize,
+                'free_bytes': blocks.f_bfree * blocks.f_frsize}
+        volumes[device]['roots'].append(str(path))
+    return sorted(volumes.values(), key=lambda item: item['device'])
 
 
 def protected_documents(db):
@@ -331,7 +353,8 @@ def _maintain(db, *, apply, now):
 
 
 def record_capacity(db, *, now=None, measured=None):
-    """Record daily logical growth; physical bytes appear only after an audit."""
+    """Record daily logical growth and live filesystem pressure without a walk."""
+    headroom = filesystem_headroom([db.blobs.root, *db.settings.get('capacity_paths', [])])
     with db.writer(), db.transaction():
         now_ms = millis(now)
         daily = db.metadata('capacity.daily') or []
@@ -339,7 +362,8 @@ def record_capacity(db, *, now=None, measured=None):
         total = int(db.one('SELECT COALESCE(SUM(byte_length),0) AS bytes FROM blobs')['bytes'])
         db_bytes = db.one('SELECT COALESCE(SUM(data_length+index_length),0) AS bytes FROM information_schema.tables WHERE table_schema=DATABASE()')['bytes']
         record = {'day': day, 'at_ms': now_ms, 'unique_content_bytes': total,
-                  'mysql_table_allocated_bytes': int(db_bytes)}
+                  'mysql_table_allocated_bytes': int(db_bytes),
+                  'filesystem_headroom_at_ms': millis(), 'filesystem_headroom': headroom}
         same_day = next((r for r in reversed(daily) if r['day'] == day), None)
         if measured is not None:
             record.update(measured)
@@ -355,6 +379,12 @@ def record_capacity(db, *, now=None, measured=None):
         history = [r for r in daily if r['day'] != day]
         if history:
             record['net_growth_bytes'] = total - history[-1]['unique_content_bytes']
+            previous = {r['device']: r for r in history[-1].get('filesystem_headroom', [])}
+            for volume in headroom:
+                prior_volume = previous.get(volume['device'])
+                if prior_volume:
+                    volume['available_change_bytes'] = volume['available_bytes'] - prior_volume['available_bytes']
+                    volume['available_change_since_day'] = history[-1]['day']
         if measured is not None:
             prior = next((r for r in reversed(history) if 'allocated_file_bytes' in r), None)
             if prior:

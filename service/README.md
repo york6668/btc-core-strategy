@@ -46,7 +46,7 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 
 备份在短写锁内建立独立 MySQL 一致性读视图并暂时保护其原文，随后释放节点写锁再导出行集、复制与校验内容。复制期间正常分析和 reader 可以提交，备份只包含快照时点的数据；清单分别记录快照和完成时间。临时保护由备份连接单独持有的 MySQL 锁维持，进程中断后由下一次备份或清理事务回收；恢复归档不包含这些临时引用。未完成目录没有有效清单，不作可恢复备份。
 
-维护首次启用前验证实际恢复。maintenance_enabled 默认 false；启用后每日先备份再清理，备份默认七天且至少保留两份。引用保护、回收缓冲和生命周期均由 lifecycle 执行；Compose 限制日志轮转。每日记录逻辑内容、去重字节与 MySQL 表分配量；不为生成每日记录遍历所有备份硬链接。`storage.status.last_physical_measurement` 明确保留最近一次按 inode 去重的精确文件占用及测量时间，未测量的自然日标为 `NOT_MEASURED`，不能当作零或当天实际占用。需要核对实际文件占用时显式执行 `python -m btc_node --config <节点配置> capacity-audit`；它仍逐项读取配置范围内的文件元数据，应安排在资源允许的窗口，不与共享 VM 的其他重负载重叠。删除行不等于 InnoDB 卷缩小。
+维护首次启用前验证实际恢复。maintenance_enabled 默认 false；启用后每日先备份再清理，备份默认七天且至少保留两份。引用保护、回收缓冲和生命周期均由 lifecycle 执行；Compose 限制日志轮转。每日记录 MySQL 权威的去重内容增长、表分配量和各证据文件系统的实时可用/总字节；`storage.status.live_filesystem_headroom` 每次请求重新读取文件系统余量，无须遍历备份硬链接。外部写入和同卷其他项目的变化都会反映在可用字节及逐日差值中；它只能发现压力，不能把变化归因到本节点。若需要本节点文件占用的精确归因，`storage.status.last_physical_measurement` 保留最近一次按 inode 去重的审计值与真实测量时间，未测量自然日标为 `NOT_MEASURED`，不得当作零或当天实际占用。显式执行 `python -m btc_node --config <节点配置> capacity-audit` 获取新审计值；它仍逐项读取配置范围内的文件元数据，应安排在资源允许的窗口，不与共享 VM 的其他重负载重叠。每日健康使用文件系统余量，不依赖人工启动审计；删除行不等于 InnoDB 卷缩小。
 
 故障过程材料通过 `failure.get` / `failure.resolve` 接续。兼容导入识别 `failure-receipt.json`、`*-failure.json`、`*-error.json` 中的失败记录；没有证据绑定的明确关闭时保持 ACTIVE。关闭要求当前 document_key、原文 digest、expected_version、已成功提交的核心恢复或验收修复 operation_id 和原因；文件旧、后续运行成功或接口登记本身均不推断恢复。14 天从本次实际关闭确认计时，重复关闭不延后；同路径新故障恢复 OPEN。原文、关闭证据和历史仍由精简记录引用保存，文件回收仍检查依赖和 48 小时缓冲。
 

@@ -204,6 +204,12 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(other.read_text(),'keep\n')
         with patch('os.scandir',side_effect=PermissionError('generated denied directory')):
             with self.assertRaises(PermissionError):capacity.allocated([self.base])
+        first=self.base/'capacity-first'; first.write_bytes(b'first')
+        alias=self.base/'capacity-alias';os.link(first,alias)
+        second=self.base/'capacity-second';second.write_bytes(b'second')
+        with patch.object(capacity,'MAX_INODE_KEYS',2):
+            expected=first.stat().st_blocks*512+second.stat().st_blocks*512
+            self.assertEqual(capacity.allocated([first,alias,second,first]),expected)
 
     def test_native_transport_preserves_template_binding_and_freezes_authored_answers(self):
         module_spec=importlib.util.spec_from_file_location('btc_test_bridge',ROOT/'skill/btc-core-strategy/scripts/node_bridge.py')

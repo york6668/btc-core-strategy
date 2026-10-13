@@ -4,8 +4,14 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import sqlite3
+from stat import S_ISREG, S_ISLNK
 import subprocess
+from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
+
+
+MAX_INODE_KEYS = 65536
 
 
 def native_logs(entries):
@@ -38,20 +44,43 @@ def native_logs(entries):
 
 def allocated(paths):
     seen=set();total=0
+    spill=connection=cursor=None
     def unreadable(error):
         raise error
-    for raw in paths:
-        root=Path(raw)
-        try:root.lstat()
-        except FileNotFoundError:continue
-        # rglob suppresses some traversal errors. An unattended launchd job
-        # must report denied Documents access rather than count it as zero.
-        files=([root] if root.is_file() else
-               (Path(directory)/name for directory,_,names in os.walk(root,onerror=unreadable) for name in names))
-        for path in files:
-            if path.is_symlink() or not path.is_file():continue
-            stat=path.stat();key=(stat.st_dev,stat.st_ino)
-            if key not in seen:seen.add(key);total+=stat.st_blocks*512
+    try:
+        for raw in paths:
+            root=Path(raw)
+            try:root_stat=root.lstat()
+            except FileNotFoundError:continue
+            # rglob suppresses some traversal errors. An unattended launchd
+            # job must report denied access rather than count it as zero.
+            files=([root] if S_ISREG(root_stat.st_mode) else
+                   (Path(directory)/name for directory,_,names in os.walk(root,onerror=unreadable) for name in names))
+            for path in files:
+                try:metadata=path.lstat()
+                except FileNotFoundError:continue
+                if S_ISLNK(metadata.st_mode) or not S_ISREG(metadata.st_mode):continue
+                key=(metadata.st_dev,metadata.st_ino)
+                if connection is None:
+                    if key in seen:continue
+                    seen.add(key);total+=metadata.st_blocks*512
+                    if len(seen)==MAX_INODE_KEYS:
+                        spill=TemporaryDirectory(prefix='btc-host-capacity-')
+                        connection=sqlite3.connect(Path(spill.name)/'inodes.sqlite3')
+                        connection.execute('PRAGMA journal_mode=OFF')
+                        connection.execute('PRAGMA synchronous=OFF')
+                        connection.execute('PRAGMA cache_size=-4096')
+                        connection.execute('CREATE TABLE inodes(identity TEXT PRIMARY KEY) WITHOUT ROWID')
+                        cursor=connection.cursor()
+                        cursor.executemany('INSERT INTO inodes VALUES (?)',
+                            ((str(dev)+':'+str(ino),) for dev,ino in seen))
+                        seen.clear()
+                elif cursor.execute('INSERT OR IGNORE INTO inodes VALUES (?)',
+                                    (str(key[0])+':'+str(key[1]),)).rowcount:
+                    total+=metadata.st_blocks*512
+    finally:
+        if connection is not None:connection.close()
+        if spill is not None:spill.cleanup()
     return total
 
 
