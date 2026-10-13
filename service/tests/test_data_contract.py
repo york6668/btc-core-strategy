@@ -819,6 +819,35 @@ class NodeContract(unittest.TestCase):
                 with self.assertRaises(PermissionError): allocated([root])
             with self.assertRaises(FileNotFoundError): allocated([root/'missing'])
 
+    def test_daily_maintenance_records_growth_without_a_million_path_audit(self):
+        from btc_node.lifecycle import daily, status
+        self.db.settings = {**self.db.settings, 'maintenance_enabled': False}
+        previous_daily = self.db.metadata('capacity.daily')
+        previous_maintenance = self.db.metadata('maintenance.daily')
+        try:
+            with self.db.transaction():
+                self.db.metadata('capacity.daily', [], write=True)
+                self.db.metadata('maintenance.daily', {'day': '2000-01-01'}, write=True)
+            with patch('btc_node.lifecycle.allocated', side_effect=AssertionError('daily full walk')), \
+                    patch('btc_node.lifecycle.measure_capacity', side_effect=AssertionError('daily audit')):
+                result = daily(self.db)
+            self.assertIsNone(result['content_allocated_bytes'])
+            sample = status(self.db)['daily'][-1]
+            self.assertEqual(sample['allocated_file_bytes_status'], 'NOT_MEASURED')
+            self.assertNotIn('allocated_file_bytes', sample)
+            self.assertIn('unique_content_bytes', sample)
+            audit = subprocess.run([sys.executable, '-B', '-m', 'btc_node', '--config',
+                                    os.environ['BTC_TEST_CONFIG'], 'capacity-audit'],
+                                   capture_output=True, text=True, check=True)
+            measured = json.loads(audit.stdout)
+            self.assertEqual(measured['allocated_file_bytes_status'], 'MEASURED')
+            self.assertIn('allocated_file_bytes', measured)
+            self.assertLessEqual(measured['measurement_started_ms'], measured['physical_measured_at_ms'])
+        finally:
+            with self.db.transaction():
+                self.db.metadata('capacity.daily', previous_daily, write=True)
+                self.db.metadata('maintenance.daily', previous_maintenance, write=True)
+
     def test_capacity_spill_preserves_exact_hardlink_accounting(self):
         from btc_node.lifecycle import allocated
         with tempfile.TemporaryDirectory() as directory:
@@ -959,12 +988,18 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(before['retention_class'],'ACTIVE')
                 mutable.write_text('{"value":2}')
                 reads=[]; original=Path.lstat
+                walked=[]; original_walk=os.walk
                 def counted(path,*args,**kwargs):
                     reads.append(path);return original(path,*args,**kwargs)
-                with patch.object(Path,'lstat',counted):
+                def tracked_walk(*args,**kwargs):
+                    for item in original_walk(*args,**kwargs):
+                        walked.append(item[0]);yield item
+                with patch.object(Path,'lstat',counted), patch.object(Path,'rglob',side_effect=AssertionError('full run search')), \
+                        patch('btc_node.catalog.os.walk',tracked_walk):
                     second=catalog.sync(self.id,root,hardlink=True)
                 self.assertEqual(second['immutable_files_reused'],1)
                 self.assertNotIn(source,reads)
+                self.assertNotIn(str(raw),walked)
                 self.assertIn(str(mutable.relative_to(root)),second['changed'])
                 (run/'run.json').write_text('{"status":"COMPLETED"}')
                 third=catalog.sync(self.id,root,hardlink=True)

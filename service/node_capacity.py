@@ -78,7 +78,7 @@ def capture(node_path):
         'native_logs':native,'native_log_allocated_bytes':sum(r['allocated_bytes'] for r in native),
         'node_extra_allocated_bytes':allocated(node.get('capacity_extra_paths',[])),
         'log_physical_limit_per_container_bytes':30*1024*1024,
-        'meaning':'MySQL du allocated blocks; retained log stream excludes driver framing. Native logs and explicit node extras are separate; File/CAS/backup allocation is measured by storage.status.'}
+        'meaning':'MySQL du allocated blocks; retained log stream excludes driver framing. Native logs and explicit node extras are separate; storage.status reports the timestamped last exact File/CAS/backup allocation audit, which may predate today.'}
     saved=subprocess.run(command+['exec','-T','core','python','-m','btc_node','request'],
         input=json.dumps({'method':'host.capacity','params':value}),text=True,capture_output=True,timeout=60)
     if saved.returncode or not json.loads(saved.stdout).get('ok'):raise RuntimeError('capacity record failed')

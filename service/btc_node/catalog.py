@@ -132,7 +132,7 @@ class Catalog:
         root = Path(root).resolve()
         if not root.is_dir():
             raise ValueError('namespace source does not exist')
-        existing = {row['path']: row for row in self.db.rows('SELECT * FROM documents WHERE namespace=%s', (namespace,))}
+        existing = {row['path']: row for row in self.db.iter_rows('SELECT * FROM documents WHERE namespace=%s', (namespace,))}
         # A verified raw directory contains immutable CAS hardlinks. Its entry
         # clock and complete filename/manifest set detect additions, removal,
         # and recovery. Do not stat every historical original on every command.
@@ -143,43 +143,87 @@ class Catalog:
         cached = (cache or {}).get('directories', {}) if (cache or {}).get('root') == str(root) else {}
         raw_groups = self.raw_directories(existing.values()) if shared else {}
         candidates, reused, reused_files = {}, 0, 0
-        existing_databases = {row['path'] for row in self.db.rows('SELECT path FROM legacy_databases WHERE namespace=%s', (namespace,))}
+        existing_databases = {row['path'] for row in self.db.iter_rows('SELECT path FROM legacy_databases WHERE namespace=%s', (namespace,))}
         # A run with a completed report decision has finished its analysis
         # flow. Pending research/delivery references are protected separately.
         pending = []
-        for run in root.rglob('run.json'):
+        def pending_run(run):
             if not any(run.parent.glob('report-*-receipt.json')):
                 try:
                     if json.loads(run.read_bytes()).get('status') == 'COMPLETED':
-                        continue
+                        return None
                 except (ValueError, OSError):
                     pass
-                pending.append(str(run.parent.relative_to(root)))
-        protect = tuple(protect) + tuple(pending)
+                return str(run.parent.relative_to(root))
+            return None
+        # Only known run descriptors need a read. Newly created run descriptors
+        # are picked up when their parent directory is reached below.
+        for relative in existing:
+            if Path(relative).name == 'run.json':
+                candidate = root / relative
+                if candidate.is_file():
+                    value = pending_run(candidate)
+                    if value is not None:
+                        pending.append(value)
+        protect = set(protect) | set(pending)
+        def is_protected(relative):
+            if relative in protect:
+                return True
+            slash = relative.rfind('/')
+            while slash >= 0:
+                if relative[:slash] in protect:
+                    return True
+                slash = relative.rfind('/', 0, slash)
+            return False
         seen, changed, databases = set(), [], []
+        def reuse_raw(relative_directory, group, clock):
+            # Directory entry and change clocks are the invalidation signal;
+            # all document and retention decisions still come from MySQL.
+            for row in group:
+                relative = row['path']
+                policy = 'ACTIVE' if is_protected(relative) else (default_retention or retention(relative))
+                ttl = RETENTION_DAYS[policy]
+                expires = row['source_mtime_ns'] // 1000000 + ttl * DAY if ttl else None
+                if row['retention_class'] != policy or row['expires_ms'] != expires:
+                    self.db.execute('UPDATE documents SET retention_class=%s,expires_ms=%s WHERE document_key=%s',
+                                    (policy, expires, row['document_key']))
+                    self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (row['document_key'],))
+                seen.add(relative)
+            candidates[relative_directory] = (None, clock.st_mtime_ns, clock.st_ctime_ns)
+            return len(group)
         for directory, dirs, files in os.walk(root, followlinks=False):
             relative_directory = str(Path(directory).relative_to(root))
+            run = Path(directory) / 'run.json'
+            if 'run.json' in files and str(run.relative_to(root)) not in existing:
+                value = pending_run(run)
+                if value is not None:
+                    protect.add(value)
+            # The immutable raw leaf can contain many historical originals.
+            # Check its directory clocks before entering and enumerating every
+            # name; a changed directory takes the full import/verification path.
+            if shared:
+                for name in list(dirs):
+                    child = Path(directory) / name
+                    child_relative = str(child.relative_to(root))
+                    group = raw_groups.get(child_relative)
+                    prior = cached.get(child_relative)
+                    if (name == 'raw' and group and prior and not child.is_symlink()
+                            and prior.get('source_ctime_ns') is not None):
+                        clock = child.stat()
+                        if (clock.st_mtime_ns == prior['source_mtime_ns']
+                                and clock.st_ctime_ns == prior['source_ctime_ns']
+                                and prior['manifest'] == self.raw_manifest(group)):
+                            reused_files += reuse_raw(child_relative, group, clock)
+                            reused += 1
+                            dirs.remove(name)
             group = raw_groups.get(relative_directory)
             prior_directory = cached.get(relative_directory)
             if (shared and not dirs and group and prior_directory
                     and set(files) == {Path(row['path']).name for row in group}
                     and prior_directory['source_mtime_ns'] == Path(directory).stat().st_mtime_ns
                     and prior_directory['manifest'] == self.raw_manifest(group)):
-                # Policy changes still apply to every original document clock;
-                # a completed run does not remain ACTIVE because it was cached.
-                for row in group:
-                    relative = row['path']
-                    policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
-                    ttl = RETENTION_DAYS[policy]
-                    expires = row['source_mtime_ns'] // 1000000 + ttl * DAY if ttl else None
-                    if row['retention_class'] != policy or row['expires_ms'] != expires:
-                        self.db.execute('UPDATE documents SET retention_class=%s,expires_ms=%s WHERE document_key=%s',
-                                        (policy, expires, row['document_key']))
-                        self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (row['document_key'],))
-                    seen.add(relative)
-                candidates[relative_directory] = (set(files), prior_directory['source_mtime_ns'])
+                reused_files += reuse_raw(relative_directory, group, Path(directory).stat())
                 reused += 1
-                reused_files += len(group)
                 continue
             for name in list(dirs):
                 if (Path(directory) / name).is_symlink():
@@ -201,7 +245,7 @@ class Catalog:
                     original = self.db.blobs.path(prior['digest'])
                     immutable = immutable or (original.is_file() and original.samefile(path))
                 source_mtime_ns = prior['source_mtime_ns'] if immutable else stat.st_mtime_ns
-                policy = 'ACTIVE' if any(relative == p or relative.startswith(p.rstrip('/') + '/') for p in protect) else (default_retention or retention(relative))
+                policy = 'ACTIVE' if is_protected(relative) else (default_retention or retention(relative))
                 ttl = RETENTION_DAYS[policy]
                 expires = source_mtime_ns // 1000000 + ttl * DAY if ttl else None
                 if not path.is_symlink() and (name == 'failure-receipt.json' or name.endswith(('-failure.json', '-error.json'))):
@@ -270,7 +314,8 @@ class Catalog:
                     # Do not link arbitrary mutable binaries to immutable content.
                     self.share_original(path, digest)
             if shared and Path(directory).name == 'raw' and not dirs:
-                candidates[relative_directory] = (set(files), Path(directory).stat().st_mtime_ns)
+                clock = Path(directory).stat()
+                candidates[relative_directory] = (set(files), clock.st_mtime_ns, clock.st_ctime_ns)
         missing = (set(existing) | existing_databases) - seen
         for relative in missing:
             self.remove_sqlite(identity(namespace,relative))
@@ -278,19 +323,22 @@ class Catalog:
             self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (identity(namespace, relative),))
         self.db.metadata('namespace:' + namespace, {'root': str(root), 'checked_ms': millis()}, write=True)
         if shared:
-            final_groups = self.raw_directories(self.db.rows('SELECT * FROM documents WHERE namespace=%s', (namespace,)))
+            final_groups = self.raw_directories(self.db.iter_rows('SELECT path,digest,kind,retention_class,byte_length '
+                'FROM documents WHERE namespace=%s', (namespace,)))
             directories = {}
-            for name, (filenames, clock) in candidates.items():
+            for name, (filenames, clock, change_clock) in candidates.items():
                 group = final_groups.get(name)
-                if not group or filenames != {Path(row['path']).name for row in group}:
+                if not group or (filenames is not None and filenames != {Path(row['path']).name for row in group}):
                     continue
                 # First entry requires actual inode verification. Subsequent
                 # unchanged entries reuse that result; a dirty directory is
                 # always scanned and verified again.
-                if name not in cached or cached[name].get('source_mtime_ns') != clock:
+                if (name not in cached or cached[name].get('source_mtime_ns') != clock
+                        or cached[name].get('source_ctime_ns') != change_clock):
                     if not all(self.db.blobs.path(row['digest']).samefile(root / row['path']) for row in group):
                         continue
-                directories[name] = {'source_mtime_ns': clock, 'manifest': self.raw_manifest(group)}
+                directories[name] = {'source_mtime_ns': clock, 'source_ctime_ns': change_clock,
+                                     'manifest': self.raw_manifest(group)}
             value = {'root': str(root), 'directories': directories}
             if value != cache:
                 self.db.metadata(cache_key, value, write=True)

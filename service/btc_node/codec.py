@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 
@@ -38,6 +39,14 @@ def encode(value):
 
 def fingerprint(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def fingerprint_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def identity(*parts):
@@ -110,7 +119,8 @@ class Blobs:
     def materialize(self, digest, destination, *, require_link=False):
         destination = Path(destination)
         source = self.path(digest)
-        self.get(digest)
+        if fingerprint_file(source) != digest:
+            raise Conflict('stored content checksum mismatch')
         if destination.is_file() and source.samefile(destination):
             return
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -124,8 +134,8 @@ class Blobs:
                 if require_link:
                     raise Conflict('immutable evidence must share the content volume; hardlink failed: '
                                    + str(error.errno)) from error
-                with temporary.open('xb') as handle:
-                    handle.write(self.get(digest))
+                with source.open('rb') as original, temporary.open('xb') as handle:
+                    shutil.copyfileobj(original, handle, length=1024 * 1024)
                     handle.flush()
                     os.fsync(handle.fileno())
             os.replace(temporary, destination)

@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import uuid
 
-from .codec import Blobs, Conflict, encode, fingerprint, millis, sync_directory
+from .codec import Blobs, Conflict, encode, fingerprint_file, millis, sync_directory
 from .database import Database
 
 
@@ -74,12 +74,13 @@ def create(db, destination):
                 stream.write(encode({'table':table,'create':schema}))
                 # Temporary copying leases must never become permanent
                 # references when restoring this consistent snapshot.
-                rows = (snapshot.rows('SELECT * FROM '+quoted+' WHERE name NOT LIKE %s', (PIN_PREFIX+'%',))
-                        if table == 'metadata_blobs' else snapshot.rows('SELECT * FROM '+quoted))
-                counts[table]=len(rows)
+                rows = (snapshot.iter_rows('SELECT * FROM '+quoted+' WHERE name NOT LIKE %s', (PIN_PREFIX+'%',))
+                        if table == 'metadata_blobs' else snapshot.iter_rows('SELECT * FROM '+quoted))
+                counts[table]=0
                 for row in rows:
                     stream.write(encode({'table':table,'row':row}))
-        for row in snapshot.rows('SELECT digest FROM blobs'):
+                    counts[table]+=1
+        for row in snapshot.iter_rows('SELECT digest FROM blobs'):
             digest=row['digest']
             target=backup_blobs.path(digest)
             target.parent.mkdir(parents=True,exist_ok=True)
@@ -87,7 +88,7 @@ def create(db, destination):
             # lifecycle sweeps run while these files are copied/verified.
             db.blobs.materialize(digest,target)
         manifest={'format':'BTC_MYSQL_BACKUP_V1','created_ms':snapshot_ms,'completed_ms':millis(),
-                  'tables':counts,'database_sha256':fingerprint((stage/'database.jsonl.gz').read_bytes())}
+                  'tables':counts,'database_sha256':fingerprint_file(stage/'database.jsonl.gz')}
         (stage/'manifest.json').write_bytes(encode(manifest))
         (stage/'in-progress.json').unlink()
         for path in (stage/'manifest.json',stage/'database.jsonl.gz'):
@@ -114,7 +115,7 @@ def create(db, destination):
 def restore(db, source):
     source=Path(source)
     manifest=json.loads((source/'manifest.json').read_bytes())
-    if manifest.get('format')!='BTC_MYSQL_BACKUP_V1' or fingerprint((source/'database.jsonl.gz').read_bytes())!=manifest['database_sha256']:
+    if manifest.get('format')!='BTC_MYSQL_BACKUP_V1' or fingerprint_file(source/'database.jsonl.gz')!=manifest['database_sha256']:
         raise Conflict('backup is damaged')
     with db.writer():
         existing=[next(iter(r.values())) for r in db.rows('SHOW TABLES')]
@@ -125,8 +126,7 @@ def restore(db, source):
         archived=Blobs(source/'objects')
         for path in archived.root.glob('*/*'):
             digest=path.parent.name+path.name
-            if db.blobs.put(archived.get(digest))!=digest:
-                raise Conflict('restored evidence hash changed')
+            archived.materialize(digest, db.blobs.path(digest))
         db.execute('SET FOREIGN_KEY_CHECKS=0')
         try:
             for table in existing:db.execute('DROP TABLE '+identifier(table))
@@ -149,5 +149,7 @@ def restore(db, source):
             db.connection.commit()
         finally:
             db.execute('SET FOREIGN_KEY_CHECKS=1')
-        for row in db.rows('SELECT digest FROM blobs'):db.blobs.get(row['digest'])
+        for row in db.iter_rows('SELECT digest FROM blobs'):
+            if fingerprint_file(db.blobs.path(row['digest'])) != row['digest']:
+                raise Conflict('restored evidence hash changed')
         return {'restored':True,'tables':counts,'source':str(source)}

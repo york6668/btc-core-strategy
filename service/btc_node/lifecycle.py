@@ -1,6 +1,7 @@
 """Retention is independent of analytical validity and freshness."""
 from __future__ import annotations
 
+from bisect import bisect_left
 from datetime import datetime
 import json
 import os
@@ -25,10 +26,13 @@ def status(db):
     content = db.one('SELECT COUNT(*) AS objects,COALESCE(SUM(byte_length),0) AS bytes FROM blobs')
     views = db.one('SELECT COUNT(*) AS paths,COALESCE(SUM(byte_length),0) AS bytes FROM documents')
     observation = db.one('SELECT COUNT(*) AS rows_count FROM observations')
+    daily = db.metadata('capacity.daily') or []
     return {'unique_content': {k: int(v) for k, v in content.items()},
             'logical_documents': {k: int(v) for k, v in views.items()},
             'observations': observation['rows_count'],
-            'maintenance': db.metadata('maintenance'), 'daily': db.metadata('capacity.daily'),
+            'maintenance': db.metadata('maintenance'), 'daily': daily,
+            'last_physical_measurement': next((r for r in reversed(daily)
+                                               if 'allocated_file_bytes' in r), None),
             'host_capacity': db.metadata('capacity.host'), 'host_daily': db.metadata('capacity.host.daily')}
 
 
@@ -38,21 +42,25 @@ def protected_documents(db):
     A raw blob's existence is not an active judgement. Conversely a reference
     from a retained decision, research or delivery keeps its recovery paths.
     """
-    records = db.rows('SELECT * FROM documents')
-    by_key = {r['document_key']: r for r in records}
-    by_digest, by_path, by_bundle = {}, {}, {}
+    # The graph needs the rows for indexed lookups, but need not first hold a
+    # second, buffered copy of the complete MySQL result.
+    by_key = {r['document_key']: r for r in db.iter_rows('SELECT * FROM documents')}
+    by_digest, by_path, by_bundle, namespace_paths = {}, {}, {}, {}
     roots = {}
-    for r in records:
+    for r in by_key.values():
         namespace = r['namespace']
         if namespace not in roots:
             roots[namespace] = (db.metadata('namespace:' + namespace) or {}).get('root')
         if r['digest']:
             by_digest.setdefault(r['digest'], []).append(r['document_key'])
         by_path[(namespace, r['path'])] = r['document_key']
+        namespace_paths.setdefault(namespace, []).append(r['path'])
         match = re.search(r'(?:^|/)evidence/([a-f0-9]{64})(?:/|$)', r['path'])
         if match:
             by_bundle.setdefault(match[1], []).append(r['document_key'])
-    pending = [r['document_key'] for r in records if r['retention_class'] in {'ACTIVE', 'KEY', 'DAILY'}]
+    pending = [r['document_key'] for r in by_key.values() if r['retention_class'] in {'ACTIVE', 'KEY', 'DAILY'}]
+    for paths in namespace_paths.values():
+        paths.sort()
     for row in db.rows("SELECT DISTINCT target_key FROM dependencies WHERE target_type='BLOB'"):
         pending.extend(by_digest.get(row['target_key'], ()))
     def protect_value(value):
@@ -82,9 +90,15 @@ def protected_documents(db):
                 target = Path(root or '/') / Path(row['path']).parent / target
             if root:
                 relative = os.path.relpath(os.path.normpath(str(target)), root)
-                for candidate in records:
-                    if candidate['namespace'] == row['namespace'] and (candidate['path'] == relative or candidate['path'].startswith(relative.rstrip('/') + '/')):
-                        pending.append(candidate['document_key'])
+                key = by_path.get((row['namespace'], relative))
+                if key:
+                    pending.append(key)
+                prefix = relative.rstrip('/') + '/'
+                paths = namespace_paths[row['namespace']]
+                index = bisect_left(paths, prefix)
+                while index < len(paths) and paths[index].startswith(prefix):
+                    pending.append(by_path[(row['namespace'], paths[index])])
+                    index += 1
             continue
         if not row['digest'] or row['digest'] in decoded or not row['path'].endswith('.json') or row['byte_length'] > 32*1024*1024:
             continue
@@ -170,15 +184,19 @@ def allocated(paths):
     return total
 
 
-def maintain(db, *, apply=False, now=None):
+def maintain(db, *, apply=False, now=None, measure_files=True):
     with db.writer():
         result = _maintain(db, apply=apply, now=now)
-    # Docker bind-mount traversal can take minutes. It is a capacity observation,
-    # not a business mutation; never keep the node writer locked while walking
-    # the evidence, backup and compatibility directories.
-    measure_capacity(db, now=now)
-    result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*')
-        if p.is_file() and re.fullmatch('[a-f0-9]{64}', p.parent.name + p.name))
+    # The daily lifecycle needs a logical growth record, not a fresh physical
+    # audit of every hard link in every retained backup. An explicit maintenance
+    # call still provides the exact inode-based physical measurement.
+    if measure_files:
+        measure_capacity(db, now=now)
+        result['content_allocated_bytes'] = sum(p.stat().st_blocks * 512 for p in db.blobs.root.glob('*/*')
+            if p.is_file() and re.fullmatch('[a-f0-9]{64}', p.parent.name + p.name))
+    else:
+        record_capacity(db, now=now)
+        result['content_allocated_bytes'] = None
     return result
 
 
@@ -312,27 +330,47 @@ def _maintain(db, *, apply, now):
     return result
 
 
-def measure_capacity(db, *, now=None):
-    started = millis()
-    real_bytes = allocated([db.blobs.root, *db.settings.get('capacity_paths', [])])
-    # Record the measurement interval because live analysis can keep writing
-    # during the walk. No unreadable path produces a successful zero sample.
+def record_capacity(db, *, now=None, measured=None):
+    """Record daily logical growth; physical bytes appear only after an audit."""
     with db.writer(), db.transaction():
         now_ms = millis(now)
         daily = db.metadata('capacity.daily') or []
         day = datetime.fromtimestamp(now_ms / 1000, ZoneInfo('Asia/Tokyo')).date().isoformat()
         total = int(db.one('SELECT COALESCE(SUM(byte_length),0) AS bytes FROM blobs')['bytes'])
         db_bytes = db.one('SELECT COALESCE(SUM(data_length+index_length),0) AS bytes FROM information_schema.tables WHERE table_schema=DATABASE()')['bytes']
-        record = {'day': day, 'at_ms': now_ms, 'measurement_started_ms': started,
-                  'unique_content_bytes': total, 'allocated_file_bytes': real_bytes,
+        record = {'day': day, 'at_ms': now_ms, 'unique_content_bytes': total,
                   'mysql_table_allocated_bytes': int(db_bytes)}
+        same_day = next((r for r in reversed(daily) if r['day'] == day), None)
+        if measured is not None:
+            record.update(measured)
+            record['allocated_file_bytes_status'] = 'MEASURED'
+        elif same_day and 'allocated_file_bytes' in same_day:
+            for field in ('measurement_started_ms', 'physical_measured_at_ms', 'allocated_file_bytes',
+                          'allocated_file_growth_bytes', 'allocated_file_growth_since_day'):
+                if field in same_day:
+                    record[field] = same_day[field]
+            record['allocated_file_bytes_status'] = 'MEASURED_EARLIER_TODAY'
+        else:
+            record['allocated_file_bytes_status'] = 'NOT_MEASURED'
         history = [r for r in daily if r['day'] != day]
         if history:
             record['net_growth_bytes'] = total - history[-1]['unique_content_bytes']
-            if 'allocated_file_bytes' in history[-1]:
-                record['allocated_file_growth_bytes'] = real_bytes - history[-1]['allocated_file_bytes']
+        if measured is not None:
+            prior = next((r for r in reversed(history) if 'allocated_file_bytes' in r), None)
+            if prior:
+                record['allocated_file_growth_bytes'] = measured['allocated_file_bytes'] - prior['allocated_file_bytes']
+                record['allocated_file_growth_since_day'] = prior['day']
         db.metadata('capacity.daily', (history + [record])[-401:], write=True)
     return record
+
+
+def measure_capacity(db, *, now=None):
+    started = millis()
+    real_bytes = allocated([db.blobs.root, *db.settings.get('capacity_paths', [])])
+    # The interval matters because live analysis can write during an audit.
+    # No unreadable path produces a successful zero sample.
+    return record_capacity(db, now=now, measured={'measurement_started_ms': started,
+        'physical_measured_at_ms': millis(), 'allocated_file_bytes': real_bytes})
 
 
 def prune_backups(root, *, now_ms, keep_days):
@@ -376,7 +414,7 @@ def daily(db):
         # Named migration/recovery backups obey the same lifetime as daily
         # backups; a non-date directory name must not retain raw data forever.
         prune_backups(root,now_ms=millis(),keep_days=keep_days)
-    result=maintain(db, apply=db.settings.get('maintenance_enabled', False))
+    result=maintain(db, apply=db.settings.get('maintenance_enabled', False), measure_files=False)
     if db.settings.get('maintenance_enabled'):
         with db.writer(),db.transaction(): db.metadata('maintenance.daily',{'day':day,'result':result},write=True)
     return result

@@ -37,6 +37,18 @@ class Database:
             cursor.execute(sql, args)
             return list(cursor.fetchall())
 
+    def iter_rows(self, sql, args=()):
+        """Stream a large result without buffering it in the client process.
+
+        The caller must consume or close the iterator before issuing another
+        query on this connection. In particular, backups use a dedicated
+        consistent-snapshot connection for this stream.
+        """
+        import pymysql
+        with self.connection.cursor(pymysql.cursors.SSDictCursor) as cursor:
+            cursor.execute(sql, args)
+            yield from cursor
+
     def one(self, sql, args=()):
         rows = self.rows(sql, args)
         return rows[0] if rows else None

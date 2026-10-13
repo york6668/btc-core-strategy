@@ -76,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=os.environ.get('BTC_SERVICE_CONFIG'))
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop'):
+    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop', 'capacity-audit'):
         sub.add_parser(name)
     for name in ('import', 'compare', 'restore'):
         p = sub.add_parser(name)
@@ -118,6 +118,13 @@ def main():
                 compatibility.parent.mkdir(parents=True, exist_ok=True)
                 compatibility.symlink_to(settings['compatibility_root'], target_is_directory=True)
         serve(settings)
+    elif args.command == 'capacity-audit':
+        from .lifecycle import measure_capacity
+        db = Database(settings)
+        try:
+            print(json.dumps(measure_capacity(db), ensure_ascii=False))
+        finally:
+            db.close()
     elif args.command.startswith('maintenance'):
         from .lifecycle import daily
         while True:
