@@ -121,30 +121,68 @@ def defect(db, *, reason, affected_days, criteria):
     return status(db)
 
 
-def repair(db, *, defect_index, release, reason, evidence_refs, preserve_window=False):
-    """Close an evidenced repair; scoped follow-ups retain the shared window.
+def _scope(value, name, *, allow_empty=False):
+    if (not isinstance(value, list) or (not value and not allow_empty) or
+            any(not isinstance(part, str) or not part.strip() or part != part.strip() for part in value) or
+            len(value) != len(set(value))):
+        raise ValueError(name + ' must be a list of distinct non-empty scope names')
+    return value
 
-    preserve_window is used only after the caller has reviewed actual natural
-    consumption of the scoped correction, not merely its installation/tests.
+
+def repair(db, *, defect_index, release, reason, evidence_refs, preserve_window=False,
+           verified_scope=None, remaining_scope=None):
+    """Record evidenced repair against the original defect without losing gaps.
+
+    Content corrections can use reviewed locked real inputs and the complete
+    consumed result. Adoption, delivery, natural execution and forward outcomes
+    require their actual evidence when those are part of the claimed scope.
+    A scoped repair keeps the shared window and leaves named gaps open.
     """
     state=db.metadata('acceptance')
     if not state or not isinstance(defect_index,int) or not 0<=defect_index<len(state['defects']):
         raise ValueError('repair must reference a recorded defect')
     item=state['defects'][defect_index]
-    if item.get('repair'):
-        raise Conflict('defect already repaired; do not move the observation window again')
     if not reason.strip() or not release.strip():raise ValueError('describe the actual verified repair and release')
     if type(preserve_window) is not bool: raise ValueError('preserve_window must be boolean')
+    scoped = verified_scope is not None or remaining_scope is not None
+    if item.get('repair'):
+        raise Conflict('defect already repaired; do not move the observation window again')
+    prior = item.get('repair_progress')
+    if scoped:
+        verified = _scope(verified_scope, 'verified_scope')
+        remaining = _scope(remaining_scope, 'remaining_scope', allow_empty=True)
+        if not preserve_window or set(verified) & set(remaining):
+            raise ValueError('scoped repair needs preserve_window and disjoint scopes')
+        if prior:
+            outstanding = prior.get('remaining_scope')
+            if not outstanding or not set(verified) <= set(outstanding) or set(remaining) != set(outstanding) - set(verified):
+                raise Conflict('scoped repair must resolve only named remaining scope')
+    elif prior:
+        raise Conflict('scoped repair has remaining work; use its named scope')
     proof=evidence(db,evidence_refs)
-    item['repair']={'release':release,'reason':reason,'evidence':proof,'verified_at':stamp()}
+    milestone={'release':release,'reason':reason,'evidence':proof,'verified_at':stamp()}
+    result=dict(milestone)
     if preserve_window:
-        item['repair']['preserve_window'] = True
+        result['preserve_window'] = True
     else:
         state.setdefault('prior_windows',[]).append({'first_full_day':state['first_full_day'],
             'required_days':state['required_days'],'release':state['release'],'replaced_at':stamp(),
             'defect_index':defect_index})
         state['first_full_day']=(utc().astimezone(JST).date()+timedelta(days=1)).isoformat()
         state['release']=release
+    if scoped:
+        result['verified_scope'] = (prior.get('verified_scope', []) if prior else []) + verified
+        result['remaining_scope'] = remaining
+        result['history'] = (prior.get('history', []) if prior else []) + [dict(milestone, verified_scope=verified)]
+        if remaining:
+            # Older releases only know the repair field. Leave it absent so a
+            # rollback also keeps this original defect open.
+            item['repair_progress'] = result
+        else:
+            item.pop('repair_progress', None)
+            item['repair'] = result
+    else:
+        item['repair'] = result
     db.metadata('acceptance',state,write=True)
     return status(db)
 
@@ -163,9 +201,18 @@ def status(db):
             if check['status'] == 'FAIL': failed.append({'day':day,'criterion':name})
             elif check['status'] == 'REPLAY_ONLY': replay.setdefault(day,[]).append(name)
     open_defects=[i for i,item in enumerate(state.get('defects',[])) if not item.get('repair')]
+    partial_repairs=[{'defect_index':i,'release':item['repair_progress']['release'],
+                      'verified_at':item['repair_progress']['verified_at'],
+                      'verified_scope':item['repair_progress']['verified_scope'],
+                      'remaining_scope':item['repair_progress']['remaining_scope'],
+                      'evidence_digests':[ref['digest'] for event in item['repair_progress']['history']
+                                          for ref in event['evidence']]}
+                     for i,item in enumerate(state.get('defects',[]))
+                     if item.get('repair_progress')]
     return {'status': 'NEEDS_REPAIR' if failed or open_defects else 'FOLLOWING' if missing else 'NATURAL_WINDOW_REVIEWED',
             'scope': 'LOCAL_NATURAL_ACCEPTANCE',
             'required_days': required, 'missing_or_invalid': missing, 'failed': failed,
             'replay_only': replay, 'release': state['release'],
-            'open_defects':open_defects,'prior_windows':state.get('prior_windows',[]),
+            'open_defects':open_defects,'partial_repairs':partial_repairs,
+            'prior_windows':state.get('prior_windows',[]),
             'overall_completion': 'This result covers local natural acceptance only. Source publication, node migration and cloud deployment have separate evidence and status.'}

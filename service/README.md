@@ -64,7 +64,7 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 
 关键缺陷以 `acceptance.defect` 保留失败和受影响窗口，实际修复复验后调用 `acceptance.repair` 绑定缺陷序号、发布及证据。它从次日重开七个完整自然日，原检查与旧窗口历史保留；未解决缺陷始终阻止自然验收通过。
 
-局部行为纠偏沿现有任务逐日追踪，在实际自然输入、结果与必要报告消费已完成审阅后，可用 `acceptance.repair(preserve_window=true)` 关闭该项，保留全局窗口、其他待办与历史。此模式不把安装或测试当作自然通过；未覆盖场景继续待验收。资产风险纠偏的具体接续见核心 Skill 的 runtime-maintenance.md。
+局部行为纠偏沿现有任务追踪。按问题所需审阅锁定真实输入、完整结果和正文消费；采纳、送达、自然执行及后继效果仍需各自实际证据。`acceptance.repair(preserve_window=true, verified_scope=[...], remaining_scope=[...])` 可在原缺陷编号下记录已修范围，`acceptance.status.partial_repairs` 回读仍待场景；未清空 `remaining_scope` 时该编号仍在 `open_defects`。后续仅能从已记录待办中逐项核实并追加证据，全部完成后才关闭该缺陷。旧的不带范围调用保持原整体关闭语义，保留窗口与历史。安装和合成测试不构成内容验收；具体接续见核心 Skill 的 runtime-maintenance.md。
 
 `acceptance.status.scope=LOCAL_NATURAL_ACCEPTANCE` 只表示本机自然验收；源码发布、采集节点迁移、云端环境发布和全新任务验证分别核实，不由本机状态推导，也不作为其他操作的一概前置条件。卖竭投影保留附件前30天原料但不将预热行写成派生观测，避免滚动导出边界撤销旧有效值。
 

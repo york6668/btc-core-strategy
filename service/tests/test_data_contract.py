@@ -819,6 +819,22 @@ class NodeContract(unittest.TestCase):
                 with self.assertRaises(PermissionError): allocated([root])
             with self.assertRaises(FileNotFoundError): allocated([root/'missing'])
 
+    def test_capacity_spill_preserves_exact_hardlink_accounting(self):
+        from btc_node.lifecycle import allocated
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second, third = [root/name for name in ('first','second','third')]
+            for path in (first, second, third):
+                path.write_bytes((path.name*7).encode())
+            nested = root/'nested'; nested.mkdir()
+            os.link(first, nested/'same-inode')
+            (nested/'symlink').symlink_to(second)
+            expected = sum(path.stat().st_blocks * 512 for path in (first,second,third))
+            with patch('btc_node.lifecycle.MAX_INODE_KEYS',2), \
+                    patch('btc_node.lifecycle.sqlite3.connect',wraps=sqlite3.connect) as connect:
+                self.assertEqual(allocated([nested,root,nested]),expected)
+            self.assertEqual(connect.call_count,1)
+
     def test_unchanged_raw_views_share_content_without_changing_retention_clocks(self):
         with tempfile.TemporaryDirectory(dir=self.db.blobs.root) as folder:
             root = Path(folder)
@@ -1327,6 +1343,54 @@ class NodeContract(unittest.TestCase):
         with self.assertRaises(Conflict):
             acceptance.repair(self.db,defect_index=0,release='later',reason='no moving target',
                 evidence_refs=[{'type':'BLOB','digest':proof}])
+
+    def test_scoped_acceptance_repair_retains_original_defect_and_future_gaps(self):
+        from btc_node import acceptance
+        with self.db.transaction():
+            self.db.metadata('acceptance', {'first_full_day':'2026-10-12','required_days':7,
+                'release':'original','days':{},'defects':[]}, write=True)
+            proof = self.db.put_blob(encode({'source':'generated reviewed result','id':self.id}))
+            acceptance.defect(self.db, reason='generated optional risk action correction',
+                affected_days=[], criteria=['personal_allocation','report_delivery'])
+        before = self.db.metadata('acceptance')
+        params = {'defect_index':0,'release':'generated-fixed','reason':'reviewed real-input result and report',
+            'evidence_refs':[{'type':'BLOB','digest':proof}], 'preserve_window':True,
+            'verified_scope':['optional_action_interface','uncertainty_report'],
+            'remaining_scope':['no_response','risk_response']}
+        first = dispatch(self.settings, {'method':'acceptance.repair',
+            'operation_id':self.id+'-repair-1','params':params})
+        self.assertEqual(first['open_defects'],[0])
+        self.assertEqual(first['partial_repairs'][0]['verified_scope'],params['verified_scope'])
+        self.assertEqual(first['partial_repairs'][0]['remaining_scope'],params['remaining_scope'])
+        self.assertEqual(first['partial_repairs'][0]['evidence_digests'],[proof])
+        self.db.connection.commit()  # Refresh this connection after the API writer commits.
+        state = self.db.metadata('acceptance')
+        for key in ('first_full_day','required_days','release','days','prior_windows'):
+            self.assertEqual(state.get(key),before.get(key))
+        self.assertEqual(state['defects'][0]['reason'],before['defects'][0]['reason'])
+        self.assertNotIn('repair',state['defects'][0])
+        self.assertEqual(len(state['defects'][0]['repair_progress']['history']),1)
+        with self.assertRaises(Conflict):
+            acceptance.repair(self.db,**dict(params,verified_scope=['not_outstanding']))
+        with self.assertRaises(ValueError):
+            acceptance.repair(self.db,**dict(params,verified_scope=['no_response'],
+                                              remaining_scope=['no_response','risk_response']))
+        with self.db.transaction():
+            second = acceptance.repair(self.db,**dict(params,verified_scope=['no_response'],
+                remaining_scope=['risk_response'],reason='generated subsequent content review'))
+        self.assertEqual(second['open_defects'],[0])
+        self.assertEqual(second['partial_repairs'][0]['verified_scope'],
+                         ['optional_action_interface','uncertainty_report','no_response'])
+        with self.db.transaction():
+            final = acceptance.repair(self.db,**dict(params,verified_scope=['risk_response'],
+                remaining_scope=[],reason='generated final content review'))
+        self.assertEqual(final['open_defects'],[])
+        self.assertEqual(final['partial_repairs'],[])
+        closed = self.db.metadata('acceptance')['defects'][0]
+        self.assertNotIn('repair_progress',closed)
+        self.assertEqual(len(closed['repair']['history']),3)
+        with self.assertRaises(Conflict):
+            acceptance.repair(self.db,**dict(params,verified_scope=['risk_response'],remaining_scope=[]))
 
     def test_reader_wal_reopen_checkpoints_exact_cursor_before_next_poll(self):
         with tempfile.TemporaryDirectory(prefix='btc-reader-checkpoint-') as directory:

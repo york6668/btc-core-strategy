@@ -7,12 +7,16 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
+from stat import S_ISLNK
+from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from .codec import fingerprint, identity, millis
 
 
 DAY = 86400000
+MAX_INODE_KEYS = 65536
 RETENTION_DAYS = {'CACHE': 1, 'RUN': 7, 'FAILURE_CLOSED': 14, 'RAW': 30,
                   'HOURLY': 400, 'KEY': None, 'ACTIVE': None, 'DAILY': None}
 
@@ -114,6 +118,7 @@ def protected_documents(db):
 
 def allocated(paths):
     seen, total = set(), 0
+    spill, connection, cursor = None, None, None
     roots = []
     for path in paths:
         root = Path(path).resolve()
@@ -125,18 +130,43 @@ def allocated(paths):
         roots.append(root)
     def unreadable(error):
         raise error  # An incomplete traversal is not a zero-size directory.
-    for root in roots:
-        for directory, _, files in os.walk(root, followlinks=False, onerror=unreadable):
-            for name in files:
-                try:
-                    item = Path(directory) / name
-                    if item.is_symlink(): continue
-                    stat = item.stat()
-                except FileNotFoundError:
-                    continue
-                key = (stat.st_dev, stat.st_ino)
-                if key not in seen:
-                    seen.add(key); total += stat.st_blocks * 512
+    try:
+        for root in roots:
+            for directory, _, files in os.walk(root, followlinks=False, onerror=unreadable):
+                for name in files:
+                    try:
+                        metadata = (Path(directory) / name).lstat()
+                    except FileNotFoundError:
+                        continue
+                    if S_ISLNK(metadata.st_mode):
+                        continue
+                    key = (metadata.st_dev, metadata.st_ino)
+                    if connection is None:
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        total += metadata.st_blocks * 512
+                        if len(seen) == MAX_INODE_KEYS:
+                            # The disposable disk index keeps exact hard-link
+                            # accounting without retaining every inode in RAM.
+                            spill = TemporaryDirectory(prefix='btc-capacity-')
+                            connection = sqlite3.connect(Path(spill.name) / 'inodes.sqlite3')
+                            connection.execute('PRAGMA journal_mode=OFF')
+                            connection.execute('PRAGMA synchronous=OFF')
+                            connection.execute('PRAGMA cache_size=-4096')
+                            connection.execute('CREATE TABLE inodes (identity TEXT PRIMARY KEY) WITHOUT ROWID')
+                            cursor = connection.cursor()
+                            cursor.executemany('INSERT INTO inodes VALUES (?)',
+                                ((str(dev) + ':' + str(ino),) for dev, ino in seen))
+                            seen.clear()
+                    elif cursor.execute('INSERT OR IGNORE INTO inodes VALUES (?)',
+                                        (str(key[0]) + ':' + str(key[1]),)).rowcount:
+                        total += metadata.st_blocks * 512
+    finally:
+        if connection is not None:
+            connection.close()
+        if spill is not None:
+            spill.cleanup()
     return total
 
 
