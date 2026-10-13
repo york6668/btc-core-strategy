@@ -89,7 +89,17 @@ def window(value, name):
 
 
 def validate_forward(value, cutoff, resolve, prior=None, revision=6, lifecycle_root=None):
-    exact(value, 'observed_window judgement_window realization_window timing_basis conditions invalidations prior_check' + (' lifecycle' if revision >= 9 else ''), 'forward assessment')
+    old = (prior or {}).get('forward')
+    legacy_update = revision >= 9 and isinstance(value, dict) and 'lifecycle' not in value
+    if legacy_update:
+        require(old is not None and 'lifecycle' not in old,
+                'revision 9 requires a new registered lifecycle; only an actual legacy forward may remain posthoc')
+        # A review may update its observation clock and outcome, but cannot
+        # rewrite the original forecast or gain prospective standing.
+        for field in ('judgement_window', 'realization_window', 'conditions', 'invalidations'):
+            require(value.get(field) == old[field], 'legacy forward cannot rewrite original ' + field)
+    exact(value, 'observed_window judgement_window realization_window timing_basis conditions invalidations prior_check' +
+          (' lifecycle' if revision >= 9 and not legacy_update else ''), 'forward assessment')
     window(value['observed_window'], 'observed_window')
     if revision >= 9 and value['judgement_window']['end'] is None:
         exact(value['judgement_window'], 'start end', 'mechanism judgement window')
@@ -111,7 +121,6 @@ def validate_forward(value, cutoff, resolve, prior=None, revision=6, lifecycle_r
     require(isinstance(checked['refs'], list), 'forward check refs required')
     for ref in checked['refs']:
         resolve(ref)
-    old = (prior or {}).get('forward')
     due = [value['judgement_window']]
     if value['realization_window'] is not None:
         due.append(value['realization_window'])
@@ -122,7 +131,7 @@ def validate_forward(value, cutoff, resolve, prior=None, revision=6, lifecycle_r
         require(checked['outcome'] != 'INITIAL', 'existing forward thesis requires an actual outcome check')
     if any(w['end'] is not None and instant(w['end']) <= instant(cutoff) for w in due):
         require(checked['outcome'] not in ('INITIAL', 'PENDING'), 'expired forward window requires realization review, not automatic renewal')
-    if revision >= 9:
+    if revision >= 9 and not legacy_update:
         from . import forward_lifecycle
         life = value['lifecycle']
         result = forward_lifecycle.validate(life, cutoff, resolve, prior,

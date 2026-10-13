@@ -323,6 +323,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
             'research_finding_fields': ['issue_key','scope','question','material_change','change_kind','change_reason','refs','reopen_condition'],
             'applicability_outcomes': ['VALID','EVIDENCE_LIMITED','REVISE'],
             'reference_formats': {'market_review_recommendation_extra':'Use market_refs string IDs.',
+                                  'public_market':'For horizon refs, counter_refs and forward prior_check.refs use exact source_id/pointer/value_hash objects from reference_index; never omit value_hash.',
                                   'factor_research':'Use exact source_id/pointer/value_hash objects from reference_index.',
                                   'applicability':'Use exact source_id/pointer/value_hash objects from reference_index.'},
             'mobile_numbers': 'Author final Markdown in AUTHORED_REPORT_V1 body; bind verbatim excerpts to frozen scalar refs in bindings. No interpolation, reordering or automatic advice rows. Product prices require price.subject and price.unit.'})

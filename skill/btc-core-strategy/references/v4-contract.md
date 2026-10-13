@@ -259,6 +259,8 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 新入口使用 revision 9，原 revision 1–8 的不可变记录按原接口读取和恢复；它们没有原始形成及检验记录时只提供事后复核，不补填为前瞻通过。既有 DecisionSnapshot、研究与观察继续拥有结论，`market-lifecycle/claims` 仅保存首次公开记录的原条件及保守时间，不是第二份策略或结论 Owner。
 
+升级后的小时观察可以继续复核确实来自旧存储的 `forward`：保留其原 judgement/realization 窗口、conditions 和 invalidations，只更新实际 observed_window、prior_check 与说明，结果仍为 `POSTHOC_ONLY`。新 horizon、新预期或已注册预期的继承必须使用 revision 9 lifecycle；不得为旧记录伪造 formed_at、首次登记、后验样本或支持结论。预检按原持久对象与本轮候选的身份逐项比较，不能只用新建空状态测试升级。公开 raw refs 必须从实际引用索引携带完整 `source_id/pointer/value_hash`；缺散列时退回本轮材料修正，不从相似历史引用猜测或自动补写。
+
 `horizon.forward.lifecycle` 包含 `claim`、`reviews`、`dependencies`。`claim` 固定 `id`、`formed_at`、`data_cutoff`、`scope`、`basis_kind`、`basis_refs`、`scale`、`expectations`。实际首次登记时间另由程序记录；前瞻事实必须晚于声明形成与首次登记两者，不能借声明时间回填。已有结论及原标准不能修改；新预期使用有关联的新身份。
 
 `basis_kind` 为 FACTS、VALIDATED_PREDECESSOR、FACT_CORRECTION、INDEPENDENT_NEW_FACTS 或 RISK_RESPONSE。后三类及独立事实初判不依赖尚未验证的前序；真正递推必须引用实际注册的前序散列、expectation_id、review_hash 和获支持的 scope。单所、产品、主体或数据维度的支持不得扩成更大范围。

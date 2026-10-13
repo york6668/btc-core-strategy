@@ -159,6 +159,28 @@ class ForwardTests(unittest.TestCase):
         result=closed_loop.validate_forward(old,T0,self.resolve,revision=8)
         self.assertEqual(result['status'],'POSTHOC_ONLY');self.assertFalse(result['prospective_support'])
 
+    def test_revision9_reviews_actual_legacy_without_backdating_registration(self):
+        old=deepcopy(self.prior['forward']);old.pop('lifecycle')
+        reviewed=deepcopy(old);reviewed['observed_window']['end']=T2
+        reviewed['prior_check']['outcome']='EVIDENCE_LIMITED'
+        reviewed['prior_check']['explanation']='Later facts remain insufficient to validate the old prediction.'
+        reviewed['timing_basis']='Original timing is retained; later evidence is posthoc only.'
+        result=closed_loop.validate_forward(reviewed,T2,self.resolve,{'forward':old},revision=9,lifecycle_root=self.root)
+        self.assertEqual(result['status'],'POSTHOC_ONLY')
+        self.assertFalse(result['prospective_support'])
+        self.assertEqual(reviewed['judgement_window'],old['judgement_window'])
+        for changed in ('conditions','invalidations','judgement_window','realization_window'):
+            invalid=deepcopy(reviewed)
+            invalid[changed]=['New invented criterion'] if changed in ('conditions','invalidations') else {'start':T2,'end':T2}
+            with self.subTest(changed=changed),self.assertRaisesRegex(Invalid,'legacy forward cannot rewrite'):
+                closed_loop.validate_forward(invalid,T2,self.resolve,{'forward':old},revision=9,lifecycle_root=self.root)
+
+    def test_revision9_new_and_registered_forward_cannot_drop_lifecycle(self):
+        no_life=deepcopy(self.prior['forward']);no_life.pop('lifecycle')
+        for prior in (None,self.prior):
+            with self.subTest(prior=prior is not None),self.assertRaisesRegex(Invalid,'requires a new registered lifecycle'):
+                closed_loop.validate_forward(no_life,T0,self.resolve,prior,revision=9,lifecycle_root=self.root)
+
     def test_actual_public_research_save_registers_and_public_feedback_consumes(self):
         payload={'outlook':{'market_assessment':{'markets':[{'id':'BTC','horizons':[dict(self.prior,id='h')]}]}}}
         fresh=proposition('frozen-public',T2);payload['outlook']['market_assessment']['markets'][0]['horizons'][0]['forward']=forward(fresh)
@@ -179,6 +201,19 @@ class ForwardTests(unittest.TestCase):
             m['markets'][0]['horizons'][0]['forward']['lifecycle']['claim']['basis_kind']='VALIDATED_PREDECESSOR'
             with self.assertRaisesRegex(Invalid,'cite actual supported'):
                 market_state.validate_assessment(m,self.resolve,T2,revision=9,lifecycle_root=self.root)
+
+    def test_revision9_public_preflight_revisits_stored_revision8_markets(self):
+        import test_investment as f
+        from test_closed_loop import market
+        prior=market(T2);f.public_research({'market_assessment':prior})
+        current=deepcopy(prior)
+        for item in current['markets']:
+            for horizon in item['horizons']:
+                horizon['forward']['prior_check']['outcome']='EVIDENCE_LIMITED'
+                horizon['forward']['prior_check']['explanation']='Retained legacy thesis reviewed without new prospective support.'
+        before=list((self.root/'market-lifecycle/claims').glob('*.json'))
+        market_state.validate_assessment(current,self.resolve,T2,revision=9,prior=prior,lifecycle_root=self.root)
+        self.assertEqual(list((self.root/'market-lifecycle/claims').glob('*.json')),before)
 
     def test_unsafe_claim_identity_cannot_resolve_other_files(self):
         with self.assertRaisesRegex(Invalid,'identity'):life.registration(self.root,'../../anything')
