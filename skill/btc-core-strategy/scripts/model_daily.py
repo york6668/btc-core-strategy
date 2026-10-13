@@ -26,14 +26,14 @@ def sha256(path):
 def request(method, params=None, operation_id=None):
     """Reads within core.execute use a separate DB connection; writes use the service."""
     params = params or {}
-    if os.environ.get('BTC_IN_CONTAINER') == '1' and method == 'model.deep.status':
+    if os.environ.get('BTC_IN_CONTAINER') == '1' and method in ('model.deep.status', 'model.defect.check'):
         from btc_node.database import Database
-        from btc_node.deep_gate import status
+        from btc_node.deep_gate import check_scope, status
         settings = json.loads(Path(os.environ['BTC_SERVICE_CONFIG']).read_text())
         db = Database(settings)
         try:
             with db.transaction():
-                return status(db)
+                return status(db) if method == 'model.deep.status' else check_scope(db, **params)
         finally:
             db.close()
     import node_config
