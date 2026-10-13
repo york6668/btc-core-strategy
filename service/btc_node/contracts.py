@@ -22,6 +22,7 @@ SPEC = obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'product': {'type':
 
 PARAMETERS = {
     'model.deep.status': obj({}),
+    'model.defect.check': obj({'scope':TEXT}, ['scope']),
     'model.deep.claim': obj({'claim_id':TEXT,'issue_id':TEXT,'scope':TEXT,'phase':TEXT,'input_digest':TEXT,'model':TEXT},
                              ['claim_id','issue_id','scope','phase','input_digest','model']),
     'model.deep.finish': obj({'claim_id':TEXT,'outcome':{'type':'string','enum':['COMPLETE','FAILED','UNKNOWN','CANCELED']},

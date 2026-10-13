@@ -13,6 +13,30 @@ from v4.common import Invalid, create, read, digest, facts
 
 
 class RunFlowTests(unittest.TestCase):
+    def test_open_authoritative_market_defect_blocks_new_run_before_collection(self):
+        settings={'docker_service':{'enabled':True}}
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',return_value={'scope':'btc/market','allowed':False,'faults':[{'fault_id':'original'}]}) as gate, \
+             mock.patch('market_observation.collect',side_effect=AssertionError('collection must not start')):
+            with self.assertRaisesRegex(Invalid,'known public-market defect'):
+                self.prep()
+        gate.assert_called_once_with('model.defect.check',{'scope':'btc/market'})
+        self.assertFalse((self.d/'run.json').exists())
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',side_effect=RuntimeError('node unavailable')):
+            with self.assertRaisesRegex(RuntimeError,'node unavailable'):
+                self.prep()
+        self.assertFalse((self.d/'run.json').exists())
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',return_value={'scope':'btc/market','allowed':True,'faults':[]}):
+            prepared=self.prep()
+        self.assertTrue(Path(prepared['run']).is_file())
+        # Recovery of that pinned run remains possible while a later defect
+        # is open; only new repeated market work is stopped.
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',side_effect=AssertionError('existing run should not be readmitted')):
+            self.assertEqual(prepared,self.prep())
+
     def test_waiting_attempt_is_history_only_through_prepare_and_report_material(self):
         waiting = {'delivery_id':'HISTORICAL_DELIVERY', 'attempt_id':'HISTORICAL_ATTEMPT',
             'state':'UNKNOWN', 'next_action':'WAIT_FOR_NEW_EVIDENCE', 'blocks_new_reports':False}

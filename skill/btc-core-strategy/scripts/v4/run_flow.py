@@ -2,6 +2,7 @@
 from . import market_state
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 
 import market_observation as market
@@ -113,6 +114,19 @@ def market_template(ctx, raw):
     return {k: form[k] for k in market_state.MARKET_FIELDS if k in form}
 
 
+def admit_new_market_run():
+    """Stop affected recurring work before collection or a new model candidate."""
+    import node_config
+    settings = node_config.load()
+    if not (os.environ.get('BTC_IN_CONTAINER') == '1' or
+            (settings.get('docker_service') or {}).get('enabled')):
+        return
+    import model_daily
+    result = model_daily.request('model.defect.check', {'scope': 'btc/market'})
+    require(result.get('allowed') is True,
+            'known public-market defect blocks a new run; inspect the original fault and repair evidence')
+
+
 def report_template(ctx):
     previous = (ctx.get('report_care') or {}).get('active_maintenance') or {}
     retained = deepcopy(previous.get('triggers', []))
@@ -214,6 +228,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
             require(not collector_file or digest(Path(collector_file).read_bytes()) == run.get('collector_input_hash'), 'collector input changed')
             require(run.get('preparation_compatibility', {}) == compatibility, 'preparation compatibility inputs changed')
             return result_paths(run, 'prepared')
+        admit_new_market_run()
         marker = directory / 'preparation.json'
         partial = any((directory / name).exists() for name in ('market.json','collector.json','evidence'))
         require(not partial or resume_preparation,

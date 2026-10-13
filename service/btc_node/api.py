@@ -12,7 +12,7 @@ from .series import Series
 
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
-         'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list', 'model.deep.status'}
+         'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list', 'model.deep.status', 'model.defect.check'}
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references', 'prices.repair_seller_knowledge',
           'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve',
           'model.deep.claim', 'model.deep.finish', 'model.deep.reconcile', 'model.defect.open', 'model.defect.resolve'}
@@ -43,6 +43,7 @@ def invoke(database, method, params):
         from . import deep_gate
         action = method.split('.')[-1]
         if method == 'model.deep.status': return deep_gate.status(database)
+        if method == 'model.defect.check': return deep_gate.check_scope(database, **params)
         if method == 'model.deep.claim': return deep_gate.claim(database, **params)
         if method == 'model.deep.finish': return deep_gate.finish(database, **params)
         if method == 'model.deep.reconcile': return deep_gate.reconcile_unknown(database, **params)
@@ -102,6 +103,9 @@ def invoke(database, method, params):
             raise ValueError('split evidence exceeding 24 MiB')
         return {'digest': database.put_blob(data), 'bytes': len(data)}
     if method == 'market.freeze':
+        from . import deep_gate
+        if not deep_gate.check_scope(database, scope='btc/market')['allowed']:
+            raise Conflict('known public-market defect blocks a new freeze')
         if set(params) != {'spec', 'expected_version'}:
             raise ValueError('only spec and expected_version are accepted')
         spec = params['spec']

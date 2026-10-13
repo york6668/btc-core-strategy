@@ -66,6 +66,16 @@ def status(db):
             'days': state['days'], 'faults': state['faults']}
 
 
+def check_scope(db, *, scope):
+    """Read the same open faults before ordinary affected model stages."""
+    scope = _scope(scope)
+    faults = [{'fault_id': item['fault_id'], 'kind': item['kind'], 'scope': item['scope']}
+              for item in _state(db)['faults'].values()
+              if item['state'] == 'OPEN' and _affected(item['scope'], scope)]
+    faults.sort(key=lambda item: item['fault_id'])
+    return {'scope': scope, 'allowed': not faults, 'faults': faults}
+
+
 def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     """Reserve the whole trading system's daily deep slot, not a task's slot."""
     if not isinstance(claim_id, str) or not 8 <= len(claim_id) <= 191:

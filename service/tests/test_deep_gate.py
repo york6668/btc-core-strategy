@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from btc_node import deep_gate
+from btc_node.api import invoke
 from btc_node.codec import Conflict
 from btc_node.execution import validate_deep_result_admission
 
@@ -120,6 +121,23 @@ class DeepGateTests(unittest.TestCase):
         fixed=deep_gate.resolve_fault(self.node.client(),fault_id=fault['fault_id'],
             repair_digest=digest('fixed-code'),verification_ref='synthetic-offline-test',verification_status='PASS')
         self.assertEqual('RESOLVED',fixed['state'])
+
+    def test_ordinary_scope_check_blocks_only_open_affected_stage(self):
+        fault=deep_gate.open_fault(self.node.client(),scope='btc/market',kind='DETERMINISTIC',
+            signature=digest('revision9 stored forward'),fault_digest=digest('locked failed candidate'),
+            evidence_ref='actual natural candidate')
+        blocked=deep_gate.check_scope(self.node.client(),scope='btc/market/public')
+        self.assertFalse(blocked['allowed'])
+        self.assertEqual(blocked,invoke(self.node.client(),'model.defect.check',{'scope':'btc/market/public'}))
+        with self.assertRaisesRegex(Conflict,'known public-market defect'):
+            invoke(self.node.client(),'market.freeze',{'spec':{},'expected_version':0})
+        self.assertEqual([fault['fault_id']],[item['fault_id'] for item in blocked['faults']])
+        self.assertTrue(deep_gate.check_scope(self.node.client(),scope='btc/report')['allowed'])
+        self.assertEqual({},self.node.data[deep_gate.STATE_NAME]['days'])
+        deep_gate.resolve_fault(self.node.client(),fault_id=fault['fault_id'],
+            repair_digest=digest('changed verified candidate'),verification_ref='locked isolated replay',
+            verification_status='PASS')
+        self.assertTrue(deep_gate.check_scope(self.node.client(),scope='btc/market')['allowed'])
 
     def test_child_fault_blocks_broader_affected_operation(self):
         deep_gate.open_fault(self.node.client(),scope='btc/research/public',kind='SEMANTIC',

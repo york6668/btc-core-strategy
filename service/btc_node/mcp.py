@@ -11,6 +11,7 @@ from .contracts import PARAMETERS
 
 DESCRIPTIONS = {
     'model.deep.status': 'Read the BTC-wide Tokyo-day deep research slot and open defect state from the authoritative node.',
+    'model.defect.check': 'Check whether an open authoritative defect blocks an ordinary affected model stage before work begins.',
     'model.deep.claim': 'Atomically consume today\'s single high-grade BTC deep-research slot before any model launch. Replays never authorize launch.',
     'model.deep.finish': 'Record the actual original deep-call outcome; failure and unknown remain spent.',
     'model.deep.reconcile': 'Verify the original in-flight or unknown call outcome without launching a replacement.',
