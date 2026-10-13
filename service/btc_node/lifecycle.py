@@ -422,6 +422,9 @@ def prune_backups(root, *, now_ms, keep_days):
 def daily(db):
     """Create a recoverable snapshot before retention; backup age is separate."""
     from .backup import create
+    from .deep_gate import check_scope
+    if not check_scope(db, scope='btc/maintenance')['allowed']:
+        raise Conflict('known maintenance defect blocks daily work')
     day = datetime.now(ZoneInfo('Asia/Tokyo')).date().isoformat()
     if (db.metadata('maintenance.daily') or {}).get('day') == day:
         return {'day':day,'already_maintained':True}

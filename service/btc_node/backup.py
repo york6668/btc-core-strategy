@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import tempfile
 import uuid
 
@@ -15,6 +14,27 @@ from .database import Database
 
 
 PIN_PREFIX = 'btc-backup:'
+BLOB_PAGE_SIZE = 512
+
+
+def snapshot_blob_digests(snapshot, *, page_size=BLOB_PAGE_SIZE):
+    """Page the snapshot's primary key before slow file work.
+
+    An unbuffered SELECT held open while hashing and hard-linking each object
+    can stall MySQL's sender beyond net_write_timeout. Each page is fetched
+    completely while this consistent read transaction stays open.
+    """
+    if not 1 <= page_size <= BLOB_PAGE_SIZE:
+        raise ValueError('invalid backup page size')
+    last = ''
+    while True:
+        page = snapshot.rows('SELECT digest FROM blobs WHERE digest > %s '
+                             'ORDER BY digest LIMIT %s', (last, page_size))
+        if not page:
+            return
+        for row in page:
+            yield row['digest']
+        last = page[-1]['digest']
 
 
 def reap_pins(db):
@@ -36,6 +56,36 @@ def identifier(value):
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', value):
         raise ValueError('invalid SQL identifier in backup')
     return '`' + value + '`'
+
+
+def snapshot_table_rows(snapshot, table, *, page_size=BLOB_PAGE_SIZE):
+    """Read a table in bounded primary-key pages from one consistent view."""
+    if not 1 <= page_size <= BLOB_PAGE_SIZE:
+        raise ValueError('invalid backup page size')
+    quoted = identifier(table)
+    keys = snapshot.rows('SHOW INDEX FROM ' + quoted + ' WHERE Key_name=%s', ('PRIMARY',))
+    columns = [identifier(row['Column_name']) for row in sorted(keys, key=lambda row: row['Seq_in_index'])]
+    if not columns:
+        raise Conflict('backup table lacks a primary key: ' + table)
+    previous = None
+    while True:
+        clauses, args = [], []
+        if table == 'metadata_blobs':
+            clauses.append('name NOT LIKE %s')
+            args.append(PIN_PREFIX + '%')
+        if previous is not None:
+            clauses.append('(' + ','.join(columns) + ') > (' + ','.join('%s' for _ in columns) + ')')
+            args.extend(previous)
+        sql = 'SELECT * FROM ' + quoted
+        if clauses:
+            sql += ' WHERE ' + ' AND '.join(clauses)
+        sql += ' ORDER BY ' + ','.join(columns) + ' LIMIT %s'
+        page = snapshot.rows(sql, (*args, page_size))
+        if not page:
+            return
+        for row in page:
+            yield row
+        previous = tuple(page[-1][column[1:-1]] for column in columns)
 
 
 def create(db, destination):
@@ -74,14 +124,11 @@ def create(db, destination):
                 stream.write(encode({'table':table,'create':schema}))
                 # Temporary copying leases must never become permanent
                 # references when restoring this consistent snapshot.
-                rows = (snapshot.iter_rows('SELECT * FROM '+quoted+' WHERE name NOT LIKE %s', (PIN_PREFIX+'%',))
-                        if table == 'metadata_blobs' else snapshot.iter_rows('SELECT * FROM '+quoted))
                 counts[table]=0
-                for row in rows:
+                for row in snapshot_table_rows(snapshot, table):
                     stream.write(encode({'table':table,'row':row}))
                     counts[table]+=1
-        for row in snapshot.iter_rows('SELECT digest FROM blobs'):
-            digest=row['digest']
+        for digest in snapshot_blob_digests(snapshot):
             target=backup_blobs.path(digest)
             target.parent.mkdir(parents=True,exist_ok=True)
             # Original bytes are immutable and pinned even if new writes or
@@ -108,7 +155,8 @@ def create(db, destination):
                 cleanup_deferred = True
             finally:
                 db.one('SELECT RELEASE_LOCK(%s) AS released', (pin,))
-        if stage.exists():shutil.rmtree(stage)
+        # Keep an interrupted stage and its progress marker for diagnosis.
+        # It is never a completed backup and requires explicit review/cleanup.
     return {'backup':str(destination), 'pin_cleanup_deferred':cleanup_deferred, **manifest}
 
 
@@ -149,7 +197,7 @@ def restore(db, source):
             db.connection.commit()
         finally:
             db.execute('SET FOREIGN_KEY_CHECKS=1')
-        for row in db.iter_rows('SELECT digest FROM blobs'):
-            if fingerprint_file(db.blobs.path(row['digest'])) != row['digest']:
+        for digest in snapshot_blob_digests(db):
+            if fingerprint_file(db.blobs.path(digest)) != digest:
                 raise Conflict('restored evidence hash changed')
         return {'restored':True,'tables':counts,'source':str(source)}

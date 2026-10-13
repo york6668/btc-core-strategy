@@ -60,6 +60,8 @@ services:
     <<: *app
     profiles: [analysis]
     command: [maintenance-loop]
+    # A failed daily backup needs investigation, not an unbounded restart.
+    restart: "no"
   reader:
     image: btc-reader:${BTC_READER_IMAGE_TAG:-${BTC_IMAGE_TAG:-local}}
     profiles: [reader]

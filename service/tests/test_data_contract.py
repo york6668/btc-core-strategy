@@ -1343,24 +1343,51 @@ class NodeContract(unittest.TestCase):
         finally:
             other.close()
 
-    def test_streamed_backup_rows_keep_the_original_snapshot_during_live_write(self):
+    def test_backup_object_copy_does_not_stream_while_hashing_files(self):
+        original = Database.iter_rows
+        def reject_slow_object_stream(snapshot, sql, args=()):
+            if sql == 'SELECT digest FROM blobs':
+                raise AssertionError('slow file copy holds a MySQL server cursor open')
+            return original(snapshot, sql, args)
+        with tempfile.TemporaryDirectory(prefix='btc-backup-cursor-') as directory:
+            with patch.object(Database, 'iter_rows', reject_slow_object_stream):
+                result = backup.create(self.db, Path(directory)/'snapshot')
+            self.assertIn('blobs', result['tables'])
+
+    def test_open_maintenance_fault_blocks_daily_before_any_backup(self):
+        from btc_node import deep_gate
+        from btc_node.lifecycle import daily
+        previous = self.db.metadata(deep_gate.STATE_NAME)
+        try:
+            with self.db.transaction():
+                deep_gate.open_fault(self.db, scope='btc/maintenance', kind='UNKNOWN',
+                    signature='sha256:'+'1'*64, fault_digest='sha256:'+'2'*64,
+                    evidence_ref='synthetic failure')
+            with patch('btc_node.backup.create', side_effect=AssertionError('backup started')):
+                with self.assertRaisesRegex(Conflict, 'known maintenance defect'):
+                    daily(self.db)
+        finally:
+            with self.db.transaction():
+                self.db.metadata(deep_gate.STATE_NAME, previous, write=True)
+
+    def test_paged_backup_rows_keep_the_original_snapshot_during_live_write(self):
         import gzip
         with self.db.transaction():
             self.db.metadata(self.id, {'cursor': 17, 'delivery': 'UNKNOWN'}, write=True)
         other = Database(self.settings)
-        original = Database.iter_rows
+        original = Database.rows
         changed = []
-        def stream_with_live_write(snapshot, sql, args=()):
-            for row in original(snapshot, sql, args):
-                if sql.startswith('SELECT * FROM `node_metadata`') and not changed:
-                    with other.writer(timeout=0), other.transaction():
-                        other.metadata(self.id, {'cursor': 19, 'delivery': 'DELIVERED'}, write=True)
-                    changed.append(True)
-                yield row
+        def page_with_live_write(snapshot, sql, args=()):
+            page = original(snapshot, sql, args)
+            if sql.startswith('SELECT * FROM `node_metadata`') and not changed:
+                with other.writer(timeout=0), other.transaction():
+                    other.metadata(self.id, {'cursor': 19, 'delivery': 'DELIVERED'}, write=True)
+                changed.append(True)
+            return page
         try:
             with tempfile.TemporaryDirectory(prefix='btc-backup-stream-') as directory:
                 target = Path(directory)/'snapshot'
-                with patch.object(Database, 'iter_rows', stream_with_live_write):
+                with patch.object(Database, 'rows', page_with_live_write):
                     backup.create(self.db, target)
                 self.assertEqual(changed, [True])
                 with gzip.open(target/'database.jsonl.gz', 'rt') as stream:
@@ -1394,7 +1421,11 @@ class NodeContract(unittest.TestCase):
                 with patch.object(self.db.blobs, 'materialize', side_effect=OSError('generated copy failure')):
                     with self.assertRaisesRegex(OSError, 'generated copy failure'):
                         backup.create(self.db, target)
-                self.assertFalse(list(Path(directory).iterdir()))
+                stages = list(Path(directory).iterdir())
+                self.assertEqual(len(stages), 1)
+                self.assertTrue(stages[0].name.startswith('.backup-'))
+                self.assertTrue((stages[0]/'in-progress.json').is_file())
+                self.assertFalse((stages[0]/'manifest.json').exists())
                 self.db.connection.rollback()
                 self.assertFalse(self.db.rows('SELECT name FROM metadata_blobs WHERE name LIKE %s',
                                               (backup.PIN_PREFIX+'%',)))

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,23 @@ from .database import Database
 
 
 MAX_REQUEST = 36 * 1024 * 1024
+
+
+def record_maintenance_failure(settings, error):
+    """Bind a failed maintenance attempt to the existing node defect gate."""
+    from .deep_gate import open_fault
+    signature = 'sha256:' + hashlib.sha256(
+        (type(error).__name__ + '\0' + str(error)).encode()).hexdigest()
+    reference = ('maintenance-loop/stderr/'
+                 + datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    db = Database(settings)
+    try:
+        with db.writer(), db.transaction():
+            open_fault(db, scope='btc/maintenance', kind='UNKNOWN',
+                       signature=signature, fault_digest=signature,
+                       evidence_ref=reference)
+    finally:
+        db.close()
 
 
 def answer(settings, request):
@@ -130,8 +149,20 @@ def main():
         while True:
             db = Database(settings)
             try:
-                result = daily(db)
-                print(json.dumps(result, ensure_ascii=False), flush=True)
+                try:
+                    result = daily(db)
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+                except Exception as error:
+                    if args.command == 'maintenance-loop' and not (
+                            isinstance(error, Conflict)
+                            and str(error) == 'known maintenance defect blocks daily work'):
+                        try:
+                            record_maintenance_failure(settings, error)
+                        except Exception:
+                            # A broken DB may prevent the durable fault write;
+                            # Compose still leaves this container stopped.
+                            pass
+                    raise
             finally:
                 db.close()
             if args.command != 'maintenance-loop':
