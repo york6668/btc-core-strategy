@@ -103,6 +103,37 @@ def run(docker, reader, reader_image=None):
         subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc',
                        '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
                        'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True)
+        # Recreate a known failure across two real maintenance process starts.
+        # Neither process may enter backup or be restarted by Docker.
+        fault = {'method':'model.defect.open','operation_id':'synthetic-maintenance-lockout',
+                 'params':{'scope':'btc/maintenance','kind':'UNKNOWN',
+                           'signature':'sha256:'+'d'*64,'fault_digest':'sha256:'+'d'*64,
+                           'evidence_ref':'synthetic Docker restart check'}}
+        opened = json.loads(subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
+            input=json.dumps(fault).encode()))
+        if not opened.get('ok'):
+            raise AssertionError('maintenance fault could not be recorded')
+        def maintenance_state():
+            container = subprocess.check_output(command+['ps','-q','maintenance'],text=True).strip()
+            if not container:
+                raise AssertionError('maintenance container was not created')
+            return json.loads(subprocess.check_output([docker,'inspect','--format','{{json .State}}',container],text=True))
+        for attempt in range(2):
+            subprocess.run(command+(['up','-d','maintenance'] if attempt == 0 else ['start','maintenance']),check=True)
+            for _ in range(50):
+                state = maintenance_state()
+                if state['Status'] == 'exited':
+                    break
+                time.sleep(0.2)
+            if state['Status'] != 'exited' or state['ExitCode'] != 1 or state['OOMKilled']:
+                raise AssertionError('known maintenance fault was not rejected on process start')
+            time.sleep(0.5)
+            if maintenance_state()['Status'] != 'exited':
+                raise AssertionError('Docker retried failed maintenance')
+        fault_check = json.loads(subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
+            input=b'{"method":"model.defect.check","params":{"scope":"btc/maintenance"}}'))
+        if fault_check['result']['allowed'] or len(fault_check['result']['faults']) != 1:
+            raise AssertionError('restart changed maintenance fault state')
         def fingerprint_state():
             code = ('import json,hashlib; from btc_node.database import Database; '
                     'd=Database(json.load(open("/run/btc/settings.json"))); '

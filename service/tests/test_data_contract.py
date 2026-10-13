@@ -1361,6 +1361,9 @@ class NodeContract(unittest.TestCase):
         previous = self.db.metadata(deep_gate.STATE_NAME)
         try:
             record_maintenance_failure(self.settings, RuntimeError('synthetic failure'))
+            # This test connection had read the prior state in REPEATABLE READ;
+            # a restarted maintenance process opens a new transaction.
+            self.db.connection.rollback()
             blocked = deep_gate.check_scope(self.db, scope='btc/maintenance')
             self.assertFalse(blocked['allowed'])
             fault_id = blocked['faults'][0]['fault_id']
