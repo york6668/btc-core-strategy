@@ -67,6 +67,9 @@ def run(docker, reader, reader_image=None):
         (directory/'compose.env').write_text('\n'.join(['BTC_DATA_DIR='+str(directory),
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
+        effective = json.loads(subprocess.check_output(command+['config','--format','json'], text=True))
+        if effective['services']['maintenance']['restart'] != 'no':
+            raise AssertionError('failed maintenance must not restart automatically')
         subprocess.run(command+['build','core'], check=True, timeout=600)
         # Match the owner seen through this daemon's bind mount. Linux retains
         # the runner UID; Desktop file sharing can map it differently. This

@@ -1356,16 +1356,31 @@ class NodeContract(unittest.TestCase):
 
     def test_open_maintenance_fault_blocks_daily_before_any_backup(self):
         from btc_node import deep_gate
+        from btc_node.__main__ import record_maintenance_failure
         from btc_node.lifecycle import daily
         previous = self.db.metadata(deep_gate.STATE_NAME)
         try:
-            with self.db.transaction():
-                deep_gate.open_fault(self.db, scope='btc/maintenance', kind='UNKNOWN',
-                    signature='sha256:'+'1'*64, fault_digest='sha256:'+'2'*64,
-                    evidence_ref='synthetic failure')
+            record_maintenance_failure(self.settings, RuntimeError('synthetic failure'))
+            blocked = deep_gate.check_scope(self.db, scope='btc/maintenance')
+            self.assertFalse(blocked['allowed'])
+            fault_id = blocked['faults'][0]['fault_id']
             with patch('btc_node.backup.create', side_effect=AssertionError('backup started')):
                 with self.assertRaisesRegex(Conflict, 'known maintenance defect'):
                     daily(self.db)
+            fault = deep_gate.status(self.db)['faults'][fault_id]
+            with self.assertRaisesRegex(Conflict, 'changed repair'):
+                with self.db.transaction():
+                    deep_gate.resolve_fault(self.db, fault_id=fault_id,
+                        repair_digest=fault['fault_digest'], verification_ref='synthetic check',
+                        verification_status='PASS')
+            with self.db.transaction():
+                deep_gate.resolve_fault(self.db, fault_id=fault_id,
+                    repair_digest='sha256:'+'3'*64, verification_ref='synthetic check',
+                    verification_status='PASS')
+            self.assertTrue(deep_gate.check_scope(self.db, scope='btc/maintenance')['allowed'])
+            self.db.settings = {**self.db.settings, 'maintenance_enabled': False}
+            with patch('btc_node.lifecycle.maintain', return_value={'synthetic': 'continued'}):
+                self.assertEqual(daily(self.db), {'synthetic': 'continued'})
         finally:
             with self.db.transaction():
                 self.db.metadata(deep_gate.STATE_NAME, previous, write=True)

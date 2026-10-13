@@ -13,7 +13,7 @@ from stat import S_ISLNK
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from .codec import fingerprint, identity, millis
+from .codec import Conflict, fingerprint, identity, millis
 
 
 DAY = 86400000
