@@ -182,6 +182,12 @@ def render(value, decision, *, require_review=True):
     if ctx.get('market_revision', 0) >= 6:
         from .closed_loop import validate_report_binding
         values.update(validate_report_binding(value, ctx))
+    # An unfinished synthesis remains an upstream obligation, but must not
+    # suppress a contract-validated limited risk/impact report. The projected
+    # inputs already remove executable outputs and preserve their limitations.
+    limited_personal = (ctx.get('deep_report_policy_revision') == 1
+                        and value['report_basis']['mode'] == 'LIMITED_FEEDBACK'
+                        and values.get('investment_decision') is None)
     require(isinstance(layout['bindings'], list), 'authored evidence bindings required')
     covered = set()
     for binding in layout['bindings']:
@@ -202,7 +208,14 @@ def render(value, decision, *, require_review=True):
                     allowed += ('/strategy_advice/',)
                 if ctx.get('market_revision', 0) >= 8:
                     allowed += ('/investment_decision/', '/portfolio_narrative')
-                    require(values.get('investment_decision') is not None, 'personal synthesis is unfinished; return upstream before a complete personal report')
+                    if limited_personal:
+                        require(values['applicability']['portfolio']['outcome'] == 'REVISE',
+                                'limited personal feedback requires an actual synthesis applicability gap')
+                        require(all(s in {'REVIEW_REQUIRED', 'WITHDRAWN'} for s in layout['price_status'].values()),
+                                'limited personal feedback cannot make advice executable')
+                        allowed = ('/portfolio_risk/', '/applicability/portfolio/')
+                    else:
+                        require(values.get('investment_decision') is not None, 'personal synthesis is unfinished; return upstream before a complete personal report')
                 require(ref.startswith(allowed), 'personal report consumes only assessed risk, applicable advice and limits')
             if binding['scope'] == 'clock':
                 require(ref == '/evaluation_time' and excerpt == values['evaluation_time'], 'only frozen evaluation time is a clock binding')
@@ -220,6 +233,14 @@ def render(value, decision, *, require_review=True):
         validate_price(binding, values)
         covered |= numbers(excerpt)
     if ctx.get('market_revision',0)>=8 and any(b['scope']=='personal' for b in layout['bindings']):
+        if limited_personal:
+            require(any(ref.startswith('/applicability/portfolio/limitations/')
+                        for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']),
+                    'limited personal feedback must consume the actual applicability limitation')
+            require(not values['portfolio_risk'] or not values['portfolio_risk'].get('actions'),
+                    'unfinished synthesis cannot supply new risk actions')
+    if (ctx.get('market_revision',0)>=8 and not limited_personal
+            and any(b['scope']=='personal' for b in layout['bindings'])):
         require(any(ref.startswith(('/investment_decision/summary','/investment_decision/priorities/','/investment_decision/supported_judgements/'))
                     for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']),
                 'complete personal report must consume the formed overall choice, not only parallel risk and opportunity results')

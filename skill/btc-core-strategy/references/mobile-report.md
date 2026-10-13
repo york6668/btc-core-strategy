@@ -69,6 +69,8 @@ report-review 和 run-advance --stage report 沿用原接口、report_basis、ma
 
 revision 6/7 市场引用来自最终 market_result、metrics、public_evidence 或 report_subjects；revision 7 个人引用来自 portfolio_risk、strategy_advice、适用性和必要策略档位；revision 6 的 allocation_decision 仅用于原上下文恢复，不冒充新风险评估。result_binding 绑定最终市场、配置和适用性版本，不能混入内部分析或混合历史正文。旧版本按原公开字段恢复。必要数字等于冻结来源，不自动换算或舍入；派生值先经原证据流程核验并冻结，不强迫作者把阿拉伯数字改成中文绕过校验。
 
+revision 8 的整体取舍尚未形成且确有报告适用性缺口时，LIMITED_FEEDBACK 可消费当前已评估风险与个人适用性限制，正文明确未完成范围及对动作的影响；必须绑定实际 applicability.portfolio.limitations，不消费旧机会建议、档位或新风险动作。该反馈不补造 investment_decision，不作为完整重评或建议续期；完整报告仍须消费已形成的总体选择，补评继续原研究。
+
 价格绑定另带 `price={subject,unit}`。BTC 收盘引用 `/metrics/binance_spot_1h/latest/close`，subject=BTC、unit=USDT。产品价格只引用 `/report_subjects/QQQ/quote/price` 或对应 product_zones，subject=QQQ，unit 使用已核验来源的USD、USD/share或USDT；USD/share在正文写USD/股。指数区域在研究中保留 SPX/NDX 和原单位，不作为新正文价位；没有对应产品区域时不补造价格，影响当前安排时说明该限制，市场方向及风险判断继续保留。正文可用表头表达统一单位，只需绑定完整含单位的相关片段。
 
 VALID/ADJUSTED 必须有有效正式来源；到期或待评为 REVIEW_REQUIRED；撤回为 WITHDRAWN。新稿不绑定失效或撤回档位重现为建议价格。历史原价留在历史产物中。EXECUTION_LIMITED 与 UNDETERMINED 对应 REVIEW_REQUIRED，不当作撤回或有效档位。无有效档位时，作者直接说明已经决定的安排或确实未决的范围，不自动追加占位行。

@@ -295,6 +295,46 @@ class InvestmentDecisionTests(unittest.TestCase):
         layout['bindings'].append({'scope':'personal','text':limitation,'refs':['/investment_decision/validation_limits/0/limitations/0']})
         self.assertEqual(authored_report.render(spec,{'assessment':self.core})[0],layout['body'])
 
+    def test_unformed_synthesis_can_report_bounded_risk_without_claiming_completion(self):
+        from v4 import authored_report
+        core=deepcopy(self.core)
+        core['recommendations']['portfolio'].pop('investment_decision')
+        ctx={'current_strategy':core,'identity':{'decision_id':'synthetic','fact_version':core['fact_version']},
+             'evaluated_at':self.stamp,'knowledge_cutoff':self.stamp,'market_revision':8,'report_contract_revision':3,
+             'deep_report_policy_revision':1,
+             'cycle_baseline':{'status':'REASSESSMENT_PENDING','result_id':'synthetic-result','report_hash':'synthetic-report'}}
+        results=closed_loop.report_inputs(ctx)
+        market=results['market_result']['market_assessment']['summary']
+        personal=results['portfolio_risk']['summary']
+        gap=results['applicability']['portfolio']['limitations'][-1]
+        layout={'format':authored_report.FORMAT,'body':market+'\n\n'+personal+'\n\n'+gap,
+                'bindings':[{'scope':'market','text':market,'refs':['/market_result/market_assessment/summary']},
+                            {'scope':'personal','text':personal,'refs':['/portfolio_risk/summary']},
+                            {'scope':'personal','text':gap,'refs':['/applicability/portfolio/limitations/'+str(len(results['applicability']['portfolio']['limitations'])-1)]}],
+                'price_status':dict.fromkeys(('lower_spot','upper_short'),'REVIEW_REQUIRED'),
+                'quality_review':{k:'Synthetic limited feedback preserves the unformed choice and actual risk limitation.' for k in authored_report.quality_keys(ctx)}}
+        spec={'layout':layout,'context':ctx,'result_binding':results['result_binding'],
+              'report_basis':{'result_id':'synthetic-result','report_hash':'synthetic-report','mode':'LIMITED_FEEDBACK',
+                              'observation_id':None,'evidence_id':None,'verification':'Actual synthesis is missing; this is bounded risk feedback, not a completed choice.'}}
+        self.assertEqual(authored_report.render(spec,{'assessment':core})[0],layout['body'])
+        self.assertIsNone(results['investment_decision'])
+        self.assertEqual(results['portfolio_risk']['actions'],[])
+        for mode in ('CYCLE_SUMMARY','URGENT_RISK','MARKET_UPDATE'):
+            with self.subTest(mode=mode):
+                changed=deepcopy(spec);changed['report_basis']['mode']=mode
+                with self.assertRaises(Invalid):authored_report.render(changed,{'assessment':core})
+        changed=deepcopy(spec);changed['layout']['bindings'].pop();changed['layout']['body']=market+'\n\n'+personal
+        with self.assertRaisesRegex(Invalid,'actual applicability limitation'):
+            authored_report.render(changed,{'assessment':core})
+        changed=deepcopy(spec);changed['layout']['bindings'][-1]['refs']=['/execution_plans/lower_spot/status']
+        with self.assertRaisesRegex(Invalid,'personal report consumes'):
+            authored_report.render(changed,{'assessment':core})
+        # Removing the mode's real applicability gap cannot turn a full current
+        # report into a limited escape hatch.
+        changed=deepcopy(spec);changed['context']['cycle_baseline'].update(status='CURRENT',report_narrative='Current complete report.')
+        with self.assertRaisesRegex(Invalid,'real report applicability gap'):
+            authored_report.render(changed,{'assessment':core})
+
     def test_unreviewed_margin_financing_cannot_be_silently_omitted(self):
         for change in (lambda v:v['candidates'][0]['validation'].update(required_capabilities=[]),
                        lambda v:v['gaps'][0].pop('capabilities'),
