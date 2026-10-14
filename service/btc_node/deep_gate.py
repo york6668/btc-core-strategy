@@ -96,7 +96,11 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     old = state['days'].get(day)
     if old:
         if old['state'] == 'COMPLETE' and old.get('result_ref'):
-            return {'action':'REUSE', 'day':day, 'claim':old}
+            if (old['issue_id'] == issue_id and old['scope'] == scope
+                    and old['phase'] == phase and old['input_digest'] == input_digest
+                    and old['model'] == model):
+                return {'action':'REUSE', 'day':day, 'claim':old}
+            raise Conflict('today deep-research slot belongs to another issue or input; it is not reusable')
         raise Conflict('today deep-research slot already consumed; inspect original claim')
     if any(item['state'] in ('CLAIMED','UNKNOWN') for item in state['days'].values()):
         raise Conflict('earlier in-flight or unknown deep call needs reconciliation')

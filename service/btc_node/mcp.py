@@ -10,6 +10,13 @@ from .contracts import PARAMETERS
 
 
 DESCRIPTIONS = {
+    'task.status': 'Read persistent BTC execution obligations and their blockers without treating them as market conclusions.',
+    'task.submit': 'Register an evidence-bound business question under a stable issue and pinned release; duplicate input is reused.',
+    'task.assess': 'Distinguish an outstanding question from current permission to execute it, including faults and daily deep budget.',
+    'task.start': 'Atomically admit one pinned attempt; deep research also consumes the BTC-wide Tokyo-day claim.',
+    'task.finish': 'Record the actual original attempt result; failure and unknown remain blocked.',
+    'task.reconcile': 'Reconcile an in-flight or uncertain original attempt without replaying its external effects.',
+    'task.repair': 'Explicitly rebase a stopped task after changed input or release and verified repair evidence; retains prior attempts.',
     'model.deep.status': 'Read the BTC-wide Tokyo-day deep research slot and open defect state from the authoritative node.',
     'model.defect.check': 'Check whether an open authoritative defect blocks an ordinary affected model stage before work begins.',
     'model.deep.claim': 'Atomically consume today\'s single high-grade BTC deep-research slot before any model launch. Replays never authorize launch.',

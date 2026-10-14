@@ -321,6 +321,8 @@ class Projection:
         whole=assessment.get('recommendations',{}).get('portfolio',{}).get('investment_decision')
         deadline=whole.get('valid_until') if whole else None
         unfinished=assessment.get('revision',0)>=8 and (whole is None or millis(deadline)<=millis(checked_time))
+        investment_completion = ('NOT_FORMED_IN_FORMAL_REVISION' if whole is None else
+                                 'EXPIRED_REQUIRES_REVIEW' if unfinished else 'FORMALLY_ADOPTED')
         applicability='EVIDENCE_LIMITED' if not match else 'REVISE' if unfinished else 'CURRENT'
         if unfinished and review_due is None:review_due=deadline or checked_time
         self.put('ALLOCATION', 'portfolio', {'market_binding': binding, 'fact_version': decision['fact_version'],
@@ -329,6 +331,7 @@ class Projection:
                  'portfolio': assessment.get('recommendations', {}).get('portfolio') if match and not unfinished else None,
                  'investment_feedback': investment_feedback,
                  'investment_decision': assessment.get('recommendations', {}).get('portfolio', {}).get('investment_decision') if match else None,
+                 'investment_completion': investment_completion,
                  'recommendation_applicability': applicability,
                  'fact_authority': 'bound source version'}, source, checked_time, observed=frozen_time,
                  due=review_due, expires=deadline, scope='PERSONAL', dependencies=fact_dependencies+investment_dependencies)
@@ -338,12 +341,65 @@ class Projection:
                        fact_fields={'fact_review': 'CURRENT' if match else 'REQUIRED',
                                     'fact_version': decision['fact_version'], 'current_fact_version': fact_version,
                                     'recommendation_applicability':applicability}, investment_deadline=deadline)
-        for issue in research.context(root)['issues']:
+        research_context = research.context(root)
+        settings = getattr(self.db, 'settings', None)
+        task_shadow = isinstance(settings, dict) and settings.get('task_shadow_enabled') is True
+        for issue in research_context['issues']:
             # Full research context can contain portfolio findings. Existing
             # independent-phase material is still prepared by the native contract.
             req = root / 'research/requests' / (issue['latest_request']['request_id'].removeprefix('sha256:') + '.json')
             self.put('RESEARCH', issue['issue_id'], issue, req, stamp(), scope='PERSONAL',
                      due=issue['latest_request']['created_at'] if issue['status'] == 'REQUESTED' else None)
+            # Project an existing validated research request as an execution
+            # obligation. Its authored materiality and original input are the
+            # authority; an hourly observation cannot create a new question.
+            if task_shadow and issue['status'] == 'REQUESTED':
+                request = research._load(root, 'requests', issue['latest_request']['request_id'])
+                if (request.get('workflow_revision', 0) >= 5
+                        and request['change']['kind'] != 'REOPEN_CONDITION_MET'):
+                    from . import tasks
+                    deep_task_id = 'btc/research/' + issue['issue_id'][7:] + '/independent'
+                    existing_deep = tasks.status(self.db, task_id=deep_task_id)
+                    if existing_deep is None or (existing_deep['release_id'] == self.method_version
+                            and existing_deep['state'] != 'RUNNING'
+                            and existing_deep.get('blocker') not in {
+                                'UNKNOWN_OUTCOME', 'DELIVERY_UNKNOWN', 'ATTEMPTS_EXHAUSTED'}):
+                        tasks.submit(self.db, task_id=deep_task_id, issue_id=issue['issue_id'],
+                            kind='DEEP', phase='PUBLIC',
+                            input_digest=request['independent_input_id'],
+                            release_id=self.method_version, evidence_ref=request['request_id'],
+                            scope='btc/research', due_ms=millis(request['created_at']),
+                            reason_kind=request['change']['kind'],
+                            reason='Validated research request: ' + request['change']['reason'])
+                        progress = issue['latest_request']['progress']
+                        if progress.get('independent_id'):
+                            tasks.observe_research_completion(self.db,
+                                task_id=deep_task_id,
+                                input_digest=request['independent_input_id'],
+                                independent_id=progress['independent_id'])
+        # A revision-7 formal snapshot has no whole-portfolio decision. Keep
+        # that work visible under one pinned execution obligation instead of
+        # treating every observation as a fresh runnable main assessment.
+        if task_shadow:
+            from . import tasks
+            task_id = 'btc/portfolio-synthesis/main'
+            existing_task = tasks.status(self.db, task_id=task_id)
+            if whole is None and (existing_task is None or
+                                  (existing_task['release_id'] == self.method_version and
+                                   existing_task['state'] != 'RUNNING' and
+                                   existing_task.get('blocker') not in {
+                                       'UNKNOWN_OUTCOME','DELIVERY_UNKNOWN','ATTEMPTS_EXHAUSTED'})):
+                task_input = 'sha256:' + fingerprint(encode({
+                    'decision_id': decision['decision_id'], 'fact_version': fact_version,
+                    'research_context_id': research_context['research_context_id']}))
+                tasks.submit(self.db, task_id=task_id, issue_id='portfolio-synthesis', kind='MAIN',
+                    phase='PERSONAL', input_digest=task_input, release_id=self.method_version,
+                    evidence_ref=str(source), scope='btc/research', due_ms=millis(),
+                    reason_kind='UNFINISHED_FORMAL_DECISION',
+                    reason='The current formal snapshot has no complete whole-portfolio investment decision.')
+            elif whole is not None:
+                tasks.observe_formal_completion(self.db, task_id=task_id,
+                                                decision_id=decision['decision_id'])
         attempts = delivery.attempt_recovery(root) if hasattr(delivery, 'recovery_actions') else None
         actions = delivery.recovery_actions(root, attempts) if attempts is not None else []
         for path in (root / 'outbox').glob('*/status.json'):

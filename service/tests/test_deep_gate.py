@@ -73,9 +73,12 @@ class DeepGateTests(unittest.TestCase):
         self.assertEqual(1,sum(isinstance(v,dict) and v['action']=='CLAIMED_NEW' for v in results))
         original=next(v['claim']['claim_id'] for v in results if isinstance(v,dict))
         self.settle(original,'COMPLETE',result_ref='frozen-deep-research')
-        after=self.call('another-task','renamed-task','gpt-6-other-high')
+        after=self.call('same-original-request','split-task-'+original.split('-')[-1],
+                        'gpt-6-astra' if int(original.split('-')[-1])%2 else 'gpt-6-other-high')
         self.assertEqual('REUSE',after['action'])
         self.assertEqual(original,after['claim']['claim_id'])
+        with self.assertRaisesRegex(Conflict,'another issue or input'):
+            self.call('another-task','renamed-task','gpt-6-other-high')
 
     def test_failed_capacity_call_spends_day_and_requires_recovery(self):
         self.call()

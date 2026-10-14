@@ -81,11 +81,33 @@ class NodeContract(unittest.TestCase):
                 'params':{'claim_id':result['claim']['claim_id'],'outcome':'COMPLETE',
                           'result_ref':'sha256:'+'b'*64}})
             self.assertEqual('COMPLETE',settlement['claim']['state'])
-            self.assertEqual('REUSE',dispatch(self.settings,{
-                'method':'model.deep.claim','operation_id':'new-op-' + self.id,
-                'params':{'claim_id':self.id+'-later','issue_id':self.id+'-different',
-                          'scope':'btc/research','phase':'PUBLIC','input_digest':'sha256:'+'c'*64,
-                          'model':'gpt-6-astra'}})['action'])
+            with self.assertRaisesRegex(Conflict, 'not reusable'):
+                dispatch(self.settings,{
+                    'method':'model.deep.claim','operation_id':'new-op-' + self.id,
+                    'params':{'claim_id':self.id+'-later','issue_id':self.id+'-different',
+                              'scope':'btc/research','phase':'PUBLIC','input_digest':'sha256:'+'c'*64,
+                              'model':'gpt-6-astra'}})
+
+    def test_task_start_replayed_operation_never_authorizes_second_launch(self):
+        from btc_node import tasks
+        task_id = self.id + '-recheck'
+        params = {'task_id':task_id,'issue_id':self.id,'kind':'RECHECK','phase':'PUBLIC',
+                  'input_digest':'sha256:'+'f'*64,'release_id':'test-release',
+                  'evidence_ref':'isolated-evidence','reason':'Verify the original thesis against new evidence.',
+                  'reason_kind':'MATERIAL_RECHECK','scope':'btc/market',
+                  'due_ms':0,'namespace':'formal'}
+        dispatch(self.settings,{'method':'task.submit','operation_id':self.id+'-submit','params':params})
+        dispatch(self.settings,{'method':'task.assess','operation_id':self.id+'-assess',
+                                'params':{'task_id':task_id,'dependency_ready':True,
+                                          'dependency_ref':'isolated-dependency'}})
+        request = {'method':'task.start','operation_id':self.id+'-start',
+                   'params':{'task_id':task_id,'attempt_id':self.id+'-attempt',
+                             'release_id':'test-release'}}
+        first = dispatch(self.settings,request)
+        self.assertEqual('LAUNCH_ONCE', first['action'])
+        replay = dispatch(self.settings,request)
+        self.assertEqual('RECONCILE_EXISTING_NO_LAUNCH', replay['action'])
+        self.assertEqual(first['task']['attempt_id'],replay['task']['attempt_id'])
 
     def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
         product = self.id

@@ -20,6 +20,74 @@ from btc_node.market_store import import_sqlite
 
 
 class DomainRuntime(unittest.TestCase):
+    def test_revision_seven_gap_and_research_request_become_stable_node_obligations(self):
+        from unittest import mock
+        source=Path(os.environ['BTC_TEST_SOURCE'])
+        sys.path[:0]=[str(source/'skill/btc-core-strategy/scripts')]
+        from v4.common import facts
+        from btc_node.projection import Projection
+        from btc_node import tasks
+        from btc_node.codec import millis
+        with tempfile.TemporaryDirectory(prefix='btc-obligation-projection-') as directory:
+            project=Path(directory);root=project/'.strategy/v4'
+            for name in ('资产配置.md','操作记录.md','纠正记录.md'):
+                (project/name).write_text('SYNTHETIC CONFIRMED FACTS ONLY\n')
+            version=facts(project)
+            original={'decision_id':'a'*64,'created_at':'2030-03-01T00:00:00Z',
+                      'fact_version':version,'assessment':{'revision':7,'fact_version':version,
+                      'recommendations':{'portfolio':{}}}}
+            path=root/'versions'/original['decision_id']/'decision.json'
+            path.parent.mkdir(parents=True);path.write_text(json.dumps(original))
+            request_id='sha256:'+'b'*64
+            request={'request_id':request_id,'created_at':'2030-03-02T00:00:00Z',
+                     'independent_input_id':'sha256:'+'c'*64,'workflow_revision':7,
+                     'change':{'kind':'MATERIAL_COUNTEREVIDENCE','reason':'A cited contradiction to the prior thesis.'}}
+            issue={'issue_id':'sha256:'+'d'*64,'status':'REQUESTED',
+                   'latest_request':{'request_id':request_id,'created_at':request['created_at'],
+                                     'progress':{'stage':'REQUESTED'}}}
+            context={'issues':[issue],'research_context_id':'sha256:'+'e'*64}
+            memory={}
+            db=mock.Mock();db.put_blob.side_effect=fingerprint
+            db.settings={'task_shadow_enabled': True}
+            def metadata(name,value=None,*,write=False):
+                if write: memory[name]=value
+                return memory.get(name)
+            db.metadata.side_effect=metadata
+            projection=Projection(db,'synthetic-release')
+            projection.objects=mock.Mock()
+            projection.objects.get.side_effect=lambda kind,object_id: (
+                {'known_ms':millis('2030-03-03T00:00:00Z')} if kind=='FACT_PROJECTION' else None)
+            projection.objects.list.return_value={'objects':[],'next':None}
+            observed=[]
+            def capture(kind,object_id,payload,source,known,**kwargs):
+                observed.append((kind,payload))
+                return {'object_id':object_id,'version':1,'digest':fingerprint(encode(payload)),
+                        'known_ms':millis(known)}
+            projection.put=capture
+            with mock.patch('v4.storage.current',return_value=original), \
+                 mock.patch('v4.market_state.public_content',return_value=None), \
+                 mock.patch('v4.market_state.effective',return_value={}), \
+                 mock.patch('v4.research.context',return_value=context), \
+                 mock.patch('v4.research._load',return_value=request), \
+                 mock.patch('v4.delivery.attempt_recovery',return_value=[]), \
+                 mock.patch('v4.delivery.recovery_actions',return_value=[]), \
+                 mock.patch('btc_node.reader_prices.project',return_value={}), \
+                 mock.patch('btc_node.history.project_history',return_value={}):
+                projection.refresh(project,root)
+                original_tasks=tasks.status(db)['tasks']
+                projection.refresh(project,root)
+                self.assertEqual(original_tasks,tasks.status(db)['tasks'])
+                issue['latest_request']['progress']={'stage':'INDEPENDENT_COMPLETED',
+                    'independent_id':'sha256:'+'f'*64}
+                projection.refresh(project,root)
+            self.assertEqual(2,len(tasks.status(db)['tasks']))
+            self.assertEqual('NOT_FORMED_IN_FORMAL_REVISION',
+                next(payload for kind,payload in observed if kind=='ALLOCATION')['investment_completion'])
+            self.assertEqual('COMPLETED',tasks.status(db,
+                task_id='btc/research/'+'d'*64+'/independent')['state'])
+            self.assertEqual('NEEDED',tasks.status(db,
+                task_id='btc/portfolio-synthesis/main')['state'])
+
     def test_reference_command_is_not_inferred_from_an_argument_value(self):
         self.assertTrue(value_reference_only(['--project','/p','--root','/p/.strategy/v4','--full','run-value-ref']))
         for argv in (['--project','run-value-ref','--root','/r','run-advance'],
