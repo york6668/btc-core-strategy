@@ -227,7 +227,11 @@ def _run(docker, reader, reader_image, guard, project):
             container = subprocess.check_output(command+['ps','-a','-q','maintenance'],text=True).strip()
             if not container:
                 raise AssertionError('maintenance container was not created')
-            return json.loads(subprocess.check_output([docker,'inspect','--format','{{json .State}}',container],text=True))
+            inspected = json.loads(subprocess.check_output(
+                [docker,'inspect','--format','{{json .}}',container],text=True))
+            return {**inspected['State'], 'restart_count': inspected['RestartCount'],
+                    'restart_policy': inspected['HostConfig']['RestartPolicy']['Name'],
+                    'user': inspected['Config']['User']}
         for attempt in range(2):
             subprocess.run(command+(['up','-d','maintenance'] if attempt == 0 else ['restart','maintenance']),check=True)
             time.sleep(0.5)
@@ -235,7 +239,12 @@ def _run(docker, reader, reader_image, guard, project):
             if state['Status'] != 'running' or state['OOMKilled']:
                 raise AssertionError('guarded maintenance did not remain idle and running')
             time.sleep(0.5)
-            if maintenance_state()['Pid'] != state['Pid']:
+            after_state = maintenance_state()
+            if after_state['Pid'] != state['Pid']:
+                fields = ('Status', 'Pid', 'ExitCode', 'OOMKilled', 'restart_count', 'restart_policy', 'user')
+                print('BTC_MAINTENANCE_PID_DRIFT='+json.dumps({'attempt':attempt,
+                    'before':{key:state.get(key) for key in fields},
+                    'after':{key:after_state.get(key) for key in fields}}),file=sys.stderr)
                 raise AssertionError('known maintenance fault caused process restart')
         fault_check = json.loads(subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
             input=b'{"method":"model.defect.check","params":{"scope":"btc/maintenance"}}'))
@@ -280,10 +289,11 @@ def _run(docker, reader, reader_image, guard, project):
               'project_evidence_single_mount_and_legacy_path':True,
               'reader_cli_readonly_source_writable_data':True if reader_image else 'NOT_RUN'}))
         result = 0
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, AssertionError):
         # Capture startup evidence before cleanup, scoped to this disposable
         # test project. Never dump settings, environment or credential files.
-        for diagnostic in (['ps','--all'], ['logs','--tail','60','core']):
+        for diagnostic in (['ps','--all'], ['logs','--tail','60','core'],
+                           ['logs','--tail','60','maintenance']):
             try:
                 subprocess.run(command+diagnostic, timeout=15, check=False)
             except (OSError, subprocess.TimeoutExpired):

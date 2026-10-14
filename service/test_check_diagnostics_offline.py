@@ -65,6 +65,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
             calls = [item.args[0] for item in run.call_args_list]
             self.assertTrue(any(command[-2:] == ['ps', '--all'] for command in calls))
             self.assertTrue(any(command[-4:] == ['logs', '--tail', '60', 'core'] for command in calls))
+            self.assertTrue(any(command[-4:] == ['logs', '--tail', '60', 'maintenance'] for command in calls))
             self.assertTrue(guard.cleaned)
 
 
