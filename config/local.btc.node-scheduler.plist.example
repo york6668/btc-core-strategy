@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.btc.node-scheduler</string>
+  <key>Disabled</key><true/>
+  <key>ProgramArguments</key><array>
+    <string>/absolute/local/native-python3</string>
+    <string>/absolute/local/btc-runtime/current/skill/btc-core-strategy/scripts/node_scheduler_worker.py</string>
+    <string>--config</string>
+    <string>/absolute/local/btc-runtime/node.json</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>

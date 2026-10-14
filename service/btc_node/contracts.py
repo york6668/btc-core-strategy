@@ -21,6 +21,10 @@ SPEC = obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'product': {'type':
     ['kind','object_id','scope','observed_at','known_at','change_reason','source_ref','method_version','payload','dependencies'])
 
 PARAMETERS = {
+    'schedule.status': obj({}),
+    'schedule.window': obj({}),
+    'schedule.tick': obj({}),
+    'schedule.claim': obj({'attempt_id':TEXT}, ['attempt_id']),
     'task.status': obj({'task_id':TEXT}),
     'task.submit': obj({'task_id':TEXT,'issue_id':TEXT,'kind':TEXT,'phase':TEXT,
         'input_digest':TEXT,'release_id':TEXT,'evidence_ref':TEXT,'reason':TEXT,

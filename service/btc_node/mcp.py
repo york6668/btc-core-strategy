@@ -10,6 +10,10 @@ from .contracts import PARAMETERS
 
 
 DESCRIPTIONS = {
+    'schedule.status': 'Read the node-owned BTC scheduler mode, durable batches and heartbeat.',
+    'schedule.window': 'Read the node-owned next execution window and recent scheduler tick.',
+    'schedule.tick': 'Admit actual reader increments and original due conditions under the existing MySQL writer.',
+    'schedule.claim': 'Atomically claim one eligible pinned task in active mode; replay never launches twice.',
     'task.status': 'Read persistent BTC execution obligations and their blockers without treating them as market conclusions.',
     'task.submit': 'Register an evidence-bound business question under a stable issue and pinned release; duplicate input is reused.',
     'task.assess': 'Distinguish an outstanding question from current permission to execute it, including faults and daily deep budget.',
@@ -37,6 +41,8 @@ DESCRIPTIONS = {
     'failure.list': 'List operational fault identities and explicit closure state, including retained closure records after process-file expiry.',
     'failure.resolve': 'Bind an actual successful recovery operation to the exact fault receipt version; retain its process file for 14 days after confirmation, with evidence/dependency protection.',
 }
+NODE_ONLY = {'schedule.tick', 'schedule.claim'}
+EXPOSED = (READS | WRITES) - NODE_ONLY
 
 
 def run(settings):
@@ -59,10 +65,10 @@ def run(settings):
                          'inputSchema': {'type': 'object', 'properties': {'params': PARAMETERS[name],
                                           'operation_id': {'type': 'string'}}, 'required': ['params'] +
                                          (['operation_id'] if name in WRITES else []), 'additionalProperties': False}}
-                         for name in sorted(READS | WRITES)]}
+                         for name in sorted(EXPOSED)]}
             elif method == 'tools/call':
                 given = request['params']
-                names = {name.replace('.', '_'): name for name in READS | WRITES}
+                names = {name.replace('.', '_'): name for name in EXPOSED}
                 rpc = {'method': names[given['name']], **given.get('arguments', {})}
                 response = answer(settings, rpc) if settings.get('direct') else call(settings['socket'], rpc)
                 result = {'content': [{'type': 'text', 'text': json.dumps(response, ensure_ascii=False)}],

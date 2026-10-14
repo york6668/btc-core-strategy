@@ -7,9 +7,10 @@ Callers hold Database.writer() and a transaction for every mutation.
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 
-from .codec import Conflict, millis
+from .codec import Conflict, encode, fingerprint, millis
 from . import deep_gate
 
 
@@ -42,6 +43,52 @@ def _save(db, value):
 
 
 def _verified_completion(db, task, completion_ref):
+    if task['kind'] == 'SIGNAL':
+        if not completion_ref.startswith('sha256:') or len(completion_ref) != 71:
+            raise Conflict('sensing task needs its actual observation identity')
+        root = Path(db.settings['project']) / '.strategy/v4'
+        observed = root / 'sensing' / (completion_ref[7:] + '.json')
+        pointer = root / 'sensing-current.json'
+        try:
+            value, current = json.loads(observed.read_bytes()), json.loads(pointer.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise Conflict('actual sensing observation is unavailable') from exc
+        if (value.get('observation_id') != completion_ref
+                or 'sha256:' + fingerprint(encode({k: v for k, v in value.items()
+                                                     if k != 'observation_id'})) != completion_ref
+                or current.get('observation_id') != completion_ref
+                or millis(value['created_at']) < task['started_ms']
+                or not isinstance(value.get('main_eligible'), bool)
+                or not isinstance(value.get('research_eligible'), bool)):
+            raise Conflict('original sensing result is not a current verified observation')
+    if task['kind'] == 'RECHECK':
+        from .entities import Entities
+        original = db.value(task['evidence_ref'][7:])
+        reviewed = Entities(db).get('REVIEW', completion_ref)
+        payload = (reviewed or {}).get('payload', {})
+        if (not reviewed or payload.get('subject') != {
+                'kind': original['kind'], 'object_id': original['object_id'],
+                'version': original['version']}
+                or payload.get('outcome') in {None, 'PENDING', 'EVIDENCE_LIMITED'}
+                or not reviewed.get('dependencies')
+                or reviewed['known_ms'] < task['started_ms']):
+            raise Conflict('recheck needs an actual evidence-bound review of the original version')
+    if task['kind'] == 'MAIN':
+        from .entities import Entities
+        allocation = Entities(db).get('ALLOCATION', 'portfolio')
+        payload = (allocation or {}).get('payload', {})
+        if (not allocation or payload.get('investment_completion') != 'FORMALLY_ADOPTED'
+                or not payload.get('market_binding')
+                or allocation['method_version'] != task['release_id']
+                or Path(allocation['source_ref']).parent.name != completion_ref):
+            raise Conflict('main task needs the validated formal whole-portfolio decision')
+    if task['kind'] == 'DEEP':
+        from .entities import Entities
+        research = Entities(db).get('RESEARCH', task['issue_id'])
+        latest = ((research or {}).get('payload', {}).get('latest_request') or {})
+        if (latest.get('request_id') != task['evidence_ref']
+                or latest.get('progress', {}).get('independent_id') != completion_ref):
+            raise Conflict('deep task needs the original recorded independent research result')
     if task['kind'] == 'REPORT' and task['phase'] == 'DELIVERY':
         from .entities import Entities
         delivered = Entities(db).get('DELIVERY', completion_ref)
@@ -103,7 +150,7 @@ def submit(db, *, task_id, issue_id, kind, phase, input_digest, release_id,
               'reason_kind': reason_kind, 'due_ms': due_ms, 'revision': revision,
               'state': 'NEEDED', 'blocker': None, 'attempts': 0,
               'attempt_id': None, 'claim_id': None, 'completion_ref': None,
-              'updated_ms': millis(), 'history': history}
+              'updated_ms': millis(), 'started_ms': None, 'history': history}
     state['tasks'][task_id] = record
     _save(db, state)
     return {'action': 'REGISTERED', 'task': record}
@@ -173,6 +220,7 @@ def start(db, *, task_id, attempt_id, release_id, claim_id=None, model=None):
     task['state'] = 'RUNNING'
     task['attempts'] += 1
     task['attempt_id'] = attempt_id
+    task['started_ms'] = millis()
     task['updated_ms'] = millis()
     _save(db, state)
     return {'action': 'LAUNCH_ONCE', 'task': task}
@@ -297,11 +345,12 @@ def repair(db, *, task_id, input_digest, release_id, evidence_ref,
         raise Conflict('repair requires a changed input or release')
     task['history'].append({key: task.get(key) for key in
         ('input_digest','release_id','state','blocker','completion_ref','updated_ms','attempts',
-         'attempt_id','claim_id','failure_ref')})
+         'attempt_id','claim_id','failure_ref','started_ms')})
     task.update(input_digest=input_digest, release_id=release_id,
                 evidence_ref=evidence_ref, repair_ref=verification_ref,
                 repair_reason=reason, revision=task['revision'] + 1,
                 state='NEEDED', blocker=None, attempts=0, attempt_id=None,
-                claim_id=None, completion_ref=None, failure_ref=None, updated_ms=millis())
+                claim_id=None, completion_ref=None, failure_ref=None, started_ms=None,
+                updated_ms=millis())
     _save(db, state)
     return {'action': 'REPAIRED_NEEDS_ASSESSMENT', 'task': task}

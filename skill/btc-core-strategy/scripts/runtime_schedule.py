@@ -68,6 +68,21 @@ def snapshot(config, run_ref, at=None):
     value = {'schema': 'BTC_EXECUTION_WINDOW_V1', 'status': 'UNAVAILABLE',
              'checked_at': at.isoformat(), 'run_ref': run_ref,
              'reason': 'Native automation timing is not available.'}
+    node = config.get('node_scheduler') or {}
+    if node.get('enabled') is True:
+        try:
+            original = json.loads(Path(node['window_file']).read_text())
+            cadence = int(node.get('poll_ms', 60000))
+            checked = instant(original['checked_at'])
+            if (original['schema'] != 'BTC_EXECUTION_WINDOW_V1' or
+                    original['source'] != 'BTC_NODE_SCHEDULER_V1' or
+                    not 60000 <= cadence <= 3600000 or
+                    abs((at - checked).total_seconds()) * 1000 > 2 * cadence):
+                raise ValueError('node window is stale or invalid')
+            return {**original, 'run_ref': run_ref}
+        except (OSError, KeyError, TypeError, ValueError):
+            return {**value, 'source': 'BTC_NODE_SCHEDULER_V1',
+                    'reason': 'Local node scheduling window is unavailable or stale.'}
     state_path = config.get('codex_state_db')
     if not state_path or not run_ref:
         return value

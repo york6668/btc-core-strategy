@@ -108,6 +108,58 @@ class NodeContract(unittest.TestCase):
         replay = dispatch(self.settings,request)
         self.assertEqual('RECONCILE_EXISTING_NO_LAUNCH', replay['action'])
         self.assertEqual(first['task']['attempt_id'],replay['task']['attempt_id'])
+        dispatch(self.settings, {'method':'task.finish',
+            'operation_id':self.id+'-settle-unknown',
+            'params':{'task_id':task_id,'attempt_id':self.id+'-attempt',
+                      'outcome':'UNKNOWN','completion_ref':'unknown-'+self.id,
+                      'failure_kind':'UNKNOWN','failure_ref':'isolated-admission-replay'}})
+
+    def test_schedule_claim_serializes_two_clients_on_actual_mysql_writer(self):
+        from btc_node import scheduler
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / 'releases' / 'synthetic-release'
+            release.mkdir(parents=True)
+            (release / 'RELEASE.json').write_text('{}')
+            (root / 'current').symlink_to(release, target_is_directory=True)
+            settings = dict(self.settings, scheduler_mode='ACTIVE',
+                            release_root=str(release.parent), test_only=True)
+            db = Database(settings)
+            try:
+                with db.writer(), db.transaction():
+                    digest = db.put_blob(encode({'synthetic': self.id}))
+                    key = self.id + '-reader'
+                    db.execute('INSERT INTO projection_sources(document_key,digest,projected_ms,outcome) '
+                               'VALUES(%s,%s,%s,%s)',
+                               (key,digest,millis(),'READER_PRICES_V1'))
+                    got = scheduler.observe_reader(db, {'changed_receipts': [
+                        {'document_key':key,'digest':digest,'outcome':'READER_PRICES_V1','inserted':1}]})
+                    self.assertEqual('QUEUED', got['status'])
+            finally:
+                db.close()
+            tick = dispatch(settings, {'method':'schedule.tick',
+                'operation_id':self.id+'-tick'})
+            self.assertEqual(1, tick['reader_registered'])
+            def try_claim(index):
+                request = {'method':'schedule.claim',
+                           'operation_id':self.id+'-claim-'+str(index),
+                           'params':{'attempt_id':self.id+'-attempt-'+str(index)}}
+                return request, dispatch(settings, request)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(try_claim, range(2)))
+            winners = [(request, value) for request,value in results
+                       if value['action'] == 'LAUNCH_ONCE']
+            self.assertEqual(1, len(winners))
+            self.assertEqual({'LAUNCH_ONCE','ORIGINAL_ATTEMPT_RUNNING_NO_LAUNCH'},
+                             {value['action'] for _,value in results})
+            self.assertEqual('RECONCILE_EXISTING_NO_LAUNCH',
+                             dispatch(settings, winners[0][0])['action'])
+            task = winners[0][1]['task']
+            dispatch(settings, {'method':'task.finish',
+                'operation_id':self.id+'-finish-unknown',
+                'params':{'task_id':task['task_id'],'attempt_id':task['attempt_id'],
+                          'outcome':'UNKNOWN','completion_ref':'unknown-'+self.id,
+                          'failure_kind':'UNKNOWN','failure_ref':'isolated-concurrent-claim'}})
 
     def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
         product = self.id
@@ -1704,6 +1756,9 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(json.loads(failed.stdout), mcp_error)
             tools = {t['name']:t for t in answers[-2]['result']['tools']}
             self.assertIn('prices_repair_seller_references', tools)
+            self.assertIn('schedule_status', tools)
+            self.assertNotIn('schedule_tick', tools)
+            self.assertNotIn('schedule_claim', tools)
             self.assertEqual(tools['object_get']['inputSchema']['properties']['params']['required'],
                              ['kind','object_id','scope'])
             self.assertEqual(json.loads(answers[-1]['result']['content'][0]['text'])['result']['version'], 1)

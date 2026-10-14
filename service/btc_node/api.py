@@ -13,11 +13,12 @@ from .series import Series
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
          'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list', 'model.deep.status', 'model.defect.check',
-         'task.status'}
+         'task.status', 'schedule.status', 'schedule.window'}
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references', 'prices.repair_seller_knowledge',
           'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve',
           'model.deep.claim', 'model.deep.finish', 'model.deep.reconcile', 'model.defect.open', 'model.defect.resolve',
-          'task.submit', 'task.assess', 'task.start', 'task.finish', 'task.reconcile', 'task.repair'}
+          'task.submit', 'task.assess', 'task.start', 'task.finish', 'task.reconcile', 'task.repair',
+          'schedule.tick', 'schedule.claim'}
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
 
 
@@ -56,6 +57,10 @@ def invoke(database, method, params):
         from . import tasks
         action = method.split('.')[-1]
         return getattr(tasks, action)(database, **params)
+    if method.startswith('schedule.'):
+        from . import scheduler
+        action = method.split('.')[-1]
+        return getattr(scheduler, action)(database, **params)
     if method == 'status':
         return {'schema': database.one('SELECT version FROM node_schema WHERE singleton=1')['version'],
                 'writer': database.metadata('writer'),
@@ -175,8 +180,11 @@ def dispatch(settings, request):
                 result = Catalog(db).sync('reader', settings['reader_data'])
                 from .reader_prices import project
                 prices = project(db)
+                from . import scheduler
+                scheduling = scheduler.observe_reader(db, prices)
                 db.metadata('reader.checkpoint', {'at_ms': millis(), 'databases': result['sqlite']}, write=True)
-                return {'checkpointed': True, 'databases': result['sqlite'], 'prices': prices}
+                return {'checkpointed': True, 'databases': result['sqlite'], 'prices': prices,
+                        'schedule': scheduling}
         finally:
             db.close()
     if method not in READS | WRITES:
@@ -202,7 +210,7 @@ def dispatch(settings, request):
                 if prior['status'] != 'COMMITTED':
                     raise Conflict('operation needs recovery before retry')
                 result = database.value(prior['result_digest'])
-                if method in {'model.deep.claim', 'task.start'}:
+                if method in {'model.deep.claim', 'task.start', 'schedule.claim'}:
                     # A lost admission response may have preceded a real launch.
                     # An idempotent replay is never permission to launch again.
                     return {**result, 'action': 'RECONCILE_EXISTING_NO_LAUNCH'}

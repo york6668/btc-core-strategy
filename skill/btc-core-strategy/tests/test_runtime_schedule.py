@@ -111,3 +111,21 @@ class RuntimeScheduleTests(unittest.TestCase):
         self.assertEqual(runtime_schedule.current()['run_ref'],'CURRENT')
         with self.assertRaisesRegex(ValueError,'actual run'):
             runtime_schedule.bind(path,'OTHER')
+
+    def test_cutover_reads_recent_node_window_and_never_falls_back_to_old_task(self):
+        path = self.base / 'node-window.json'
+        window = {'schema': 'BTC_EXECUTION_WINDOW_V1', 'status': 'AVAILABLE',
+                  'source': 'BTC_NODE_SCHEDULER_V1', 'checked_at': self.at.isoformat(),
+                  'next_run_at': '2030-03-01T13:06:00+00:00',
+                  'review_not_before': '2030-03-01T13:07:00+00:00'}
+        path.write_text(json.dumps(window))
+        config = dict(self.config, node_scheduler={'enabled': True,
+                      'window_file': str(path), 'poll_ms': 60000})
+        got = runtime_schedule.snapshot(config, 'node-run', self.at)
+        self.assertEqual('AVAILABLE', got['status'])
+        self.assertEqual('BTC_NODE_SCHEDULER_V1', got['source'])
+        self.assertEqual('node-run', got['run_ref'])
+        later = datetime(2030, 3, 1, 13, 9, tzinfo=timezone.utc)
+        stale = runtime_schedule.snapshot(config, 'node-run', later)
+        self.assertEqual('UNAVAILABLE', stale['status'])
+        self.assertNotIn('automation_id', stale)

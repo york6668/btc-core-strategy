@@ -31,7 +31,7 @@ def project(db, *, limit=32):
         raise Conflict('reader receipt history has no configured channel')
     done = {r['document_key']: r['digest'] for r in db.rows(
         "SELECT document_key,digest FROM projection_sources WHERE outcome IN ('READER_PRICES_V1','READER_INVALID_V1')")}
-    counts, gaps, processed = [], [], 0
+    counts, gaps, processed, changed_receipts = [], [], 0, []
     with sqlite3.connect(sidecar.as_uri()+'?mode=ro', uri=True) as connection:
         connection.row_factory = sqlite3.Row
         # Metadata first: already projected raw blobs are never decoded again.
@@ -42,6 +42,7 @@ def project(db, *, limit=32):
         pending = [(identity('reader-prices', row['chat_id'], row['message_id'], row['revision']), row) for row in rows]
         pending = [(key, row) for key, row in pending if done.get(key) != row['raw_digest']]
         for key, row in pending[:limit]:
+            first_count = len(counts)
             blob = connection.execute('SELECT raw FROM collector_blobs WHERE digest=?', (row['raw_digest'],)).fetchone()
             if blob is None or fingerprint(blob['raw']) != row['raw_digest']:
                 raise Conflict('archived reader attachment checksum mismatch')
@@ -73,9 +74,13 @@ def project(db, *, limit=32):
                 gaps.extend({'message_id': row['message_id'], **gap} for gap in result['gaps'])
             db.execute('REPLACE INTO projection_sources(document_key,digest,projected_ms,outcome) VALUES(%s,%s,%s,%s)',
                        (key, digest, millis(), outcome))
+            changed_receipts.append({'document_key': key, 'digest': digest,
+                                     'inserted': sum(item['inserted'] for item in counts[first_count:]),
+                                     'outcome': outcome})
             processed += 1
     result = {'status': 'PARTIAL' if gaps else 'PROJECTED', 'processed': processed,
-              'remaining': max(0, len(pending)-processed), 'counts': counts, 'gaps': gaps}
+              'remaining': max(0, len(pending)-processed), 'counts': counts, 'gaps': gaps,
+              'changed_receipts': changed_receipts}
     if processed:
         db.metadata('reader.price_projection', {'at_ms': millis(), **result}, write=True)
     return result

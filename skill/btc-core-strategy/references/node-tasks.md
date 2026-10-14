@@ -12,9 +12,13 @@ Sol 对被准入的问题做当前证据、累积变化及相反解释的实际�
 
 ## 节点执行状态
 
-`task.submit` 以稳定 `task_id`、`issue_id`、固定输入摘要、物理发布版本、阶段、来源及业务理由登记 `NEEDED`；相同输入复用原记录。`task.assess` 把原问题与当前准入分开：依赖未齐、开放缺陷、未到实际检验窗口或当天深评名额不可用时为 `BLOCKED`，实际可做才为 `READY`。`task.start` 原子声明一次尝试，深评同时领取原 `model.deep.BTC` 日名额；`task.finish` 保留实际结果，失败/未知锁止，`task.reconcile` 只核对原尝试，不重放外部动作。节点 writer 锁和 operation_id 包住全部变更。新版本不能在原任务身份下偷偷替换固定发布版本；历史与 UNKNOWN 状态不随升级重写。
+`task.submit` 以稳定 `task_id`、`issue_id`、固定输入摘要、物理发布版本、阶段、来源及业务理由登记 `NEEDED`；相同输入复用原记录。`task.assess` 把原问题与当前准入分开：依赖未齐、开放缺陷、未到实际检验窗口或当天深评名额不可用时为 `BLOCKED`，实际可做才为 `READY`。`task.start` 原子声明一次尝试，深评同时领取原 `model.deep.BTC` 日名额；`task.finish` 验证实际感知、复核、正式决策或独立研究原件后才完成，失败/未知锁止，`task.reconcile` 只核对原尝试，不重放外部动作。节点 writer 锁和 operation_id 包住全部变更。新版本不能在原任务身份下偷偷替换固定发布版本；历史与 UNKNOWN 状态不随升级重写。
 
-调用端重放同一个 `task.start` operation_id 只会得到 `RECONCILE_EXISTING_NO_LAUNCH`。失败任务不能因观察到新输入就自动重开；`task.repair` 需记录实际更改和验证引用，并保留旧尝试历史。研究任务沿已验证的 request、原独立输入和原问题身份投影；独立结果已存在时只标记原待办完成。此阶段仅在节点配置明确设置 `task_shadow_enabled: true` 时投影待办，现有正式配置默认不启用，也没有节点模型调度器或原生消息投递器。这个开关只供隔离与 shadow 验收，不代表完成客户端退出后的端到端切换。
+调用端重放同一个 `task.start` operation_id 只会得到 `RECONCILE_EXISTING_NO_LAUNCH`。失败任务不能因观察到新输入就自动重开；`task.repair` 需记录实际更改和验证引用，并保留旧尝试历史。研究任务沿已验证的 request、原独立输入和原问题身份投影；独立结果已存在时只标记原待办完成。此阶段仅在节点配置明确设置 `task_shadow_enabled: true` 时投影研究与组合待办；现有正式配置默认不启用。
+
+`scheduler_mode` 默认 `OFF`；`SHADOW` 记录 reader 实际增量与原到期待办、评估依赖但绝不领取模型任务；`ACTIVE` 才能通过 `schedule.claim` 领取。`reader.checkpoint` 仅在真实投影插入后排队 SIGNAL，由 `schedule.tick` 登记；同值重取不准入。`schedule.tick` 追回错过的原到期，保持原对象版本与期限。DEEP 仅当原研究请求投影并明确启用 `scheduler_deep_enabled` 时进入可领取队列；REPORT 因原目的地运输未验证保持阻断。
+
+宿主 `scripts/node_scheduler_worker.py --config <现有 node.json>` 是默认关闭的执行适配器，节点任务日志和原领域原件仍为权威。它使用同一 Docker 服务请求、宿主 `flock`、物理发布目录和本地 Codex CLI；`schedule.tick/claim` 不向客户端 MCP 暴露，客户端可查看状态。同一任务只领取一次，CLI 返回的引用还需节点核验，运行痕迹写入私有 `attempt_dir`。中断后原尝试保持 RUNNING 或 UNKNOWN，不因新轮次重放。安装周期入口之前须验证宿主 CLI 在桌面退出时的登录、网络、工具及原生送达能力；目前不能仅凭此执行器宣布完全自治。`node_scheduler.enabled` 与容器 `scheduler_mode=ACTIVE` 均需在旧正式任务确实停用、投递可验证后才启用；不要把复测定时器当成正式触发。切换后 `runtime_schedule` 才读节点写出的新时间窗口，不再读旧 Codex 自动任务时间。
 
 正式总体投资决策缺失时，同一 `portfolio-synthesis` 问题持续待办；revision 7 的旧决策不被伪装成 revision 8/9 完成。`Projection.refresh` 只从已验证正式结果投影完成状态；旧研究程序缺陷持续阻断受影响阶段，普通市场与报告工作按各自作用域继续。
 

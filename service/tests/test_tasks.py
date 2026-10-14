@@ -57,8 +57,9 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(1, started['attempts'])
         with self.assertRaisesRegex(Conflict, 'not ready'):
             tasks.start(self.db, task_id=first['task_id'], attempt_id='attempt-b', release_id='a1577cc6')
-        tasks.finish(self.db, task_id=first['task_id'], attempt_id='attempt-a',
-                     outcome='COMPLETE', completion_ref='actual-review-artifact')
+        with patch.object(tasks, '_verified_completion'):
+            tasks.finish(self.db, task_id=first['task_id'], attempt_id='attempt-a',
+                         outcome='COMPLETE', completion_ref='actual-review-artifact')
         self.assertEqual('ALREADY_TRACKED', self.submit()['action'])
         self.assertEqual('COMPLETED', tasks.status(self.db, task_id=first['task_id'])['state'])
 

@@ -14,5 +14,12 @@
   "automation_id": "LOCAL_AUTOMATION_ID",
   "report_destination": "EXISTING_LOCAL_DESTINATION",
   "automation_memory": "/absolute/local/codex/automations/btc/memory.md",
-  "codex_automations_db": "/absolute/local/codex/sqlite/codex-dev.db"
+  "codex_automations_db": "/absolute/local/codex/sqlite/codex-dev.db",
+  "node_scheduler": {
+    "enabled": false,
+    "codex_cli": "/absolute/local/Codex.app/Contents/Resources/codex-cli/bin/codex",
+    "attempt_dir": "/absolute/local/btc-data/node-scheduler-attempts",
+    "window_file": "/absolute/local/btc-data/node-scheduler-window.json",
+    "poll_ms": 60000
+  }
 }
