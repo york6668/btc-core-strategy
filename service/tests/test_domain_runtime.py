@@ -394,10 +394,14 @@ class DomainRuntime(unittest.TestCase):
                         path=project/name
                         original_bytes=path.read_bytes()
                         original_mode=path.stat().st_mode & 0o777
+                        original_fd=None
                         if mode=='missing':
                             path.unlink()
                             with self.assertRaises(FileNotFoundError):path.read_bytes()
                         else:
+                            # The original may also be linked from the blob store.
+                            # Keep its inode open in case the wrapper replaces path.
+                            original_fd=os.open(path,os.O_RDONLY)
                             path.chmod(0)
                             with self.assertRaises(PermissionError):path.read_bytes()
                         probe=deepcopy(request)
@@ -436,6 +440,9 @@ class DomainRuntime(unittest.TestCase):
                                 'actual_read_denied':True,'core_returncode':0,'wrapper_committed':True,
                                 'personal_value_unknown':True,'stale_current_portfolio_withheld':True}),flush=True)
                         finally:
+                            if original_fd is not None:
+                                os.fchmod(original_fd,original_mode)
+                                os.close(original_fd)
                             path.chmod(0o600) if path.exists() else None
                             path.write_bytes(original_bytes)
                             path.chmod(original_mode)
