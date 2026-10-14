@@ -1,4 +1,4 @@
-"""Exercise failed disposable-stack evidence collection without Docker."""
+"""Exercise disposable-stack admission details without starting Docker."""
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +9,22 @@ import check
 
 
 class FailureDiagnosticsTests(unittest.TestCase):
+    def test_compose_numeric_byte_strings_preserve_limits(self):
+        limits = {'core': check.GIB, 'mysql': check.GIB,
+                  'scheduler': check.GIB // 2, 'maintenance': check.GIB // 4}
+        services = {name: {'restart': 'no', 'mem_limit': str(limit)}
+                    for name, limit in limits.items()}
+        check.verify_disposable_limits(services)
+        services['core']['mem_limit'] = check.GIB
+        check.verify_disposable_limits(services)
+        services['core']['mem_limit'] = str(check.GIB - 1)
+        with self.assertRaisesRegex(AssertionError, 'core'):
+            check.verify_disposable_limits(services)
+        services['core']['mem_limit'] = str(check.GIB)
+        services['core']['restart'] = 'unless-stopped'
+        with self.assertRaisesRegex(AssertionError, 'core'):
+            check.verify_disposable_limits(services)
+
     def test_compose_failure_captures_bounded_logs_and_cleans_temp_data(self):
         with tempfile.TemporaryDirectory() as root:
             reader = Path(root) / 'reader'

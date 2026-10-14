@@ -17,6 +17,15 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def verify_disposable_limits(services):
+    """Require exact byte limits across Compose's string/int JSON encodings."""
+    for service, limit in (('core', GIB), ('mysql', GIB),
+                           ('scheduler', GIB//2), ('maintenance', GIB//4)):
+        effective = services[service]
+        if effective['restart'] != 'no' or str(effective['mem_limit']) != str(limit):
+            raise AssertionError('disposable stack restart/memory override missing: '+service)
+
+
 def run(docker, reader, reader_image=None, preserved_volume_manifest=None):
     # One local flock and one daemon-wide atomic claim cover separate shell
     # processes and separate clients of the same Docker VM.
@@ -118,10 +127,7 @@ def _run(docker, reader, reader_image, guard, project):
         command += ['-f',str(override)]
         effective_test = json.loads(subprocess.check_output(command+[
             '--profile','node-scheduler','config','--format','json'],text=True))['services']
-        for service, limit in (('core', GIB), ('mysql', GIB),
-                               ('scheduler', GIB//2), ('maintenance', GIB//4)):
-            if effective_test[service]['restart'] != 'no' or effective_test[service]['mem_limit'] != limit:
-                raise AssertionError('disposable stack restart/memory override missing: '+service)
+        verify_disposable_limits(effective_test)
         if not any(mount['target']=='/var/lib/mysql' and mount['source']==str(directory/'mysql-data')
                    for mount in effective_test['mysql']['volumes']):
             raise AssertionError('disposable MySQL must use its own bind mount')
