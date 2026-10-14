@@ -43,6 +43,53 @@ def record_maintenance_failure(settings, error):
         db.close()
 
 
+def record_scheduler_failure(settings, error):
+    """Latch a failed node clock until the original defect is reviewed."""
+    from .deep_gate import open_fault
+    signature = 'sha256:' + hashlib.sha256(
+        (type(error).__name__ + '\0' + str(error)).encode()).hexdigest()
+    reference = 'scheduler-loop/stderr/' + datetime.now(timezone.utc).isoformat(timespec='seconds')
+    db = Database(settings)
+    try:
+        with db.writer(), db.transaction():
+            open_fault(db, scope='btc/scheduler', kind='UNKNOWN',
+                       signature=signature, fault_digest=signature,
+                       evidence_ref=reference)
+    finally:
+        db.close()
+
+
+def scheduler_pulse(settings, database_class=Database):
+    """Register due work inside the node writer without a per-minute operation log."""
+    from . import scheduler
+    from .deep_gate import check_scope
+    db = database_class(settings)
+    try:
+        with db.writer(), db.transaction():
+            if scheduler.mode(db) == 'OFF':
+                return {'action': 'DISABLED'}
+            if not check_scope(db, scope='btc/scheduler')['allowed']:
+                return {'action': 'BLOCKED_SCHEDULER_FAULT'}
+            return scheduler.tick(db)
+    finally:
+        db.close()
+
+
+def scheduler_loop(settings):
+    poll_ms = settings.get('scheduler_poll_ms', 60_000)
+    if type(poll_ms) is not int or not 60_000 <= poll_ms <= 3_600_000:
+        raise ValueError('node scheduler poll must be between one minute and one hour')
+    while True:
+        try:
+            result = scheduler_pulse(settings)
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        except Exception as error:
+            try: record_scheduler_failure(settings, error)
+            except Exception as latch_error: traceback.print_exception(latch_error)
+            traceback.print_exception(error)
+        time.sleep(poll_ms / 1000)
+
+
 def answer(settings, request):
     try:
         return {'ok': True, 'result': dispatch(settings, request)}
@@ -101,7 +148,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=os.environ.get('BTC_SERVICE_CONFIG'))
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop', 'capacity-audit'):
+    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop', 'scheduler-loop', 'capacity-audit'):
         sub.add_parser(name)
     for name in ('import', 'compare', 'restore'):
         p = sub.add_parser(name)
@@ -143,6 +190,8 @@ def main():
                 compatibility.parent.mkdir(parents=True, exist_ok=True)
                 compatibility.symlink_to(settings['compatibility_root'], target_is_directory=True)
         serve(settings)
+    elif args.command == 'scheduler-loop':
+        scheduler_loop(settings)
     elif args.command == 'capacity-audit':
         from .lifecycle import measure_capacity
         db = Database(settings)

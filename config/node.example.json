@@ -19,7 +19,6 @@
     "enabled": false,
     "codex_cli": "/absolute/local/Codex.app/Contents/Resources/codex-cli/bin/codex",
     "attempt_dir": "/absolute/local/btc-data/node-scheduler-attempts",
-    "window_file": "/absolute/local/btc-data/node-scheduler-window.json",
-    "poll_ms": 60000
+    "window_file": "/absolute/local/btc-data/node-scheduler-window.json"
   }
 }

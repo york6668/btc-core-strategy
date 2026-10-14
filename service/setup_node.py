@@ -82,9 +82,10 @@ def prepare(node_path, data, docker, compose_project, source):
     # Containers receive source exports and fact generations, never broad home
     # directory access or the Keychain.
     write(data / 'compose.override.json', {'services': {'core': {'volumes': volumes},
-         'maintenance': {'volumes': volumes}, 'mysql': {'ports': ['127.0.0.1::3306']}}})
+         'maintenance': {'volumes': volumes}, 'scheduler': {'volumes': volumes},
+         'mysql': {'ports': ['127.0.0.1::3306']}}})
     write(data / 'compose.active.json', {'services': {'core': {'volumes': volumes},
-         'maintenance': {'volumes': volumes}}})
+         'maintenance': {'volumes': volumes}, 'scheduler': {'volumes': volumes}}})
     bridge = {'enabled': False, 'binary': str(docker), 'project': compose_project,
               'env_file': str(data / 'compose.env'), 'compose_file': str(source / 'service/compose.yaml'),
               'override_files': [str(data / 'compose.active.json')],

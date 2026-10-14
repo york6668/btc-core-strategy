@@ -9,8 +9,10 @@ import sys
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 from btc_node import scheduler, tasks, deep_gate
+from btc_node.__main__ import scheduler_pulse
 from btc_node.codec import Conflict, encode
 sys.path.insert(0, str(Path(os.environ.get('BTC_TEST_SOURCE') or Path(__file__).resolve().parents[2]) /
                        'skill/btc-core-strategy/scripts'))
@@ -27,6 +29,12 @@ class Node:
     def metadata(self, name, value=None, *, write=False):
         if write: self.data[name] = value
         return self.data.get(name)
+
+    def writer(self): return nullcontext()
+
+    def transaction(self): return nullcontext()
+
+    def close(self): pass
 
     def put_blob(self, value):
         digest = hashlib.sha256(value).hexdigest()
@@ -131,10 +139,14 @@ class SchedulerTests(unittest.TestCase):
     def test_host_worker_claims_once_and_locks_ambiguous_result_across_restart(self):
         db = Node(self.root, 'ACTIVE')
         scheduler.observe_reader(db, self.receipt(db))
+        self.assertEqual('NO_ACTIVE_NODE_SCHEDULE', node_scheduler_worker.run_once(
+            {'node_scheduler': {'enabled': True, 'attempt_dir': str(self.root / 'empty-attempts'),
+                                'codex_cli': '/no/cli'}},
+            type('Idle', (), {'request': lambda _, method: scheduler.window(db)})())['action'])
+        scheduler.tick(db)
 
         class Client:
             def request(self, method, params=None, operation_id=None):
-                if method == 'schedule.tick': return scheduler.tick(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)
@@ -160,13 +172,21 @@ class SchedulerTests(unittest.TestCase):
     def test_worker_disabled_has_no_node_side_effect(self):
         self.assertEqual({'action': 'DISABLED'}, node_scheduler_worker.run_once({}))
 
+    def test_native_session_requires_one_completed_codex_thread(self):
+        events=self.root/'events.jsonl'
+        events.write_text('{"type":"thread.started","thread_id":"synthetic-thread-1"}\n')
+        self.assertIsNone(node_scheduler_worker._native_session(events))
+        with events.open('a') as output:
+            output.write('{"type":"turn.completed"}\n')
+        self.assertEqual('synthetic-thread-1',node_scheduler_worker._native_session(events))
+
     def test_isolated_worker_cli_replay_requires_actual_verified_sensing_artifact(self):
         db = Node(self.root, 'ACTIVE')
         scheduler.observe_reader(db, self.receipt(db))
+        scheduler.tick(db)
 
         class Client:
             def request(self, method, params=None, operation_id=None):
-                if method == 'schedule.tick': return scheduler.tick(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)
@@ -188,6 +208,8 @@ value['observation_id'] = identity
 (root / 'sensing-current.json').write_text(json.dumps({'observation_id': identity}))
 pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({
     'task_id':task['task_id'], 'attempt_id':task['attempt_id'], 'completion_ref':identity}))
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-thread-1'}))
+print(json.dumps({'type':'turn.completed'}))
 ''')
         cli.chmod(0o700)
         (self.root / 'project').mkdir()
@@ -201,6 +223,8 @@ pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({
         result = node_scheduler_worker.run_once(config, Client())
         self.assertEqual('COMPLETED', result['action'])
         self.assertEqual('gpt-6.1-sol', result['model'])
+        trace=json.loads(next(attempts.glob('node-*/result.json')).read_text())
+        self.assertEqual('synthetic-thread-1',trace['native_thread_id'])
         self.assertEqual('BTC_NODE_SCHEDULER_V1',
                          json.loads((self.root / 'node-window.json').read_text())['source'])
         self.assertEqual('NO_READY_TASK', node_scheduler_worker.run_once(config, Client())['action'])
@@ -208,9 +232,10 @@ pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({
     def test_two_host_invocations_admit_only_one_original_attempt(self):
         db = Node(self.root, 'ACTIVE')
         scheduler.observe_reader(db, self.receipt(db))
+        scheduler.tick(db)
         class Client:
             def request(self, method, params=None, operation_id=None):
-                if method == 'schedule.tick': return scheduler.tick(db)
+                if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)
                 raise AssertionError(method)
@@ -231,6 +256,23 @@ pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({
             release.set()
             self.assertEqual('BLOCKED', first.result(5)['action'])
         self.assertEqual(1, tasks.status(db)['tasks'][0]['attempts'])
+
+    def test_node_pulse_is_the_only_due_clock_and_fault_blocks_worker_window(self):
+        db = Node(self.root, 'ACTIVE')
+        scheduler.observe_reader(db, self.receipt(db))
+        self.assertEqual('TICKED', scheduler_pulse(db.settings, lambda _: db)['action'])
+        self.assertEqual('AVAILABLE', scheduler.window(db)['status'])
+        signature = 'sha256:' + 'a' * 64
+        deep_gate.open_fault(db, scope='btc/scheduler', kind='UNKNOWN',
+                             signature=signature, fault_digest=signature,
+                             evidence_ref='scheduler-loop/stderr/test')
+        self.assertEqual('BLOCKED_SCHEDULER_FAULT',
+                         scheduler_pulse(db.settings, lambda _: db)['action'])
+        self.assertEqual('UNAVAILABLE', scheduler.window(db)['status'])
+        self.assertIn('defect', scheduler.window(db)['reason'])
+        self.assertEqual('NODE_CLOCK_UNAVAILABLE_NO_LAUNCH',
+                         scheduler.claim(db, attempt_id='blocked-attempt')['action'])
+        self.assertEqual(0, tasks.status(db)['tasks'][0]['attempts'])
 
 
 if __name__ == '__main__': unittest.main()

@@ -2,6 +2,8 @@
 
 `compose.yaml` 的 analysis、reader、collector profile 共用部署定义。分析节点使用独立 MySQL 8.4 数据卷与单独挂载的内容寻址证据目录；核心服务、reader、维护任务在容器内，模型与原生发送/回读、Keychain、三份确认文件在宿主。数据目录、凭据与机器配置只属于节点，不进入源码、镜像构建上下文或云端任务。镜像构建白名单仅包含 service 源码及依赖声明。
 
+可选 `node-scheduler` profile 只启动同一 `btc_node scheduler-loop` 的节点时钟，正式配置默认 `scheduler_mode=OFF`。该循环调用节点自身的 `schedule.tick` 登记真实增量和原到期待办；宿主 CLI worker 只在节点窗口新鲜且无调度故障时领取，不拥有业务时钟。`node-scheduler` profile、`ACTIVE` 与 worker 均须在旧正式入口已核验停用、原目的地投递回读已验证后启用；复测仍独立。宿主可用适合其实际 Docker/CLI 身份的进程管理器，示例 launchd 只是备选。
+
 `btc_node.api` 是 CLI/MCP 的同一服务层。entities 管理对象版本、引用及复核；series 保存产品身份和双时间序列；projection/history 读取已验证的既有契约；fact_views 绑定文件版本及逐行来源；catalog 保留旧 ID、原字节、SQLite 行及游标；execution 对实际旧 CLI 做持久准入、唯一写入及中断恢复。报告与研究仍使用原状态机，触价不会推导确认或成交。完整业务使用见 [持续分析契约](../skill/btc-core-strategy/references/continuous-analysis.md)。
 
 `model.deep.status/claim/finish/reconcile` 将整个 BTC 系统的高等级深评按东京自然日限制为一次，复用本服务的 MySQL 写入锁和 `node_metadata`，不另建本地任务预算。丢失 claim 响应的同 operation 重放只返回核查提示，不授权再次启动；跨午夜在途和 UNKNOWN 阻断次日名额直至原调用核清。`model.defect.open/resolve` 保留受影响范围的故障与实际修复证据。研究登记还须绑定同一已完成票据与真实模型轨迹；旧固定发布若无票据入口，服务拒绝其新结果登记并保留原研究供兼容修复。平台代理工具的启动不经过本服务，调用者须先在本节点取得 claim；服务本身不能拦截未经它发起的外部模型调用。

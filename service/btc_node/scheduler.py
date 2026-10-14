@@ -229,6 +229,8 @@ def claim(db, *, attempt_id):
     if not db.settings.get('test_only') and not (db.settings.get('scheduler_cutover_receipt')
                                                   and db.settings.get('native_report_transport_ready')):
         raise Conflict('formal cutover and original-destination transport proof required')
+    if window(db)['status'] != 'AVAILABLE':
+        return {'action': 'NODE_CLOCK_UNAVAILABLE_NO_LAUNCH'}
     release_id = pinned_release(db)
     all_tasks = tasks.status(db)['tasks']
     if any(row['state'] == 'RUNNING' and row['namespace'] == 'formal' for row in all_tasks):
@@ -256,6 +258,7 @@ def status(db):
 
 def window(db):
     """Node clock evidence for the existing report-care timing contract."""
+    from .deep_gate import check_scope
     state, selected = _state(db), mode(db)
     cadence_ms = db.settings.get('scheduler_poll_ms', 60_000)
     if type(cadence_ms) is not int or not 60_000 <= cadence_ms <= 3_600_000:
@@ -264,7 +267,8 @@ def window(db):
     cutover = (db.settings.get('test_only') is True or
                bool(db.settings.get('scheduler_cutover_receipt') and
                     db.settings.get('native_report_transport_ready')))
-    available = (selected == 'ACTIVE' and cutover and last is not None
+    fault_free = check_scope(db, scope='btc/scheduler')['allowed']
+    available = (selected == 'ACTIVE' and cutover and fault_free and last is not None
                  and millis() - last <= 2 * cadence_ms)
     next_ms = max(millis(), last + cadence_ms) if last is not None else None
     stamp = lambda value: datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
@@ -275,4 +279,5 @@ def window(db):
             'execution_margin_seconds': 60,
             'review_not_before': stamp(next_ms + 60_000) if available else None,
             'reason': ('Recent node tick and configured poll cadence.' if available else
+                       'Known node scheduler defect blocks launch.' if not fault_free else
                        'Node cutover or recent active tick is unavailable; feasibility is unverified.')}

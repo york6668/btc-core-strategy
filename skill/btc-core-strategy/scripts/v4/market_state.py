@@ -94,6 +94,7 @@ MOMENTUM_REPORT_REVIEW = (
     '保留已评估的现价风险收益、等待价值和个人风险结论，不以趋势标签替代。成稿不得提高确认程度或新增研究结论；缺论证返回对应研判，不靠添加模板词语补齐。'
 )
 INSTRUCTIONS = PUBLIC_ANALYSIS_REVIEW + CYCLE_FOCUS_REVIEW + CYCLE_THESIS_REVIEW + MOMENTUM_REVIEW + EVIDENCE_REASONING_REVIEW + PUBLIC_RESULT_REVIEW + (
+    '读取必需的market-summary时区分数据集issues与保留行用途：UNCLOSED_OR_FUTURE是被剔除候选行的问题，不表示已保留的闭合价格行失效。逐来源核对retained_row_use、coverage、instrument和quote_unit；已闭合行可用于本市场价格方向，缺少报价成交字段只限制主动流量命题，跨USD/USDT不能直接当作同一精确触价。若旧判断曾误用这些标签，指出受影响与未受影响的命题，再沿原缺陷和判断接续入口纠正，不因一小时价格行为宣布原主周期被证实或证伪。'
     '市场判断独立于个人账户、个人仓位与成本、目标比例和个人建议；公共持有人成本按群体与统计口径作为市场证据，不得默认原有多空方向延续。'
     '跨市场、同向交易是识别渠道的示例，模型自主选择并扩展方法；在内部完成支持与冲突证据的取舍，不机械计票。'
     '逐市场判断方向、适用周期、结构变化、周期共振和趋势反转及确认程度；未知不写中性。'

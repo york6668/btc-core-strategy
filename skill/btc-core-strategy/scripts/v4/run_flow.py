@@ -82,9 +82,30 @@ def market_brief(raw):
             if isinstance(measurements.get('rows'), list):
                 rows = measurements.pop('rows')
                 window['raw_rows'] = {'count':len(rows), 'pointer':'/windows/'+span+'/'+dataset+'/measurements/rows'}
+    datasets = {}
+    for key, ds in raw['datasets'].items():
+        latest = ds['rows'][-1] if ds['rows'] else None
+        price_kind = ds['kind'] in ('CANDLES', 'MARK', 'INDEX')
+        all_closed = bool(price_kind and ds['rows'] and all(
+            market.timestamp(row['end']) <= market.timestamp(raw['cutoff'])
+            for row in ds['rows']))
+        require(not price_kind or not ds['rows'] or all_closed,
+                'retained market price row exceeds the frozen cutoff')
+        closed = bool(latest and all_closed)
+        quote_flow = bool(closed and latest.get('quote_volume') is not None
+                          and latest.get('taker_buy_quote') is not None)
+        datasets[key] = {**{k:ds.get(k) for k in ('kind','quote_unit','market','instrument','coverage','issues')},
+            'latest':latest,
+            'issue_scope': ({'UNCLOSED_OR_FUTURE':'EXCLUDED_CANDIDATE_NOT_RETAINED_ROW'}
+                            if 'UNCLOSED_OR_FUTURE' in ds['issues'] else {}),
+            'retained_row_use': {
+                'all_price_rows_closed_at_cutoff': all_closed,
+                'latest_price_closed_at_cutoff': closed,
+                'own_instrument_open_close_usable': closed,
+                'quote_taker_balance_usable': quote_flow,
+                'requested_window_complete': ds['coverage']['complete']}}
     return {'cutoff':raw['cutoff'], 'observed_hour':raw['observed_hour'],
-        'datasets':{key:{**{k:ds.get(k) for k in ('kind','quote_unit','market','coverage','issues')},
-                         'latest':ds['rows'][-1] if ds['rows'] else None} for key,ds in raw['datasets'].items()},
+        'datasets':datasets,
         'windows':windows, 'cycle_metrics': {k:v for k,v in reporting.metrics(raw, None).items() if v.get('interval_seconds', market.HOUR) > market.HOUR}}
 
 

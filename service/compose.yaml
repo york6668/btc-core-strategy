@@ -63,6 +63,12 @@ services:
     # Host boot restores the loop; the durable attempt/fault gate prevents
     # repeating an interrupted or failed daily backup automatically.
     restart: unless-stopped
+  scheduler:
+    <<: *app
+    # Explicit cutover profile; the same node writer owns due registration.
+    profiles: [node-scheduler]
+    command: [scheduler-loop]
+    restart: unless-stopped
   reader:
     image: btc-reader:${BTC_READER_IMAGE_TAG:-${BTC_IMAGE_TAG:-local}}
     profiles: [reader]

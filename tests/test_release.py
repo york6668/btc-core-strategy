@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import plistlib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -19,6 +20,19 @@ spec.loader.exec_module(release)
 
 
 class ExportManifestTests(unittest.TestCase):
+    def test_node_launchagent_template_is_disabled_and_has_one_calendar_wake(self):
+        template = plistlib.loads((ROOT / 'config/local.btc.node-scheduler.plist.example').read_bytes())
+        self.assertEqual('local.btc.node-scheduler', template['Label'])
+        self.assertTrue(template['Disabled'])
+        self.assertEqual('Aqua', template['LimitLoadToSessionType'])
+        self.assertTrue(template['RunAtLoad'])
+        self.assertEqual({}, template['StartCalendarInterval'])
+        self.assertNotIn('StartInterval', template)
+        self.assertNotIn('KeepAlive', template)
+        self.assertEqual(63, template['Umask'])
+        self.assertEqual(1, sum('node_scheduler_worker.py' in arg
+                                for arg in template['ProgramArguments']))
+
     def test_prepared_node_keeps_strategy_and_cas_on_one_project_mount(self):
         spec = importlib.util.spec_from_file_location('btc_setup', ROOT/'service/setup_node.py')
         setup = importlib.util.module_from_spec(spec);spec.loader.exec_module(setup)

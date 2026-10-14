@@ -16,9 +16,15 @@ Sol 对被准入的问题做当前证据、累积变化及相反解释的实际�
 
 调用端重放同一个 `task.start` operation_id 只会得到 `RECONCILE_EXISTING_NO_LAUNCH`。失败任务不能因观察到新输入就自动重开；`task.repair` 需记录实际更改和验证引用，并保留旧尝试历史。研究任务沿已验证的 request、原独立输入和原问题身份投影；独立结果已存在时只标记原待办完成。此阶段仅在节点配置明确设置 `task_shadow_enabled: true` 时投影研究与组合待办；现有正式配置默认不启用。
 
-`scheduler_mode` 默认 `OFF`；`SHADOW` 记录 reader 实际增量与原到期待办、评估依赖但绝不领取模型任务；`ACTIVE` 才能通过 `schedule.claim` 领取。`reader.checkpoint` 仅在真实投影插入后排队 SIGNAL，由 `schedule.tick` 登记；同值重取不准入。`schedule.tick` 追回错过的原到期，保持原对象版本与期限。DEEP 仅当原研究请求投影并明确启用 `scheduler_deep_enabled` 时进入可领取队列；REPORT 因原目的地运输未验证保持阻断。
+`scheduler_mode` 默认 `OFF`；`SHADOW` 记录 reader 实际增量与原到期待办、评估依赖但绝不领取模型任务；`ACTIVE` 才能通过 `schedule.claim` 领取。显式启用 Compose `node-scheduler` profile 后，现有 `btc_node scheduler-loop` 在数据节点内按 `scheduler_poll_ms` 运行 `schedule.tick`，使用同一 MySQL writer、任务状态与故障闸门；宿主与客户端不登记时钟待办。`reader.checkpoint` 仅在真实投影插入后排队 SIGNAL，由节点时钟登记；同值重取不准入。节点时钟追回错过的原到期，保持原对象版本与期限；故障锁止后窗口不可用，必须核清原故障。DEEP 仅当原研究请求投影并明确启用 `scheduler_deep_enabled` 时进入可领取队列；REPORT 因原目的地运输未验证保持阻断。
 
-宿主 `scripts/node_scheduler_worker.py --config <现有 node.json>` 是默认关闭的执行适配器，节点任务日志和原领域原件仍为权威。它使用同一 Docker 服务请求、宿主 `flock`、物理发布目录和本地 Codex CLI；`schedule.tick/claim` 不向客户端 MCP 暴露，客户端可查看状态。同一任务只领取一次，CLI 返回的引用还需节点核验，运行痕迹写入私有 `attempt_dir`。中断后原尝试保持 RUNNING 或 UNKNOWN，不因新轮次重放。安装周期入口之前须验证宿主 CLI 在桌面退出时的登录、网络、工具及原生送达能力；目前不能仅凭此执行器宣布完全自治。`node_scheduler.enabled` 与容器 `scheduler_mode=ACTIVE` 均需在旧正式任务确实停用、投递可验证后才启用；不要把复测定时器当成正式触发。切换后 `runtime_schedule` 才读节点写出的新时间窗口，不再读旧 Codex 自动任务时间。
+宿主 `scripts/node_scheduler_worker.py --config <现有 node.json>` 是默认关闭的模型执行适配器，节点任务日志和原领域原件仍为权威。它检查节点最近成功时钟窗口、使用同一 Docker 服务领取任务、宿主 `flock`、物理发布目录和本地 Codex CLI，**不调用 `schedule.tick`**；`schedule.tick/claim` 不向客户端 MCP 暴露，客户端可查看状态。同一任务只领取一次，CLI 的非临时 `--json` 会话须返回唯一完成的原生 thread 引用，原领域原件仍由节点核验；私有 `attempt_dir` 保存该映射和不确定结果的诊断证据，不另建模型操作权威。中断后原尝试保持 RUNNING 或 UNKNOWN，不因新轮次重放。宿主适配器的唤醒方式只负责进程存活与领取，不决定业务到期；选定前须验证桌面退出时的 CLI 登录、网络、工具及原生送达能力。`node_scheduler.enabled`、节点 profile 与容器 `scheduler_mode=ACTIVE` 均需在旧正式任务确实停用、投递可验证后才启用；不要把复测定时器当成正式触发。切换后 `runtime_schedule` 才读节点写出的新时间窗口，不再读旧 Codex 自动任务时间。
+
+macOS `config/local.btc.node-scheduler.plist.example` 只是宿主适配器的一种唤醒候选，不是必选实现或合并条件。若选它，安装位置仅限该用户的 `~/Library/LaunchAgents`、域 `gui/<uid>`；当前 Docker Desktop 与 CLI 在用户会话中，退出登录时该入口不会继续执行。LaunchDaemon 不能假定获得用户会话资源；无登录运行须另行核验 Docker 与 CLI 身份，不能借用 root 或新持久凭据。模板默认 `Disabled=true`，一分钟唤醒仅轮询节点已登记的待办；睡眠或重启错过的业务窗口由节点持久任务扫描恢复。`flock` 和 MySQL writer/operation_id 防止并发领取。其他宿主唤醒方式也必须服从同一节点窗口与任务准入，不创建第二份业务时钟。
+
+现有 `local.btc.host-watchdog` 会周期性打开 ChatGPT 桌面应用，不能把它视作独立模型/报告运输；桌面不可用验收必须在不依赖其重开的受控环境中进行。本源码不会停止该现有监控，也不会把它作为节点任务的调度器。
+
+正式入口切换前，读取旧 `btc` Codex 自动任务的受支持状态并留存已停回执，再核验节点 profile、ACTIVE、所选宿主适配器与旧轮无 RUNNING；若旧任务仍 ACTIVE，新正式入口保持关闭。当前云端任务对 `codex_app.automation_update(view)` 的调用返回“Automations are only supported for local threads”；原主机上须由支持该工具的本地 Codex 任务或应用界面完成停用并读回。本阶段未触碰旧自动任务。
 
 正式总体投资决策缺失时，同一 `portfolio-synthesis` 问题持续待办；revision 7 的旧决策不被伪装成 revision 8/9 完成。`Projection.refresh` 只从已验证正式结果投影完成状态；旧研究程序缺陷持续阻断受影响阶段，普通市场与报告工作按各自作用域继续。
 

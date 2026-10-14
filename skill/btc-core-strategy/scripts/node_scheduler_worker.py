@@ -106,6 +106,25 @@ def _valid_identity(value):
         character.isalnum() or character in '/._:-' for character in value)
 
 
+def _native_session(events):
+    """Link the node attempt to Codex's saved native execution history."""
+    threads, completed = set(), False
+    try:
+        with events.open(encoding='utf-8') as stream:
+            for line in stream:
+                event = json.loads(line)
+                if event.get('type') == 'thread.started':
+                    threads.add(event.get('thread_id'))
+                elif event.get('type') == 'turn.completed':
+                    completed = True
+                elif event.get('type') == 'turn.failed':
+                    return None
+    except (OSError, ValueError, TypeError):
+        return None
+    identity = next(iter(threads)) if len(threads) == 1 else None
+    return identity if completed and _valid_identity(identity) else None
+
+
 def launch(config, task, directory):
     runtime_root = Path(config['release_root']).resolve(strict=True)
     release_root = runtime_root / 'releases'
@@ -121,7 +140,7 @@ def launch(config, task, directory):
     output = directory / 'last-message.json'
     _write_private(schema, json.dumps(RESPONSE_SCHEMA, sort_keys=True).encode())
     model = DEEP_MODEL if task['kind'] == 'DEEP' else MODEL
-    command = [str(cli), 'exec', '-m', model, '-s', 'workspace-write',
+    command = [str(cli), 'exec', '--json', '-m', model, '-s', 'workspace-write',
                '-c', 'model_reasoning_effort="max"' if task['kind'] == 'DEEP'
                      else 'model_reasoning_effort="high"',
                '--approve-for-me',
@@ -133,7 +152,8 @@ def launch(config, task, directory):
         environment['BTC_NODE_CONFIG'] = config['_source_path']
     if config.get('python'):
         environment['BTC_PYTHON'] = config['python']
-    with os.fdopen(os.open(directory / 'stdout.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+    events = directory / 'events.jsonl'
+    with os.fdopen(os.open(events, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                            0o600), 'wb') as stdout, os.fdopen(os.open(
                            directory / 'stderr.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                            0o600), 'wb') as stderr:
@@ -145,6 +165,10 @@ def launch(config, task, directory):
     if process.returncode:
         return {'outcome': 'UNKNOWN', 'kind': 'CLI_EXIT_UNKNOWN',
                 'detail': 'Codex CLI exited after admission; inspect its original transcript'}
+    thread_id = _native_session(events)
+    if thread_id is None:
+        return {'outcome': 'UNKNOWN', 'kind': 'NATIVE_SESSION_UNVERIFIED',
+                'detail': 'Codex native session has no unique completed thread reference'}
     try:
         result = json.loads(output.read_text())
     except (OSError, ValueError):
@@ -156,7 +180,8 @@ def launch(config, task, directory):
             or not _valid_identity(result['completion_ref'])):
         return {'outcome': 'UNKNOWN', 'kind': 'RESULT_UNVERIFIED',
                 'detail': 'CLI result does not identify the admitted original attempt'}
-    return {'outcome': 'COMPLETE', 'completion_ref': result['completion_ref']}
+    return {'outcome': 'COMPLETE', 'completion_ref': result['completion_ref'],
+            'thread_id': thread_id}
 
 
 def run_once(config, client=None, launcher=launch):
@@ -177,11 +202,12 @@ def run_once(config, client=None, launcher=launch):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'action': 'WORKER_ALREADY_RUNNING'}
-        tick = client.request('schedule.tick', operation_id='schedule-tick-' + uuid.uuid4().hex)
-        if tick.get('mode') != 'ACTIVE' or tick.get('action') != 'TICKED':
-            return {'action': 'NO_ACTIVE_NODE_SCHEDULE', 'tick': tick}
+        # The Docker node owns the clock and due registration. A host adapter
+        # may execute only while that clock has a fresh, fault-free window.
+        window = client.request('schedule.window')
+        if window.get('status') != 'AVAILABLE':
+            return {'action': 'NO_ACTIVE_NODE_SCHEDULE', 'window': window}
         if settings.get('window_file'):
-            window = client.request('schedule.window')
             _replace_private(Path(settings['window_file']).expanduser(),
                              json.dumps(window, sort_keys=True).encode())
         attempt_id = 'node-' + uuid.uuid4().hex
@@ -202,6 +228,7 @@ def run_once(config, client=None, launcher=launch):
                       'detail': str(exc)[:500]}
         trace = {'schema': 'BTC_NODE_WORK_ATTEMPT_V1', 'task_id': task['task_id'],
                  'attempt_id': attempt_id, 'outcome': result['outcome'],
+                 'native_thread_id': result.get('thread_id'),
                  'failure_kind': result.get('kind'), 'detail': result.get('detail')}
         _write_private(directory / 'result.json', json.dumps(trace, sort_keys=True).encode())
         if result['outcome'] == 'COMPLETE':

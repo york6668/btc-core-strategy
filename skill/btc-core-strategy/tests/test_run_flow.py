@@ -428,6 +428,34 @@ class RunFlowTests(unittest.TestCase):
                     self.assertEqual(window['measurements'],{k:v for k,v in original['windows'][span][key]['measurements'].items() if k!='rows'})
         self.assertEqual(original,self.f.raw)
 
+    def test_prepare_exposes_candidate_issue_scope_and_retained_price_use(self):
+        import market_observation as market
+        original=deepcopy(self.f.raw)
+        for name in ('coinbase_spot_1h','kraken_spot_1h'):
+            dataset=original['datasets'][name]
+            self.assertIn('UNCLOSED_OR_FUTURE',dataset['issues'])
+            self.assertTrue(dataset['coverage']['complete'])
+        prepared=self.prep()
+        brief=read(self.d/'market-summary.json')
+        required={row['role'] for row in read(prepared['read_set']['observe'])['required']}
+        self.assertIn('market_summary',required)
+        for name in ('coinbase_spot_1h','kraken_spot_1h'):
+            row=brief['datasets'][name]
+            self.assertEqual(row['issue_scope']['UNCLOSED_OR_FUTURE'],
+                             'EXCLUDED_CANDIDATE_NOT_RETAINED_ROW')
+            self.assertTrue(row['retained_row_use']['all_price_rows_closed_at_cutoff'])
+            self.assertTrue(row['retained_row_use']['latest_price_closed_at_cutoff'])
+            self.assertTrue(row['retained_row_use']['own_instrument_open_close_usable'])
+            self.assertFalse(row['retained_row_use']['quote_taker_balance_usable'])
+            self.assertTrue(row['retained_row_use']['requested_window_complete'])
+            self.assertLessEqual(market.timestamp(row['latest']['end']),
+                                 market.timestamp(brief['cutoff']))
+            self.assertEqual(row['quote_unit'],'USD')
+        binance=brief['datasets']['binance_spot_1h']
+        self.assertTrue(binance['retained_row_use']['quote_taker_balance_usable'])
+        self.assertEqual(binance['quote_unit'],'USDT')
+        self.assertEqual(original,self.f.raw)
+
     def test_frozen_raw_bytes_survive_packaging(self):
         import json
         original=json.dumps(self.f.raw,indent=2).encode()
