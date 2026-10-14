@@ -244,7 +244,7 @@ def authoring_guidance(ctx):
         guidance.update(body_authoring_instructions=BODY_AUTHORING_INSTRUCTIONS,
                         reading_review_instructions=deepcopy(READING_REVIEW))
     if ctx.get('report_contract_revision', 1) >= 5:
-        guidance['final_text_review'] = ('用run-advance --stage report --check-only导出实际候选，按返回review_read完整回读候选及冻结来源，实际审阅后填写具体quality_review及reviewed_candidate_hash；任何正文或绑定改变均重新核验，旧审阅不沿用。哈希仅绑定对象，不证明语义。冻结后逐字交付；外部聊天改写无法由项目程序控制。')
+        guidance['final_text_review'] = ('用run-advance --stage report --check-only导出实际候选，按返回review_read完整回读候选及冻结来源，逐句核对市场、产品身份与底层证据的实际归属，再填写具体quality_review及reviewed_candidate_hash；任何正文或绑定改变均重新核验，旧审阅不沿用。哈希仅绑定对象，不证明语义。冻结后逐字交付；外部聊天改写无法由项目程序控制。')
     return guidance
 
 

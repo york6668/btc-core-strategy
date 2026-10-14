@@ -1,6 +1,6 @@
 # 币安 QQQ／VOO 与底层研究
 
-报告对象是币安 QQQ、VOO、BTC。用户采用美元近似口径，USD 与 USDT 常规微差不阻断分析和价位展示；股票 USD/股、合约 USDT 保留实际单位。QQQ 的底层研究沿 NDX，VOO 沿 SPX；指数点位、股票价格与衍生品价格保持各自身份。简称不证明具体产品版本，不默认 QQQB、QQQon 或其他产品，也不改变持仓。
+用户希望报告覆盖 BTC 及拟核对的币安 QQQ、VOO 产品；目标场所不等于具体产品身份已核验。用户采用美元近似口径，USD 与 USDT 常规微差不阻断分析和价位展示；股票 USD/股、合约 USDT 保留实际单位。QQQ 的底层研究沿 NDX，VOO 沿 SPX；指数点位、股票价格与衍生品价格保持各自身份。简称不证明具体产品版本，不默认 QQQB、QQQon 或其他产品，也不改变持仓。
 
 官方 [Stocks API 公告](https://www.binance.com/en/support/announcement/detail/95d746cb2b5e4d179c50d0026dd7dfbe) 区分 Stocks 与将部分证券铸成 bStocks 的能力；[产品公告](https://www.binance.com/en/support/announcement/detail/8c8fb6809d9c46789306905327e7567a) 也说明不同产品形态。Spot exchangeInfo 的带后缀交易对不能自动代表 QQQ／VOO；Spot 未找到 VOO 不能推出 Stocks/Wallet 不存在 VOO。通用同名币搜索结果不是 ETF 证据。
 

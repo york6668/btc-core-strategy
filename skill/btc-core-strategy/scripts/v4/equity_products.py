@@ -8,8 +8,8 @@ REPORT_QUOTE_POLICY = {'revision': 2, 'venue': 'BINANCE', 'quote_unit': 'USD',
                        'accepted_quote_units': ['USD', 'USD/share', 'USDT'],
                        'valuation_basis': 'APPROXIMATE_USD_USDT', 'show_underlying_prices': False}
 INSTRUCTIONS = (
-    '用户报告以币安 QQQ、VOO 和 BTC 为对象；SPX/NDX 保留为底层市场研究及历史区域身份。'
-    'QQQ/VOO 名称不证明具体产品版本；仅用已核验公开产品身份、报价单位、时间及区域。'
+    '用户希望报告覆盖 BTC 及拟核对的币安 QQQ、VOO 产品；SPX/NDX 保留为底层市场研究及历史区域身份。'
+    '报告目标场所不等于产品身份已核验；QQQ/VOO 名称不证明具体产品版本，仅用已核验公开产品身份、报价单位、时间及区域。'
     '不得假定 QQQB、QQQon 等版本，不把指数点位改名或折算为产品价格。'
     '产品报价缺失仅限制产品价位判断；方向、盈利价值及组合应对继续使用底层研究并说明依据。'
     '产品区域独立建立，与底层区域的关系由证据说明，不能覆盖指数区域；表达变化不调整持仓。'

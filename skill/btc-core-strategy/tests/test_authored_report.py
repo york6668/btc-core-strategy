@@ -333,6 +333,53 @@ class AuthoredReportTests(unittest.TestCase):
         self.assertNotIn('reviewed_candidate_hash', value['layout'])
         self.assertEqual(authored.render(value, self.f.f.decision)[0], quote)
 
+    def test_venue_product_claim_requires_verified_identity_and_own_binding(self):
+        ctx = self.f.context(self.root)
+        ctx['report_contract_revision'] = 7
+        ctx['report_subjects'] = equity_products.subjects()
+        claim = '币安 VOO／QQQ 的底层盈利周期仍部分偏多。'
+        value = dict(self.spec(claim), context=ctx)
+        layout = value['layout']
+        layout['bindings'] = [{'text': claim, 'scope': 'market',
+                               'refs': ['/report_subjects/VOO/underlying_market',
+                                        '/report_subjects/QQQ/underlying_market']}]
+        layout['quality_review'] = {key: '对照本稿实际正文、冻结来源及产品身份范围完成逐句审阅。'
+                                    for key in authored.quality_keys(ctx)}
+        layout['reviewed_candidate_hash'] = None
+        with self.assertRaisesRegex(Invalid, 'verified public product identity'):
+            authored.preview(value, self.f.f.decision)
+
+        # Underlying analysis remains reportable while product identity is open.
+        underlying = 'VOO／QQQ 对应的 SPX／NDX 底层盈利周期仍部分偏多；币安对应产品身份未核验。'
+        layout['body'] = underlying
+        layout['bindings'][0]['text'] = underlying
+        layout['bindings'][0]['refs'] += ['/report_subjects/VOO/identity_status',
+                                          '/report_subjects/QQQ/identity_status']
+        self.assertTrue(authored.preview(value, self.f.f.decision)['valid'])
+
+        # A verified context alone is insufficient when the sentence only binds indices.
+        layout['body'] = claim
+        layout['bindings'][0]['text'] = claim
+        for symbol in ('QQQ', 'VOO'):
+            ctx['report_subjects'][symbol].update(
+                identity_status='VERIFIED', product_id=symbol + '_TEST',
+                product_type='ETF', quote_unit='USD',
+                identity_refs={key: {'source_id': 'public'}
+                               for key in ('symbol', 'product_id', 'product_type', 'quote_unit')})
+        with self.assertRaisesRegex(Invalid, 'bound product identity'):
+            authored.preview(value, self.f.f.decision)
+        for symbol in ('QQQ', 'VOO'):
+            layout['bindings'][0]['refs'] += [f'/report_subjects/{symbol}/{key}'
+                                              for key in ('identity_status', 'product_id', 'product_type')]
+        self.assertTrue(authored.preview(value, self.f.f.decision)['valid'])
+
+        # Old frozen sources retain the contract under which they were accepted.
+        ctx['report_contract_revision'] = 6
+        for symbol in ('QQQ', 'VOO'):
+            ctx['report_subjects'][symbol] = equity_products.subjects()[symbol]
+        layout['bindings'][0]['refs'] = layout['bindings'][0]['refs'][:4]
+        self.assertTrue(authored.preview(value, self.f.f.decision)['valid'])
+
 if __name__ == '__main__':
     unittest.main()
 

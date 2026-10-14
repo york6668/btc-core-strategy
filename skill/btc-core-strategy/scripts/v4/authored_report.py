@@ -7,12 +7,12 @@ from .mobile_report import QUALITY, INDEX_NAME
 
 FORMAT = 'AUTHORED_REPORT_V1'
 DISPLAY_FORMATS = {'MARKET_MOBILE_V2', FORMAT}
-REPORT_CONTRACT_REVISION = 6
+REPORT_CONTRACT_REVISION = 7
 # These are model review responsibilities, not a prose classifier or score.
 # Frozen revisions retain the review keys used when their source was authored.
 READING_REVIEW = {
     'decision_delivery': '对照最终正文原句与冻结结果，分别核验当前状态、有界未来竞争路径及相对把握、公开现价价值和策略适用性、个人总体取舍；方向句、未反转或条件清单不能代替未来判断及选择。有限反馈说明完成范围与上游未决，缺研究返回原研究，缺表达修稿。',
-    'evidence_priority': '指出支撑主线的决定性证据与关键反证及其正文原句，核验各分句的场所、产品、窗口和确认程度；完整数字与历史流水只在影响取舍时展示。',
+    'evidence_priority': '指出支撑主线的决定性证据与关键反证及其正文原句，逐句核验场所、产品、窗口和确认程度；对照 report_subjects 的实际身份状态及绑定来源，检查底层 SPX/NDX 判断是否被写成已核验的币安 QQQ/VOO 产品判断；完整数字与历史流水只在影响取舍时展示。',
     'maintenance_separation': '对照最终正文说明核验记录、哈希、内部到期续期、冻结采用发送状态和完整缺口详单如何留在技术依据或原维护；必要限制以对价值、风险或动作的具体影响保留。',
     'narrative_focus': '逐段对照正文说明各段推进的市场因果或个人取舍，实际删并重复结论与重复否定；开头独立市场、随后论证、再个人安排及改变条件，收束没有重述全部结论。',
 }
@@ -20,6 +20,7 @@ BODY_AUTHORING_INSTRUCTIONS = (
     '面向个人直接交付完整主题和自然段：独立市场裁决分别承接当前方向、拐点进展及已形成的有界未来路径比较，'
     '随后主证据和重要反证、权益宏观及产品影响，再交付个人总体取舍与必要分项，最后说明改变判断的条件。'
     '公开策略适用性保留公开价格风险依据；个人资金优先级及保护配合不插入独立市场结论。仅承接冻结已形成结果，不重新研究、不提高确认程度或补造价量。'
+    'QQQ/VOO 是待核对的报告目标；仅凭目标场所或底层指数不能称具体币安产品已核验。底层盈利、价格和产品身份分别承接各自来源；具体产品断言须有产品身份原证和正文绑定。'
     '数据时点在开头简明说明一次；其他日期仅在影响判断或行动时保留。'
     '研究及个人叙述是来源，不是逐段必抄的正文；选择决定性证据，集中说明关键未知的实际影响。'
     '核验、哈希、内部期限、冻结采用发送状态、历史事实核对流水及完整缺口详单留在已有来源索引、审阅和维护材料。'
@@ -44,6 +45,7 @@ PUBLIC = ('/assessment/outlook/', '/assessment/factor_assessment/',
           '/observation/review/market_assessment/', '/observation/review/dispute_zones/',
           '/observation/review/factor_checks/', '/metrics/', '/public_evidence/', '/report_subjects/')
 NUMBER = re.compile(r'(?<![A-Za-z0-9_])[-+]?\d+(?:,\d{3})*(?:\.\d+)?')
+VENUE_PRODUCT = re.compile(r'(?:币安|Binance)\s*(?:的|上的|平台的)?\s*(QQQ|VOO)(?:\s*[/／、,，和与及]\s*(QQQ|VOO))*', re.I)
 
 
 def numbers(value):
@@ -140,6 +142,23 @@ def validate_price(binding, values):
                     'price belongs to a different instrument')
 
 
+def validate_product_identity_scope(binding, values):
+    """A venue-qualified product label needs its own verified identity owner."""
+    if binding['scope'] != 'market':
+        return
+    symbols = {symbol.upper() for match in VENUE_PRODUCT.finditer(binding['text'])
+               for symbol in match.groups() if symbol}
+    for symbol in symbols:
+        row = (values.get('report_subjects') or {}).get(symbol) or {}
+        require(row.get('venue') == 'BINANCE' and row.get('identity_status') == 'VERIFIED'
+                and row.get('product_id') and row.get('product_type')
+                and set((row.get('identity_refs') or {})) == {'symbol', 'product_id', 'product_type', 'quote_unit'},
+                'Binance QQQ/VOO product label needs verified public product identity')
+        prefix = '/report_subjects/' + symbol + '/'
+        require({prefix + 'identity_status', prefix + 'product_id', prefix + 'product_type'} <= set(binding['refs']),
+                'Binance QQQ/VOO product label needs bound product identity, not only underlying index evidence')
+
+
 def candidate_hash(value):
     """Bind the actual review target, not an assertion that its meaning is sound."""
     layout = value['layout']
@@ -231,6 +250,8 @@ def render(value, decision, *, require_review=True):
                             'withdrawn or expired recommendation prices cannot be restored')
         require(numbers(excerpt) <= supported, 'authored numbers must match their frozen references without conversion')
         validate_price(binding, values)
+        if ctx.get('report_contract_revision', 1) >= 7:
+            validate_product_identity_scope(binding, values)
         covered |= numbers(excerpt)
     if ctx.get('market_revision',0)>=8 and any(b['scope']=='personal' for b in layout['bindings']):
         if limited_personal:
