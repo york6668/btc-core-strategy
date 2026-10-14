@@ -14,7 +14,11 @@ jobs:
           python-version: '3.11'
       - name: Verify pinned test dependency and export boundary
         run: python3 -B -m unittest discover -s tests -p test_ci_reader.py -v
-      - name: Verify Docker validation admission without starting a stack
-        run: python3 -B -m unittest discover -s service -p test_validation_guard_offline.py -v
+      - name: Verify Docker admission and failure diagnostics without starting a stack
+        run: python3 -B -m unittest discover -s service -p 'test_*offline.py' -v
+      - name: Prepare the existing pinned Python Docker image
+        run: |
+          docker pull python:3.11-slim
+          test "$(docker image inspect python:3.11-slim --format '{{.Id}}')" = 'sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce'
       - name: Verify MySQL, actual CLI and MCP, recovery and business replay
         run: python3 -B scripts/ci_reader.py run
