@@ -26,7 +26,7 @@ class MainTests(unittest.TestCase):
         clock = mock.patch('v4.storage.now', side_effect=lambda: legacy.datetime.now(timezone.utc).isoformat())
         clock.start(); self.addCleanup(clock.stop)
         base.RecommendationTests.upgrade(self)
-        self.draft.update(revision=3, provenance={'role':'MAIN','model':'gpt-6.1-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_TRACE'},
+        self.draft.update(revision=3, provenance={'role':'MAIN','model':'gpt-5.6-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_TRACE'},
                           conclusion={'business_meaning':{'value':'合成价值结构保持，超卖与溢价方案分别受组合预算约束。'},'narrative':'合成当前解释。'}, research_absorptions=[])
         self.draft.pop('report')
         self.draft['section_provenance'] = {key:{'mode':'ASSESSED','decision_id':None,'assessed_at':self.draft['temporal_scope']['knowledge_cutoff'],
@@ -50,7 +50,7 @@ class MainTests(unittest.TestCase):
 
     def test_sol_publishes_complete_strategy_without_astra_or_report(self):
         value=self.commit()
-        self.assertEqual(value['assessment']['provenance']['model'],'gpt-6.1-sol')
+        self.assertEqual(value['assessment']['provenance']['model'],'gpt-5.6-sol')
         self.assertFalse((self.store/'deep-current.json').exists())
         self.assertFalse((self.store/'current/report.md').exists())
         self.assertIn('1000U名义额',(self.store/'current/plan.md').read_text())
@@ -95,10 +95,10 @@ class MainTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'changed reviewed content'):
             domain.validate_normalization(self.draft, tampered)
 
-    def test_gpt5_cannot_publish_a_new_main_assessment(self):
+    def test_old_gpt6_1_cannot_publish_a_new_main_assessment(self):
         before = storage.current(self.store)
-        self.draft['provenance']['model'] = 'gpt-5.6-sol'
-        with self.assertRaisesRegex(Invalid, 'gpt-6.1-sol/high'):
+        self.draft['provenance']['model'] = 'gpt-6.1-sol'
+        with self.assertRaisesRegex(Invalid, 'gpt-5.6-sol/high'):
             self.commit()
         self.assertEqual(storage.current(self.store), before)
         self.assertFalse((self.store / 'main-current.json').exists())
@@ -106,12 +106,12 @@ class MainTests(unittest.TestCase):
     def test_previous_gpt6_provenance_is_readable_but_not_a_new_writer(self):
         self.draft['provenance']['model']='gpt-6-sol'
         main_flow.validate_contract(self.draft,historical=True)
-        with self.assertRaisesRegex(Invalid,'gpt-6.1-sol/high'):
+        with self.assertRaisesRegex(Invalid,'gpt-5.6-sol/high'):
             self.commit()
 
-    def test_gpt5_baseline_remains_readable_after_gpt6_publication(self):
+    def test_gpt6_1_baseline_remains_readable_after_current_sol_publication(self):
         # Build a genuinely old-shaped, hashed fixture under the former write rule.
-        self.draft['provenance']['model'] = 'gpt-5.6-sol'
+        self.draft['provenance']['model'] = 'gpt-6.1-sol'
         validate = main_flow.validate_contract
         with mock.patch('v4.main_flow.validate_contract',
                         side_effect=lambda draft, **kw: validate(draft, historical=True)):
@@ -120,11 +120,11 @@ class MainTests(unittest.TestCase):
         version = self.store / 'versions' / old['decision_id'] / 'decision.json'
         original = {p: p.read_bytes() for p in (receipt, version)}
         main_flow.validate_completion(read(receipt), receipt)
-        self.draft['provenance']['model'] = 'gpt-6.1-sol'
-        self.bind()  # Reads and verifies the actual GPT-5 completion baseline.
+        self.draft['provenance']['model'] = 'gpt-5.6-sol'
+        self.bind()  # Reads and verifies the actual old-model completion baseline.
         self.draft['conclusion']['narrative'] = '合成新模型复核后的说明，原有本金安排保持。'
         new = self.commit()
-        self.assertEqual(new['assessment']['provenance']['model'], 'gpt-6.1-sol')
+        self.assertEqual(new['assessment']['provenance']['model'], 'gpt-5.6-sol')
         self.assertEqual(new['parent_id'], old['decision_id'])
         for path, body in original.items():
             self.assertEqual(path.read_bytes(), body)

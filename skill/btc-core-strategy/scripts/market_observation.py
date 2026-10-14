@@ -31,7 +31,7 @@ CONTEXT_SCHEMA = 'BTC_MARKET_CONTEXT_V1'
 PATTERN_KINDS = {'ABSORPTION', 'POSSIBLE_DISTRIBUTION', 'ACTIVE_SELLING', 'DELEVERAGING', 'LEVERAGED_RISE_OR_SHORT_COVER'}
 STAGES = {'UNRESOLVED', 'FORMING', 'ACCUMULATING', 'STRENGTHENING', 'WEAKENING', 'REVERSED', 'FALSIFIED'}
 CONFIDENCES = {'UNRESOLVED', 'LOW', 'MEDIUM', 'HIGH'}
-CURRENT_HOURLY_MODEL = {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}
+CURRENT_HOURLY_MODEL = {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'}
 # Historical bindings remain readable, including the original isolated comparisons.
 MODELS = {('gpt-6.1-sol', 'high'), ('gpt-6-sol', 'high'), ('gpt-5.6-sol', 'high'), ('gpt-5.6-sol', 'medium'), ('gpt-5.6-terra', 'high')}
 ISSUES = {'OUTSIDE_REQUESTED_WINDOW', 'UNCLOSED_OR_FUTURE', 'INVALID_SAMPLE', 'DUPLICATE_SAMPLE', 'CONFLICTING_DUPLICATE', 'SOURCE_UNAVAILABLE'}
@@ -824,14 +824,14 @@ def record(evidence, review, db_path=DEFAULT_DB):
             if canonical(review) != canonical(latest['review']):
                 validate_review(evidence, review, current)
                 if review['model'] != CURRENT_HOURLY_MODEL:
-                    raise ObservationError('new hourly review requires gpt-6.1-sol/high')
+                    raise ObservationError('new hourly review requires '+CURRENT_HOURLY_MODEL['name']+'/high')
             # Same complete-hour market input is one canonical review even if a
             # model's prose varies on a rerun. Never manufacture a new revision.
             _store_retrieval(conn, evidence)
             return {'status': 'UNCHANGED', 'binding': latest['binding']}
         validation = validate_review(evidence, review, current)
         if review['model'] != CURRENT_HOURLY_MODEL:
-            raise ObservationError('new hourly review requires gpt-6.1-sol/high')
+            raise ObservationError('new hourly review requires '+CURRENT_HOURLY_MODEL['name']+'/high')
         if latest and timestamp(review['observed_hour']) < timestamp(latest['binding']['observed_hour']):
             raise ObservationError('late older-hour review cannot overwrite latest-hour baseline')
         review_id = validation['review_id']

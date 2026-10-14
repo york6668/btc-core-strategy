@@ -95,7 +95,7 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     if not isinstance(phase, str) or not phase:
         raise ValueError('original research phase required')
     scope, input_digest = _scope(scope), _digest(input_digest)
-    if not isinstance(model, str) or not model or model == 'gpt-6.1-sol':
+    if not isinstance(model, str) or not model or model in {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'}:
         raise ValueError('this admission is for high-grade deep analysis only')
     now_ms = millis()
     day = tokyo_day(now_ms)

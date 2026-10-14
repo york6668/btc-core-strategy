@@ -37,7 +37,7 @@
     "next_observation":"模型继续观察什么",
     "include_recommendations":true
   },
-  "provenance":{"role":"MAIN","model":"gpt-6.1-sol","effort":"high","agent_id":"真实主任务身份","run_ref":"真实运行引用"}
+  "provenance":{"role":"MAIN","model":"gpt-5.6-sol","effort":"high","agent_id":"真实主任务身份","run_ref":"真实运行引用"}
 }
 ```
 

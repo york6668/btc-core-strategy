@@ -464,7 +464,7 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             from .cycle import validate_applicability
             validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir)
         candidate = review['market_review']
-        require(candidate['model'] == market.CURRENT_HOURLY_MODEL, 'hourly sensing requires gpt-6.1-sol/high')
+        require(candidate['model'] == market.CURRENT_HOURLY_MODEL, 'hourly sensing requires '+market.CURRENT_HOURLY_MODEL['name']+'/high')
         completed = (ctx['cycle_baseline'] if ctx['cycle_baseline']['result_id'] else None) if cycle_workflow else (ctx['current_core'] if workflow else ctx['successful_deep'])
         validation_context = {'context_id': ctx['context_id'], 'baselines': {}, 'successful_deep': None}
         if ctx['previous_hour']:

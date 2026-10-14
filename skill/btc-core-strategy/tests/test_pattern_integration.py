@@ -108,7 +108,7 @@ class PatternIntegrationTests(unittest.TestCase):
         review = {
             "schema": market.REVIEW_SCHEMA, "evidence_id": evidence["evidence_id"],
             "observed_hour": evidence["observed_hour"], "context_id": context["context_id"],
-            "model": {"name": "gpt-6.1-sol", "reasoning_effort": "high"},
+            "model": dict(market.CURRENT_HOURLY_MODEL),
             "assessment_summary": "完整小时序列出现主动卖出和抗跌的组合，需要比较承接和去杠杆解释。",
             "patterns": [{"kind": kind, "stage": absorption_stage if kind == "ABSORPTION" else "UNRESOLVED", "confidence": "LOW",
                           "support_refs": ["windows.4h.binance_spot_1h"], "counter_refs": [],

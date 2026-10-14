@@ -222,7 +222,7 @@ print(json.dumps({'type':'turn.completed'}))
                                      'window_file': str(self.root / 'node-window.json')}}
         result = node_scheduler_worker.run_once(config, Client())
         self.assertEqual('COMPLETED', result['action'])
-        self.assertEqual('gpt-6.1-sol', result['model'])
+        self.assertEqual('gpt-5.6-sol', result['model'])
         trace=json.loads(next(attempts.glob('node-*/result.json')).read_text())
         self.assertEqual('synthetic-thread-1',trace['native_thread_id'])
         self.assertEqual('BTC_NODE_SCHEDULER_V1',

@@ -11,17 +11,29 @@ import sys
 import tempfile
 import time
 import uuid
+from validation_guard import GIB, ValidationGuard, cleanup_compose, install_interrupt_handlers
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(docker, reader, reader_image=None):
+    # One local flock and one daemon-wide atomic claim cover separate shell
+    # processes and separate clients of the same Docker VM.
+    project = 'btc-test-' + uuid.uuid4().hex[:12]
+    with ValidationGuard(docker, project=project, stack_limit_bytes=(11 * GIB) // 4) as guard:
+        restore = install_interrupt_handlers()
+        try:
+            return _run(docker, reader, reader_image, guard, project)
+        finally:
+            restore()
+
+
+def _run(docker, reader, reader_image, guard, project):
     reader = Path(reader).resolve()
     if not (reader / 'seller_exhaustion.py').is_file():
         raise ValueError('supply --reader with the actual compatible role export')
     directory = Path(tempfile.mkdtemp(prefix='btc-data-contract-'))
-    project = 'btc-test-' + uuid.uuid4().hex[:12]
     command = [docker, 'compose', '-p', project, '--env-file', str(directory/'compose.env'),
                '-f', str(ROOT/'service/compose.yaml'), '--profile', 'analysis']
     result = 1
@@ -32,6 +44,7 @@ def run(docker, reader, reader_image=None):
             (reader/'data').mkdir(exist_ok=True)
             reader_data=directory/'reader';reader_data.mkdir()
             launch=[docker,'run','--rm','--read-only','--tmpfs','/tmp',
+                    '--memory','512m','--cpus','1','--restart','no',
                     '-v',str(reader)+':/app/telegram_reader:ro',
                     '-v',str(reader_data)+':/app/telegram_reader/data',
                     '-e','BTC_READER_DATA_DIR=/app/telegram_reader/data']
@@ -85,18 +98,33 @@ def run(docker, reader, reader_image=None):
         owner_code = ('import json; from pathlib import Path; '
                       's=Path("/fixture").stat(); print(json.dumps([s.st_uid,s.st_gid]))')
         uid, gid = json.loads(subprocess.check_output([docker,'run','--rm',
+            '--memory','128m','--cpus','0.25','--restart','no',
             '--entrypoint','python','-v',str(directory)+':/fixture:ro',
             'btc-node:contract','-c',owner_code], text=True))
         override = directory/'compose.test.json'
         override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
             'user':str(uid)+':'+str(gid),
-            'mem_limit':'2g',
+            'restart':'no', 'mem_limit':'1g', 'cpus':1,
             'tmpfs':['/run/btc:uid='+str(uid)+',gid='+str(gid)+',mode=0700'],
             'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']},
+            'mysql':{'volumes':[str(directory/'mysql-data')+':/var/lib/mysql'],
+                     'restart':'no','mem_limit':'1g','cpus':1},
             'scheduler':{'volumes':[str(evidence)+':'+alias,
                 str(scheduler_settings)+':/run/btc/settings.json:ro'],
-                'mem_limit':'512m'}}}))
+                'restart':'no','mem_limit':'512m','cpus':0.5},
+            'maintenance':{'restart':'no','mem_limit':'256m','cpus':0.5}}}))
+        (directory/'mysql-data').mkdir()
         command += ['-f',str(override)]
+        effective_test = json.loads(subprocess.check_output(command+[
+            '--profile','node-scheduler','config','--format','json'],text=True))['services']
+        for service, limit in (('core', GIB), ('mysql', GIB),
+                               ('scheduler', GIB//2), ('maintenance', GIB//4)):
+            if effective_test[service]['restart'] != 'no' or effective_test[service]['mem_limit'] != limit:
+                raise AssertionError('disposable stack restart/memory override missing: '+service)
+        if not any(mount['target']=='/var/lib/mysql' and mount['source']==str(directory/'mysql-data')
+                   for mount in effective_test['mysql']['volumes']):
+            raise AssertionError('disposable MySQL must use its own bind mount')
+        guard.project_started = True
         subprocess.run(command+['up','-d','--wait','mysql','core'], check=True, timeout=600)
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
         probe = ('import json,os; from pathlib import Path; '
@@ -236,37 +264,20 @@ def run(docker, reader, reader_image=None):
                 pass  # Preserve the original test failure.
         raise
     finally:
-        stopped = subprocess.run(command+['--profile','node-scheduler',
-            'down','--volumes','--remove-orphans'], timeout=90)
-        if stopped.returncode == 0:
-            # Desktop file sharing can release bind-mount handles just after
-            # Compose returns. Retry this test-owned directory only.
-            for attempt in range(4):
-                try:
-                    shutil.rmtree(directory);break
-                except PermissionError:
-                    if attempt==3:
-                        # The container writes to this test-owned bind mount as
-                        # root. Release its permissions after the stack is down,
-                        # then remove the generated secrets and fixtures.
-                        try:
-                            subprocess.run([docker,'run','--rm','--user','0',
-                                '--entrypoint','chmod','-v',
-                                str(directory)+':/fixture','btc-node:contract',
-                                '-R','a+rwX','/fixture'],check=True,timeout=30)
-                            for release_attempt in range(10):
-                                try:
-                                    shutil.rmtree(directory)
-                                    break
-                                except PermissionError:
-                                    if release_attempt == 9:
-                                        raise
-                                    time.sleep(0.5)
-                        except (OSError,subprocess.CalledProcessError,subprocess.TimeoutExpired):
-                            print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
-                    else:time.sleep(0.25)
+        if guard.project_started:
+            try:
+                cleanup_compose(command+['--profile','node-scheduler'], project, guard)
+            except Exception as exc:
+                print('Temporary test node and files retained for review: '+str(directory)+' ('+
+                      str(exc)+')',file=sys.stderr)
+                raise
         else:
-            print('Temporary test node retained for cleanup: '+str(directory),file=sys.stderr)
+            guard.cleaned = True
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            guard.cleaned = False
+            raise RuntimeError('Temporary test files retained for review: '+str(directory)) from exc
     return result
 
 

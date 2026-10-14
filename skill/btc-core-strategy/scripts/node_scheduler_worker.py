@@ -17,9 +17,10 @@ import sys
 import uuid
 
 import node_config
+import market_observation as market
 
 
-MODEL = 'gpt-6.1-sol'
+MODEL = market.CURRENT_HOURLY_MODEL['name']
 DEEP_MODEL = 'gpt-6-astra'
 RESPONSE_SCHEMA = {
     'type': 'object', 'additionalProperties': False,

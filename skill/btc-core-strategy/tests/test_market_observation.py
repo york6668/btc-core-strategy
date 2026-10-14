@@ -47,7 +47,7 @@ def evidence(cutoff=CUTOFF, **kwargs):
 
 def review(e, context=None, required=True):
     context = context or m.read_context('/does/not/exist-observation-fixture')
-    return {'schema': m.REVIEW_SCHEMA, 'evidence_id': e['evidence_id'], 'observed_hour': e['observed_hour'], 'context_id': context['context_id'], 'model': {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}, 'assessment_summary': 'Observed competing explanations; no participant identity is established.',
+    return {'schema': m.REVIEW_SCHEMA, 'evidence_id': e['evidence_id'], 'observed_hour': e['observed_hour'], 'context_id': context['context_id'], 'model': dict(m.CURRENT_HOURLY_MODEL), 'assessment_summary': 'Observed competing explanations; no participant identity is established.',
             'patterns': [{'kind': kind, 'stage': 'UNRESOLVED', 'confidence': 'LOW', 'support_refs': ['windows.4h.binance_spot_1h'], 'counter_refs': ['windows.24h.binance_futures_1h'], 'interpretation': 'Evidence is mixed and needs independent discrimination.', 'next_evidence': ['Observe the next complete period and compare spot participation.']} for kind in sorted(m.PATTERN_KINDS)],
             'changes_since_hour': ['Price and flow relations changed in the new complete hour.'] if context['baselines'].get('HOUR') else [],
             'changes_since_deep': ['Accumulated spot/derivative relationship needs review.'] if context['baselines'].get('DEEP') else [],
@@ -238,7 +238,7 @@ class StorageTests(unittest.TestCase):
 
     def test_old_model_is_readable_and_retryable_but_cannot_write_new_review(self):
         old = review(self.e, m.read_context(self.db))
-        old['model'] = {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'}
+        old['model'] = {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}
         with mock.patch.object(m, 'CURRENT_HOURLY_MODEL', old['model']):
             saved = m.record(self.e, old, self.db)
         self.assertEqual(m.load_review_binding(saved['binding'], self.db)['review'], old)
@@ -247,9 +247,9 @@ class StorageTests(unittest.TestCase):
         newer = evidence(CUTOFF + 3600)
         candidate = review(newer, m.read_context(self.db))
         candidate['model'] = dict(old['model'])
-        with self.assertRaisesRegex(m.ObservationError, 'gpt-6.1-sol/high'):
+        with self.assertRaisesRegex(m.ObservationError, 'gpt-5.6-sol/high'):
             m.record(newer, candidate, self.db)
-        candidate['model'] = {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}
+        candidate['model'] = dict(m.CURRENT_HOURLY_MODEL)
         self.assertEqual(m.record(newer, candidate, self.db)['status'], 'RECORDED')
         self.assertEqual(m.load_review_binding(saved['binding'], self.db)['review'], old)
 
@@ -257,7 +257,7 @@ class StorageTests(unittest.TestCase):
         candidate=review(self.e,m.read_context(self.db))
         candidate['model']={'name':'gpt-6-sol','reasoning_effort':'high'}
         m.validate_review(self.e,candidate,m.read_context(self.db))
-        with self.assertRaisesRegex(m.ObservationError,'gpt-6.1-sol/high'):
+        with self.assertRaisesRegex(m.ObservationError,'gpt-5.6-sol/high'):
             m.record(self.e,candidate,self.db)
 
     def deep(self, binding, at=CUTOFF + 600, outcome='SUCCEEDED'):

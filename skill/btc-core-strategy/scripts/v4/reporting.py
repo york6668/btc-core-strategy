@@ -326,7 +326,7 @@ def record(root, spec, *, prepared_context=None):
         for key in ('reason','next_observation','baseline_review','applicability_review'):
             text(spec[key],key); require(len(spec[key].strip())>=12,key+' requires concrete model judgement')
         p=spec['provenance']; exact(p,'role model effort agent_id run_ref','report provenance')
-        require(p['role']=='MAIN' and p['model']=='gpt-6.1-sol' and p['effort']=='high','report judgement belongs to Sol/high MAIN')
+        require(p['role']=='MAIN' and p['model']==market.CURRENT_HOURLY_MODEL['name'] and p['effort']=='high','report judgement belongs to Sol/high MAIN')
         text(p['agent_id'],'actual main agent');text(p['run_ref'],'actual main run')
         require(isinstance(spec['information'],dict),'reviewed information must be a mapping')
         for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')

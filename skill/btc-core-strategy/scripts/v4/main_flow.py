@@ -1,6 +1,7 @@
 """Main strategy ownership. No market inference and no delivery side effects."""
 from copy import deepcopy
 from pathlib import Path
+import market_observation as market
 from .common import digest, exact, instant, pointer, read, require, text
 from . import semantics
 
@@ -37,9 +38,9 @@ def sections_for_revision(revision):
 def validate_contract(draft, *, historical=False):
     exact(draft['provenance'], 'role model effort agent_id run_ref', 'main provenance')
     p = draft['provenance']
-    models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {'gpt-6.1-sol'}
+    models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {market.CURRENT_HOURLY_MODEL['name']}
     require(p['role'] == 'MAIN' and p['model'] in models and p['effort'] == 'high',
-            'new main assessment requires actual gpt-6.1-sol/high (Sol/high MAIN); historical completions retain their original model')
+            'new main assessment requires actual '+market.CURRENT_HOURLY_MODEL['name']+'/high (Sol/high MAIN); historical completions retain their original model')
     for key in ('agent_id', 'run_ref'):
         text(p[key], 'actual main ' + key)
     c = draft['conclusion']

@@ -67,7 +67,7 @@ class DynamicMainTests(unittest.TestCase):
         self.upgrade(items=[])
         value = self.commit()
         self.assertEqual(value['assessment']['factor_assessment']['items'], [])
-        self.assertEqual(value['assessment']['provenance']['model'], 'gpt-6.1-sol')
+        self.assertEqual(value['assessment']['provenance']['model'], 'gpt-5.6-sol')
         self.assertFalse((self.f.store/'deep-current.json').exists())
 
     def test_unlisted_factor_changes_publish_internal_state_without_report(self):

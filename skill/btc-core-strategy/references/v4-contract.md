@@ -17,7 +17,7 @@
 
 主评估仍为BTC_ASSESSMENT_DRAFT_V4，当前revision=5。保留draft_id、evidence_id、evidence_bindings、fact_version、temporal_scope、domain、outlook、robustness、portfolio_analysis、recommendations、maintenance_binding、stop_reason；**不含report**。沿用revision 3主任务字段并增加factor_assessment：
 
-- provenance={role:MAIN,model:gpt-6.1-sol,effort:high,agent_id,run_ref}，记录真实主任务；类型允许不证明真实运行，样本和自然验收须核对日志。
+- provenance={role:MAIN,model:gpt-5.6-sol,effort:high,agent_id,run_ref}，记录真实主任务；类型允许不证明真实运行，样本和自然验收须核对日志。
 - conclusion={business_meaning,narrative}。business_meaning为开放的稳定键到已审阅业务陈述映射，涵盖价值判断/解释/前瞻/条件等重要含义；主任务复用仍相同的含义，不能用分类名掩盖判断变化。narrative保存当前可读说明，同义改写不自动报告。
 - factor_assessment保存本次模型实际选用的因子及理由，结构见下节。它属于同一DecisionSnapshot，不建立factor-current或macro-current；conclusion与outlook拥有采纳后的核心含义，recommendations继续唯一拥有建议。
 - section_provenance在revision 4/5恰好覆盖domain、outlook、robustness、portfolio_analysis、recommendations、conclusion、factor_assessment；revision 3保留原六项。每项={mode:ASSESSED|REUSED,decision_id,assessed_at,evidence_id,explanation}。ASSESSED绑定当前证据，decision_id=null；REUSED必须逐字匹配真实祖先的对应字段，保留其原始评估时间/证据，说明为何仍适用。修改的部分不伪称复用；历史无因子字段不能伪称REUSED。
