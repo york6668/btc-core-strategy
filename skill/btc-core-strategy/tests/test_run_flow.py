@@ -13,6 +13,23 @@ from v4.common import Invalid, create, read, digest, facts
 
 
 class RunFlowTests(unittest.TestCase):
+    def test_resolved_market_correction_is_frozen_in_next_normal_observe_read_set(self):
+        correction={'fault_id':'original-fault','scope':'btc/market','kind':'SEMANTIC',
+            'evidence_ref':'original-output','impact_ref':'affected-judgement',
+            'cause_ref':'reviewed-cause','correction_ref':'changed-release',
+            'verification_ref':'isolated-replay'}
+        settings={'docker_service':{'enabled':True}}
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',return_value={
+                 'scope':'btc/market','allowed':True,'faults':[],
+                 'accepted_corrections':[correction]}):
+            prepared=self.prep()
+        self.assertEqual([correction],read(prepared['context'])['accepted_corrections'])
+        run=read(prepared['run'])
+        read_set=read(run['read_set']['observe'])
+        self.assertEqual(prepared['context'],read_set['material'])
+        self.assertEqual([correction],read(self.d/'preparation.json')['accepted_corrections'])
+
     def test_open_authoritative_market_defect_blocks_new_run_before_collection(self):
         settings={'docker_service':{'enabled':True}}
         with mock.patch('node_config.load',return_value=settings), \

@@ -49,6 +49,9 @@ def run(docker, reader, reader_image=None):
         for name in ('mysql', 'mysql-root'):
             (directory/name).write_text(secrets.token_urlsafe(40)+'\n'); (directory/name).chmod(0o600)
         evidence = directory/'objects'; evidence.mkdir()
+        release = evidence/'releases'/'test-release'; release.mkdir(parents=True)
+        (release/'RELEASE.json').write_text('{}')
+        (evidence/'current').symlink_to('releases/test-release', target_is_directory=True)
         legacy = directory/'strategy'; legacy.mkdir()
         marker = legacy/'fixed-run-path.json'
         marker.write_text('{"generated":true}')
@@ -60,6 +63,7 @@ def run(docker, reader, reader_image=None):
         alias = '/fixture/project'
         settings = {'mysql': {'host':'mysql','user':'btc','database':'btc','password_file':'/run/secrets/mysql_password'},
                     'objects':alias,'project':alias,'compatibility_root':alias+'/.strategy',
+                    'release_root':alias+'/releases',
                     'require_shared_evidence':True,
                     'socket':'/run/btc/btc.sock','test_only':True,
                     'maintenance_enabled':False,'recycle_grace_hours':48}
@@ -83,6 +87,7 @@ def run(docker, reader, reader_image=None):
         override = directory/'compose.test.json'
         override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
             'user':str(uid)+':'+str(gid),
+            'mem_limit':'2g',
             'tmpfs':['/run/btc:uid='+str(uid)+',gid='+str(gid)+',mode=0700'],
             'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']}}}))
         command += ['-f',str(override)]
@@ -96,13 +101,18 @@ def run(docker, reader, reader_image=None):
                  'assert source.samefile(target); target.unlink(); source.unlink()')
         subprocess.run(command+['exec','-T','core','python','-c',probe],check=True)
         subprocess.run([docker,'cp',str(ROOT/'service/tests'),container+':/tmp/tests'],check=True)
-        subprocess.run([docker,'cp',str(reader),container+':/tmp/reader'],check=True)
+        # The compatible role export contains relative links to its owner
+        # repository. Materialize them in a disposable copy because Docker cp
+        # preserves nested links that otherwise point outside the container.
+        reader_copy = directory/'reader-export'
+        shutil.copytree(reader,reader_copy,symlinks=False)
+        subprocess.run([docker,'cp',str(reader_copy),container+':/tmp/reader'],check=True)
         subprocess.run(command+['exec','-T','core','mkdir','-p','/tmp/source/scripts'],check=True)
         for relative in ('skill','project-methods','scripts/build_synthetic_fixtures.py'):
             subprocess.run([docker,'cp',str(ROOT/relative),container+':/tmp/source/'+relative],check=True)
-        subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc',
+        subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc:/tmp/reader',
                        '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
-                       'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True)
+                       'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True,timeout=900)
         # Recreate a known failure across two real maintenance process starts.
         # The service must stay idle until a reviewed fault is resolved.
         fault = {'method':'model.defect.open','operation_id':'synthetic-maintenance-lockout',
@@ -187,7 +197,16 @@ def run(docker, reader, reader_image=None):
                     shutil.rmtree(directory);break
                 except PermissionError:
                     if attempt==3:
-                        print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
+                        # The container writes to this test-owned bind mount as
+                        # root. Release its permissions after the stack is down,
+                        # then remove the generated secrets and fixtures.
+                        try:
+                            subprocess.run([docker,'run','--rm','--user','0','-v',
+                                str(directory)+':/fixture','btc-node:contract',
+                                'chmod','-R','a+rwX','/fixture'],check=True,timeout=30)
+                            shutil.rmtree(directory)
+                        except (OSError,subprocess.CalledProcessError,subprocess.TimeoutExpired):
+                            print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
                     else:time.sleep(0.25)
         else:
             print('Temporary test node retained for cleanup: '+str(directory),file=sys.stderr)

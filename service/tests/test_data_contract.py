@@ -161,6 +161,36 @@ class NodeContract(unittest.TestCase):
                           'outcome':'UNKNOWN','completion_ref':'unknown-'+self.id,
                           'failure_kind':'UNKNOWN','failure_ref':'isolated-concurrent-claim'}})
 
+    def test_node_clock_fault_latches_and_recovers_on_actual_mysql_writer(self):
+        from btc_node.__main__ import scheduler_pulse
+        settings = dict(self.settings, scheduler_mode='ACTIVE', scheduler_poll_ms=60_000)
+        self.assertEqual('TICKED', scheduler_pulse(settings)['action'])
+        self.assertEqual('AVAILABLE', dispatch(settings, {
+            'method':'schedule.window','params':{}})['status'])
+        signature = 'sha256:' + uuid.uuid4().hex.ljust(64, '0')
+        opened = dispatch(settings, {'method':'model.defect.open',
+            'operation_id':self.id+'-clock-fault',
+            'params':{'scope':'btc/scheduler','kind':'UNKNOWN',
+                      'signature':signature,'fault_digest':signature,
+                      'evidence_ref':'isolated-clock-failure-'+self.id}})
+        try:
+            self.assertEqual('BLOCKED_SCHEDULER_FAULT', scheduler_pulse(settings)['action'])
+            self.assertEqual('UNAVAILABLE', dispatch(settings, {
+                'method':'schedule.window','params':{}})['status'])
+            self.assertEqual('NODE_CLOCK_UNAVAILABLE_NO_LAUNCH', dispatch(settings, {
+                'method':'schedule.claim','operation_id':self.id+'-blocked-claim',
+                'params':{'attempt_id':self.id+'-blocked'}})['action'])
+        finally:
+            dispatch(settings, {'method':'model.defect.resolve',
+                'operation_id':self.id+'-clock-resolve',
+                'params':{'fault_id':opened['fault_id'],
+                          'repair_digest':'sha256:'+'e'*64,
+                          'verification_ref':'isolated-clock-recovery-'+self.id,
+                          'verification_status':'PASS'}})
+        self.assertEqual('TICKED', scheduler_pulse(settings)['action'])
+        self.assertEqual('AVAILABLE', dispatch(settings, {
+            'method':'schedule.window','params':{}})['status'])
+
     def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
         product = self.id
         self.prices.instrument(product, {'market':'synthetic','symbol':'BTC',

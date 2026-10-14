@@ -125,6 +125,28 @@ class DeepGateTests(unittest.TestCase):
             repair_digest=digest('fixed-code'),verification_ref='synthetic-offline-test',verification_status='PASS')
         self.assertEqual('RESOLVED',fixed['state'])
 
+    def test_verified_correction_receipt_enters_next_scope_and_recurrence_blocks_it(self):
+        signature=digest('original semantic mismatch')
+        fault=deep_gate.open_fault(self.node.client(),scope='btc/market',kind='SEMANTIC',
+            signature=signature,fault_digest=digest('original candidate'),
+            evidence_ref='original-input-and-output',impact_ref='affected-decision-review',
+            cause_ref='reviewed-cause')
+        self.assertFalse(deep_gate.check_scope(self.node.client(),scope='btc/market')['allowed'])
+        deep_gate.resolve_fault(self.node.client(),fault_id=fault['fault_id'],
+            repair_digest=digest('changed release'),correction_ref='changed-method-and-code',
+            verification_ref='isolated-original-and-neighbor-replay',verification_status='PASS')
+        check=deep_gate.check_scope(self.node.client(),scope='btc/market')
+        self.assertTrue(check['allowed'])
+        self.assertEqual('reviewed-cause',check['accepted_corrections'][0]['cause_ref'])
+        self.assertEqual('changed-method-and-code',check['accepted_corrections'][0]['correction_ref'])
+        self.assertEqual([],deep_gate.check_scope(self.node.client(),scope='btc/report')['accepted_corrections'])
+        repeated=deep_gate.open_fault(self.node.client(),scope='btc/market',kind='SEMANTIC',
+            signature=signature,fault_digest=digest('new failed candidate'),
+            evidence_ref='new-actual-mismatch',impact_ref='new-impact',cause_ref='new-cause')
+        self.assertFalse(deep_gate.check_scope(self.node.client(),scope='btc/market')['allowed'])
+        self.assertEqual('changed-method-and-code',
+                         repeated['prior_resolutions'][0]['correction_ref'])
+
     def test_ordinary_scope_check_blocks_only_open_affected_stage(self):
         fault=deep_gate.open_fault(self.node.client(),scope='btc/market',kind='DETERMINISTIC',
             signature=digest('revision9 stored forward'),fault_digest=digest('locked failed candidate'),

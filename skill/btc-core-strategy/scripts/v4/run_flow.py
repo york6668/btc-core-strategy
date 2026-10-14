@@ -136,16 +136,17 @@ def market_template(ctx, raw):
 
 
 def admit_new_market_run():
-    """Stop affected recurring work before collection or a new model candidate."""
+    """Stop affected work and carry reviewed correction refs into its next read set."""
     import node_config
     settings = node_config.load()
     if not (os.environ.get('BTC_IN_CONTAINER') == '1' or
             (settings.get('docker_service') or {}).get('enabled')):
-        return
+        return []
     import model_daily
     result = model_daily.request('model.defect.check', {'scope': 'btc/market'})
     require(result.get('allowed') is True,
             'known public-market defect blocks a new run; inspect the original fault and repair evidence')
+    return result.get('accepted_corrections', [])
 
 
 def report_template(ctx):
@@ -249,7 +250,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
             require(not collector_file or digest(Path(collector_file).read_bytes()) == run.get('collector_input_hash'), 'collector input changed')
             require(run.get('preparation_compatibility', {}) == compatibility, 'preparation compatibility inputs changed')
             return result_paths(run, 'prepared')
-        admit_new_market_run()
+        accepted_corrections = admit_new_market_run()
         marker = directory / 'preparation.json'
         partial = any((directory / name).exists() for name in ('market.json','collector.json','evidence'))
         require(not partial or resume_preparation,
@@ -263,6 +264,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         require(core.get('revision', 1) >= 3, 'run adapter needs the existing main workflow; use legacy migration explicitly')
         preparation = {'schema':'BTC_PREPARATION_V1','run_ref':run_ref,'agent_id':agent_id,
                        'anchors':before,'deep':deep,'workflow_revision':workflow_revision,
+                       'accepted_corrections':accepted_corrections,
                        'market_input_hash':digest(Path(market_file).read_bytes()) if market_file else None,
                        'collector_input_hash':digest(Path(collector_file).read_bytes()) if collector_file else None,
                        'collector_snapshot_hash':compatibility.get('collector_snapshot_hash'),
@@ -415,6 +417,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                 'undelivered_reports': len(recovery['report_delivery_obligations']),
                 'delivery_details_stage': 'report'}
             save(directory / 'market-template.json', market_template(ctx, raw))
+        brief['accepted_corrections'] = accepted_corrections
         save(directory / 'context.json', brief)
         save(directory / 'recovery.json', recovery)
         reads = material_reads.make(directory, 'observe', directory / 'context.json',

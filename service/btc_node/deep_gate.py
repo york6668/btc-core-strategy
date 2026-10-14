@@ -69,11 +69,21 @@ def status(db):
 def check_scope(db, *, scope):
     """Read the same open faults before ordinary affected model stages."""
     scope = _scope(scope)
+    records = list(_state(db)['faults'].values())
     faults = [{'fault_id': item['fault_id'], 'kind': item['kind'], 'scope': item['scope']}
-              for item in _state(db)['faults'].values()
+              for item in records
               if item['state'] == 'OPEN' and _affected(item['scope'], scope)]
     faults.sort(key=lambda item: item['fault_id'])
-    return {'scope': scope, 'allowed': not faults, 'faults': faults}
+    corrections = [{key: item.get(key) for key in ('fault_id', 'scope', 'kind',
+                   'fault_digest', 'evidence_ref', 'impact_ref', 'cause_ref',
+                   'repair_digest', 'correction_ref', 'verification_ref', 'resolved_at_ms')}
+                   for item in records if item['state'] == 'RESOLVED'
+                   and _affected(item['scope'], scope)
+                   and all(item.get(key) for key in ('impact_ref', 'cause_ref',
+                                                     'correction_ref', 'verification_ref'))]
+    corrections.sort(key=lambda item: (item['resolved_at_ms'], item['fault_id']))
+    return {'scope': scope, 'allowed': not faults, 'faults': faults,
+            'accepted_corrections': corrections}
 
 
 def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
@@ -117,11 +127,15 @@ def _fault_id(scope, signature):
     return 'sha256:' + hashlib.sha256((_scope(scope) + '\0' + _digest(signature)).encode()).hexdigest()
 
 
-def open_fault(db, *, scope, kind, signature, fault_digest, evidence_ref):
+def open_fault(db, *, scope, kind, signature, fault_digest, evidence_ref,
+               impact_ref=None, cause_ref=None):
     if kind not in FAULT_CLASSES:
         raise ValueError('fault classification required')
     if not isinstance(evidence_ref, str) or not evidence_ref:
         raise ValueError('actual failure evidence reference required')
+    if any(value is not None and (not isinstance(value, str) or not value)
+           for value in (impact_ref, cause_ref)):
+        raise ValueError('impact and cause references must be nonempty when supplied')
     scope, signature, fault_digest = _scope(scope), _digest(signature), _digest(fault_digest)
     state = _state(db)
     identity = _fault_id(scope,signature)
@@ -130,8 +144,14 @@ def open_fault(db, *, scope, kind, signature, fault_digest, evidence_ref):
         return current
     record = {'fault_id':identity, 'scope':scope, 'kind':kind,'signature':signature,
               'fault_digest':fault_digest,'evidence_ref':evidence_ref,
+              'impact_ref':impact_ref,'cause_ref':cause_ref,
               'state':'OPEN','opened_at_ms':millis(),'repair_digest':None,
-              'verification_ref':None,'resolved_at_ms':None}
+              'correction_ref':None,'verification_ref':None,'resolved_at_ms':None}
+    if current:
+        record['prior_resolutions'] = current.get('prior_resolutions', []) + [
+            {key: current.get(key) for key in ('fault_id', 'fault_digest', 'evidence_ref',
+             'impact_ref', 'cause_ref', 'repair_digest', 'correction_ref',
+             'verification_ref', 'opened_at_ms', 'resolved_at_ms')}]
     state['faults'][identity] = record
     _save(db,state)
     return record
@@ -172,11 +192,14 @@ def finish(db, *, claim_id, outcome, result_ref=None, failure_kind=None, failure
     return {'claim':slot,'action':'SETTLED'}
 
 
-def resolve_fault(db, *, fault_id, repair_digest, verification_ref, verification_status):
+def resolve_fault(db, *, fault_id, repair_digest, verification_ref, verification_status,
+                  correction_ref=None):
     """Mechanical recovery gate; actual evidence is still independently reviewed."""
     repair_digest = _digest(repair_digest)
     if not isinstance(verification_ref,str) or not verification_ref:
         raise ValueError('actual isolated verification reference required')
+    if correction_ref is not None and (not isinstance(correction_ref, str) or not correction_ref):
+        raise ValueError('correction reference must be nonempty when supplied')
     state = _state(db)
     item = state['faults'].get(fault_id)
     if not item or item['state'] != 'OPEN':
@@ -191,6 +214,7 @@ def resolve_fault(db, *, fault_id, repair_digest, verification_ref, verification
         raise Conflict('permission denial needs actual matching authorization')
     item['state'] = 'RESOLVED'
     item['repair_digest'] = repair_digest
+    item['correction_ref'] = correction_ref
     item['verification_ref'] = verification_ref
     item['resolved_at_ms'] = millis()
     _save(db,state)
