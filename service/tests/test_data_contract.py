@@ -191,6 +191,30 @@ class NodeContract(unittest.TestCase):
         self.assertEqual('AVAILABLE', dispatch(settings, {
             'method':'schedule.window','params':{}})['status'])
 
+    def test_correction_receipt_roundtrips_through_actual_mysql_api(self):
+        scope = 'btc/synthetic'
+        original = 'sha256:' + uuid.uuid4().hex.ljust(64, '0')
+        fault = dispatch(self.settings, {'method':'model.defect.open',
+            'operation_id':self.id+'-correction-open',
+            'params':{'scope':scope,'kind':'SEMANTIC','signature':original,
+                      'fault_digest':original,'evidence_ref':'isolated-original-'+self.id,
+                      'impact_ref':'isolated-impact-'+self.id,
+                      'cause_ref':'isolated-cause-'+self.id}})
+        self.assertFalse(dispatch(self.settings, {'method':'model.defect.check',
+            'params':{'scope':scope}})['allowed'])
+        dispatch(self.settings, {'method':'model.defect.resolve',
+            'operation_id':self.id+'-correction-resolve',
+            'params':{'fault_id':fault['fault_id'],
+                      'repair_digest':'sha256:'+'e'*64,
+                      'correction_ref':'isolated-changed-release-'+self.id,
+                      'verification_ref':'isolated-replay-'+self.id,
+                      'verification_status':'PASS'}})
+        checked = dispatch(self.settings, {'method':'model.defect.check',
+            'params':{'scope':scope}})
+        self.assertTrue(checked['allowed'])
+        self.assertEqual('isolated-changed-release-'+self.id,
+                         checked['accepted_corrections'][0]['correction_ref'])
+
     def test_late_download_knowledge_correction_is_append_only_and_as_of_safe(self):
         product = self.id
         self.prices.instrument(product, {'market':'synthetic','symbol':'BTC',

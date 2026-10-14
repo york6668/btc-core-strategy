@@ -201,9 +201,10 @@ def run(docker, reader, reader_image=None):
                         # root. Release its permissions after the stack is down,
                         # then remove the generated secrets and fixtures.
                         try:
-                            subprocess.run([docker,'run','--rm','--user','0','-v',
+                            subprocess.run([docker,'run','--rm','--user','0',
+                                '--entrypoint','chmod','-v',
                                 str(directory)+':/fixture','btc-node:contract',
-                                'chmod','-R','a+rwX','/fixture'],check=True,timeout=30)
+                                '-R','a+rwX','/fixture'],check=True,timeout=30)
                             shutil.rmtree(directory)
                         except (OSError,subprocess.CalledProcessError,subprocess.TimeoutExpired):
                             print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
