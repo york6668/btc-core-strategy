@@ -17,13 +17,30 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def verify_disposable_limits(services):
-    """Require exact byte limits across Compose's string/int JSON encodings."""
+def verify_disposable_limits(services, app_user):
+    """Require exact limits and one app user across disposable services."""
     for service, limit in (('core', GIB), ('mysql', GIB),
                            ('scheduler', GIB//2), ('maintenance', GIB//4)):
         effective = services[service]
         if effective['restart'] != 'no' or str(effective['mem_limit']) != str(limit):
             raise AssertionError('disposable stack restart/memory override missing: '+service)
+    for service in ('core', 'scheduler', 'maintenance'):
+        if services[service].get('user') != app_user:
+            raise AssertionError('disposable stack app user differs: '+service)
+
+
+def cleanup_disposable_mysql_bind(docker, directory, *, run=subprocess.run):
+    """Remove only this test's MySQL bind after its Compose project is gone."""
+    mysql_data = directory / 'mysql-data'
+    if (directory.is_symlink() or directory.parent.resolve() != Path(tempfile.gettempdir()).resolve()
+            or not directory.name.startswith('btc-data-contract-') or mysql_data.is_symlink()
+            or not mysql_data.is_dir()):
+        raise RuntimeError('disposable MySQL bind identity changed')
+    code = 'import shutil; shutil.rmtree("/fixture/mysql-data")'
+    run([docker, 'run', '--rm', '--network', 'none', '--pull', 'never',
+         '--memory', '128m', '--cpus', '0.25', '--restart', 'no',
+         '-v', str(directory) + ':/fixture', '--entrypoint', 'python',
+         'python:3.11-slim', '-c', code], check=True, timeout=90)
 
 
 def run(docker, reader, reader_image=None, preserved_volume_manifest=None):
@@ -112,8 +129,10 @@ def _run(docker, reader, reader_image, guard, project):
             '--entrypoint','python','-v',str(directory)+':/fixture:ro',
             'btc-node:contract','-c',owner_code], text=True))
         override = directory/'compose.test.json'
+        # Scheduler and maintenance write 0600 blobs into the same test CAS.
+        app_user = str(uid)+':'+str(gid)
         override.write_text(json.dumps({'services':{'core':{'volumes':[str(evidence)+':'+alias],
-            'user':str(uid)+':'+str(gid),
+            'user':app_user,
             'restart':'no', 'mem_limit':'1g', 'cpus':1,
             'tmpfs':['/run/btc:uid='+str(uid)+',gid='+str(gid)+',mode=0700'],
             'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']},
@@ -121,13 +140,13 @@ def _run(docker, reader, reader_image, guard, project):
                      'restart':'no','mem_limit':'1g','cpus':1},
             'scheduler':{'volumes':[str(evidence)+':'+alias,
                 str(scheduler_settings)+':/run/btc/settings.json:ro'],
-                'restart':'no','mem_limit':'512m','cpus':0.5},
-            'maintenance':{'restart':'no','mem_limit':'256m','cpus':0.5}}}))
+                'user':app_user,'restart':'no','mem_limit':'512m','cpus':0.5},
+            'maintenance':{'user':app_user,'restart':'no','mem_limit':'256m','cpus':0.5}}}))
         (directory/'mysql-data').mkdir()
         command += ['-f',str(override)]
         effective_test = json.loads(subprocess.check_output(command+[
             '--profile','node-scheduler','config','--format','json'],text=True))['services']
-        verify_disposable_limits(effective_test)
+        verify_disposable_limits(effective_test, app_user)
         if not any(mount['target']=='/var/lib/mysql' and mount['source']==str(directory/'mysql-data')
                    for mount in effective_test['mysql']['volumes']):
             raise AssertionError('disposable MySQL must use its own bind mount')
@@ -281,8 +300,12 @@ def _run(docker, reader, reader_image, guard, project):
         else:
             guard.cleaned = True
         try:
-            shutil.rmtree(directory)
-        except OSError as exc:
+            try:
+                shutil.rmtree(directory)
+            except PermissionError:
+                cleanup_disposable_mysql_bind(docker, directory)
+                shutil.rmtree(directory)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
             guard.cleaned = False
             raise RuntimeError('Temporary test files retained for review: '+str(directory)) from exc
     return result

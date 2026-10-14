@@ -9,21 +9,47 @@ import check
 
 
 class FailureDiagnosticsTests(unittest.TestCase):
+    def test_mysql_bind_cleanup_is_scoped_to_generated_directory(self):
+        with tempfile.TemporaryDirectory(prefix='btc-data-contract-') as root:
+            directory = Path(root)
+            (directory / 'mysql-data').mkdir()
+            with patch.object(check.subprocess, 'run') as run:
+                check.cleanup_disposable_mysql_bind('docker', directory, run=run)
+            command = run.call_args.args[0]
+            self.assertIn('--network', command)
+            self.assertIn('none', command)
+            self.assertIn('--pull', command)
+            self.assertIn('never', command)
+            self.assertEqual(str(directory) + ':/fixture', command[command.index('-v') + 1])
+            self.assertEqual('import shutil; shutil.rmtree("/fixture/mysql-data")', command[-1])
+        with tempfile.TemporaryDirectory(prefix='unrelated-') as root:
+            (Path(root) / 'mysql-data').mkdir()
+            with patch.object(check.subprocess, 'run') as run:
+                with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                    check.cleanup_disposable_mysql_bind('docker', Path(root), run=run)
+            run.assert_not_called()
+
     def test_compose_numeric_byte_strings_preserve_limits(self):
         limits = {'core': check.GIB, 'mysql': check.GIB,
                   'scheduler': check.GIB // 2, 'maintenance': check.GIB // 4}
         services = {name: {'restart': 'no', 'mem_limit': str(limit)}
                     for name, limit in limits.items()}
-        check.verify_disposable_limits(services)
+        for service in ('core', 'scheduler', 'maintenance'):
+            services[service]['user'] = '1001:1001'
+        check.verify_disposable_limits(services, '1001:1001')
         services['core']['mem_limit'] = check.GIB
-        check.verify_disposable_limits(services)
+        check.verify_disposable_limits(services, '1001:1001')
         services['core']['mem_limit'] = str(check.GIB - 1)
         with self.assertRaisesRegex(AssertionError, 'core'):
-            check.verify_disposable_limits(services)
+            check.verify_disposable_limits(services, '1001:1001')
         services['core']['mem_limit'] = str(check.GIB)
         services['core']['restart'] = 'unless-stopped'
         with self.assertRaisesRegex(AssertionError, 'core'):
-            check.verify_disposable_limits(services)
+            check.verify_disposable_limits(services, '1001:1001')
+        services['core']['restart'] = 'no'
+        services['maintenance'].pop('user')
+        with self.assertRaisesRegex(AssertionError, 'maintenance'):
+            check.verify_disposable_limits(services, '1001:1001')
 
     def test_compose_failure_captures_bounded_logs_and_cleans_temp_data(self):
         with tempfile.TemporaryDirectory() as root:
