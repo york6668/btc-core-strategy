@@ -86,7 +86,7 @@ class Blobs:
         if target.exists():
             if target.stat().st_size != len(data):
                 raise Conflict('stored content length mismatch')
-            if fingerprint(target.read_bytes()) != digest:
+            if fingerprint_file(target) != digest:
                 raise Conflict('stored content checksum mismatch')
             return digest
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
