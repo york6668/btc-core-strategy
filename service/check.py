@@ -17,11 +17,12 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(docker, reader, reader_image=None):
+def run(docker, reader, reader_image=None, preserved_volume_manifest=None):
     # One local flock and one daemon-wide atomic claim cover separate shell
     # processes and separate clients of the same Docker VM.
     project = 'btc-test-' + uuid.uuid4().hex[:12]
-    with ValidationGuard(docker, project=project, stack_limit_bytes=(11 * GIB) // 4) as guard:
+    with ValidationGuard(docker, project=project, stack_limit_bytes=(11 * GIB) // 4,
+                         preserved_volume_manifest=preserved_volume_manifest) as guard:
         restore = install_interrupt_handlers()
         try:
             return _run(docker, reader, reader_image, guard, project)
@@ -286,7 +287,10 @@ if __name__ == '__main__':
     parser.add_argument('--docker',default=shutil.which('docker'))
     parser.add_argument('--reader', default=str(ROOT/'telegram_reader'))
     parser.add_argument('--reader-image', help='Built analysis-role image for the actual reader entrypoint contract')
+    parser.add_argument('--preserved-volume-manifest',
+                        help='Exact, previously reviewed retained-volume identities; never bypasses resource admission')
     args=parser.parse_args()
     if not args.docker:
         parser.error('Docker client and daemon are required; this validation cannot be skipped')
-    raise SystemExit(run(args.docker, args.reader, args.reader_image))
+    raise SystemExit(run(args.docker, args.reader, args.reader_image,
+                         args.preserved_volume_manifest))

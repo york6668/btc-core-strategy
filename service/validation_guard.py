@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import signal
 import socket
 import subprocess
@@ -21,6 +22,7 @@ LOCK_PATH = Path('/tmp/btc-validation-admission.lock')
 RESERVE_BYTES = 2 * GIB
 MIN_SWAP_FREE_FRACTION = 0.75
 PROJECT_PREFIXES = ('btc-adoption-', 'btc-test-')
+PRESERVED_VOLUME_SCHEMA = 'BTC_PRESERVED_VALIDATION_VOLUMES_V1'
 DESKTOP_VM_LOG = Path.home() / 'Library/Containers/com.docker.docker/Data/log/vm'
 
 
@@ -74,6 +76,42 @@ def conflicting_stacks(names):
                   if name.startswith(PROJECT_PREFIXES))
 
 
+def load_preserved_volumes(path):
+    """Require an explicit, exact Docker-volume identity list; no wildcard grants."""
+    if path is None:
+        return None
+    try:
+        source = Path(path)
+        if source.is_symlink() or not source.is_file() or source.stat().st_size > 32 * 1024:
+            raise AdmissionError('preserved-volume manifest is not a bounded regular file')
+        record = json.loads(source.read_text())
+    except (OSError, ValueError, TypeError) as exc:
+        raise AdmissionError('preserved-volume manifest cannot be read') from exc
+    if (not isinstance(record, dict) or set(record) != {'schema', 'daemon_id', 'volumes'}
+            or record['schema'] != PRESERVED_VOLUME_SCHEMA
+            or not isinstance(record['daemon_id'], str) or not record['daemon_id']
+            or not isinstance(record['volumes'], list) or not 1 <= len(record['volumes']) <= 32):
+        raise AdmissionError('invalid preserved-volume manifest')
+    names = set()
+    for entry in record['volumes']:
+        if not isinstance(entry, dict) or set(entry) != {
+                'name', 'project', 'driver', 'created_at', 'mountpoint', 'state'}:
+            raise AdmissionError('invalid preserved-volume entry')
+        project = entry['project']
+        if (not isinstance(project, str) or not project.startswith(PROJECT_PREFIXES)
+                or not re.fullmatch(r'btc-(?:adoption|test)-[a-z0-9]+', project)
+                or not isinstance(entry['name'], str)
+                or entry['name'] != project + '_mysql' or entry['name'] in names
+                or entry['state'] != 'PRESERVED'
+                or entry['driver'] != 'local'
+                or not isinstance(entry['created_at'], str) or not entry['created_at']
+                or not isinstance(entry['mountpoint'], str)
+                or entry['mountpoint'] != '/var/lib/docker/volumes/' + entry['name'] + '/_data'):
+            raise AdmissionError('invalid preserved-volume identity')
+        names.add(entry['name'])
+    return record
+
+
 def recent_vm_global_oom(log_dir, since):
     """Read Docker Desktop's Linux kernel record; events alone miss process OOM."""
     log_dir = Path(log_dir)
@@ -123,7 +161,8 @@ def cleanup_compose(command, project, admission, *, run=subprocess.run):
 
 class ValidationGuard:
     def __init__(self, docker, *, stack_limit_bytes, project=None, run=subprocess.run,
-                 lock_path=LOCK_PATH, now=None, platform_name=None, vm_log_dir=DESKTOP_VM_LOG):
+                 lock_path=LOCK_PATH, now=None, platform_name=None, vm_log_dir=DESKTOP_VM_LOG,
+                 preserved_volume_manifest=None):
         self.docker = docker
         self.stack_limit_bytes = stack_limit_bytes
         self.run = run
@@ -131,6 +170,7 @@ class ValidationGuard:
         self.now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         self.platform_name = platform_name or platform.system()
         self.vm_log_dir = vm_log_dir
+        self.preserved_volumes = load_preserved_volumes(preserved_volume_manifest)
         if project is not None and not project.startswith(PROJECT_PREFIXES):
             raise ValueError('invalid BTC validation project')
         self.project = project
@@ -153,6 +193,45 @@ class ValidationGuard:
         self._call('rm', self.claim_id)
         self.claimed = False
         self.claim_id = None
+
+    def _verify_preserved_volumes(self, info, actual_names):
+        record = self.preserved_volumes
+        if record is None:
+            return False
+        if not info.get('ID') or info['ID'] != record['daemon_id']:
+            raise AdmissionError('preserved-volume Docker daemon identity changed')
+        expected = {entry['name'] for entry in record['volumes']}
+        if set(actual_names) != expected:
+            raise AdmissionError('preserved-volume inventory changed or is incomplete')
+        for entry in record['volumes']:
+            name, project = entry['name'], entry['project']
+            try:
+                volume = json.loads(self._call('volume', 'inspect', '--format', '{{json .}}', name))
+            except (ValueError, TypeError) as exc:
+                raise AdmissionError('preserved-volume inspection failed: ' + name) from exc
+            if not isinstance(volume, dict):
+                raise AdmissionError('preserved-volume inspection failed: ' + name)
+            labels = volume.get('Labels') or {}
+            if not isinstance(labels, dict):
+                raise AdmissionError('preserved-volume inspection failed: ' + name)
+            if (volume.get('Name') != name or volume.get('Driver') != entry['driver']
+                    or volume.get('CreatedAt') != entry['created_at']
+                    or volume.get('Mountpoint') != entry['mountpoint']
+                    or labels.get('com.docker.compose.project') != project
+                    or labels.get('com.docker.compose.volume') != 'mysql'):
+                raise AdmissionError('preserved-volume identity changed: ' + name)
+            if (self._call('ps', '-a', '--filter', 'volume=' + name, '-q')
+                    or self._call('ps', '-a', '--filter',
+                                  'label=com.docker.compose.project=' + project, '-q')
+                    or self._call('network', 'ls', '--filter',
+                                  'label=com.docker.compose.project=' + project, '-q')):
+                raise AdmissionError('preserved volume still has a container or network: ' + name)
+            project_volumes = self._call('volume', 'ls', '--filter',
+                                         'label=com.docker.compose.project=' + project,
+                                         '--format', '{{.Name}}').splitlines()
+            if project_volumes != [name]:
+                raise AdmissionError('preserved project has another volume: ' + project)
+        return True
 
     def __enter__(self):
         self.handle = self.lock_path.open('a+')
@@ -199,13 +278,18 @@ class ValidationGuard:
             names = self._call('ps', '-a', '--format', '{{.Names}}')
             volumes = self._call('volume', 'ls', '--format', '{{.Name}}')
             networks = self._call('network', 'ls', '--format', '{{.Name}}')
-            conflicts = sorted(set(conflicting_stacks(names) +
-                                   conflicting_stacks(volumes) +
-                                   conflicting_stacks(networks)))
-            if conflicts:
+            container_conflicts = conflicting_stacks(names)
+            network_conflicts = conflicting_stacks(networks)
+            volume_conflicts = conflicting_stacks(volumes)
+            if container_conflicts or network_conflicts:
+                conflicts = sorted(set(container_conflicts + network_conflicts))
                 raise AdmissionError('retained BTC validation resources require review: ' +
                                      ', '.join(conflicts[:3]) + (' ...' if len(conflicts) > 3 else ''))
             info = json.loads(self._call('info', '--format', '{{json .}}'))
+            if not self._verify_preserved_volumes(info, volume_conflicts) and volume_conflicts:
+                raise AdmissionError('retained BTC validation resources require review (volumes): ' +
+                                     ', '.join(volume_conflicts[:3]) +
+                                     (' ...' if len(volume_conflicts) > 3 else ''))
             # The claim container runs only `cat` and exits; this works in CI
             # without a pre-existing production container, and observes the VM
             # itself rather than the macOS host.

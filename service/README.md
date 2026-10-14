@@ -64,6 +64,8 @@ reader 检查点和分析投影增量处理原频道已收到的附件价格历�
 
 事故后增加隔离验收准入：本机文件锁与 Docker daemon 内固定名称的原子 claim 防止跨进程/客户端并发；历史 `btc-test-*` 或 `btc-adoption-*` 容器、网络和卷即使已停止也阻断新增，需先检查其日志和数据。检查 Docker VM 实际 `MemAvailable`、交换余量与最近一小时 OOM；macOS 上读取 Docker VM 内核 `init.log`，因为 Docker events 不一定记录全局进程 OOM。本套件临时 core/MySQL/scheduler/maintenance 的硬上限合计 2.75 GiB，另保留 2 GiB VM 余量，因此至少需要 4.75 GiB 可用内存。各容器有 CPU/内存上限且禁用自动重启；MySQL 数据放在本次独有的 bind mount，不再生成匿名保留卷。准入使用本地已构建的 `python:3.11-slim` 镜像运行一次只读内存探针；镜像不存在则失败，不在准入时拉取。`service/test_validation_guard_offline.py` 用模拟 Docker 命令检查并发、旧栈、预算、近期 OOM、信号和清理失败，无需启动 Docker 栈。
 
+确需保留已取证的静态 MySQL 卷时，可显式传入 `--preserved-volume-manifest <本机私有 JSON>`；默认继续阻断。清单的 schema 为 `BTC_PRESERVED_VALIDATION_VOLUMES_V1`，必须包含当前 Docker daemon 的完整 `daemon_id` 与最多 32 个 `volumes`；每项精确写入 `name`、`project`、`driver=local`、`created_at`、`mountpoint`、`state=PRESERVED`。Docker 命名卷没有独立 ID，完整卷名结合 daemon ID、创建时间、挂载点与 Compose 标签作为核对身份。守卫逐卷读回并确认没有任何容器引用、同项目没有容器、网络或其他卷；清单增删、卷重建、标签或挂载点变化都重新阻断。此清单不授权删除卷，也不绕过单实例锁、内存、swap 或 OOM 准入。必须在旧容器及网络完成取证和获准清理后才能建立这份清单；当前九组旧资源仍不符合该条件。
+
 成功、业务失败或超时都会尝试 `compose down` 并读回确认本次容器和网络消失，再删除本次生成的临时文件。任何清理失败都会保留文件、容器、日志和 daemon claim，明确报错并阻断下次验收；过期 claim 只报告，不自动删除。既有保留卷不在这一步清除。事故后正式环境未达到这项准入，不能用离线测试通过表示已完成 Docker 集成或稳定性验收。
 
 完整核心测试继续使用 `scripts/run_tests.py`；核心仓库单独检查数据服务时使用 `service/check.py --reader <完整reader导出>`，在 market-roles 执行 `roles/validate_repository.py --with-data-service` 则自动使用白名单重建的 collector/analysis 与 reader。卖竭投影复用该 reader 的公式、来源和日期校验；缺失模块保留投影缺口并可重试，不猜测来源。云端默认准备只覆盖依赖和离线验证；显式 `--with-data-service` 模式要求 Docker/Compose/MySQL 可运行，不能将离线通过当作数据服务或环境发布通过。实际 reader 镜像组合验证通过 `service/check.py --reader-image <已构建镜像>` 执行，涵盖真实角色 CLI、参数透传、只读源码及可写嵌套数据挂载。自然七日验收使用原分析任务，不增设第二个分析写入方。acceptance 的每项结论必须绑定实际输入、状态变化、消费结果与可读取证据；日期届满不会自动通过。

@@ -24,6 +24,9 @@ class FakeDocker:
         self.project_containers = ''
         self.project_networks = ''
         self.project_volumes = ''
+        self.volume_attached = ''
+        self.volume_record = None
+        self.daemon_id = 'synthetic-daemon-id'
         self.fail_rm = False
         self.calls = []
 
@@ -51,13 +54,22 @@ class FakeDocker:
             else:
                 self.claim = False
         elif command == 'ps':
-            output = self.project_containers if '--filter' in args else self.names
+            if '--filter' in args:
+                output = self.volume_attached if any(part.startswith('volume=') for part in args) else self.project_containers
+            else:
+                output = self.names
         elif command == 'network':
             output = self.project_networks if '--filter' in args else self.network_names
         elif command == 'volume':
-            output = self.project_volumes if '--filter' in args else self.volume_names
+            if args[2] == 'inspect':
+                if self.volume_record is None:
+                    code = 1
+                else:
+                    output = json.dumps(self.volume_record)
+            else:
+                output = self.project_volumes if '--filter' in args else self.volume_names
         elif command == 'info':
-            output = json.dumps({'MemTotal': 8 * guard.GIB, 'NCPU': 10})
+            output = json.dumps({'MemTotal': 8 * guard.GIB, 'NCPU': 10, 'ID': self.daemon_id})
         elif command == 'start':
             output = ('MemTotal: 8388608 kB\nMemAvailable: ' + str(self.available // 1024) +
                       ' kB\nSwapTotal: 1048576 kB\nSwapFree: ' +
@@ -76,11 +88,31 @@ class GuardTest(unittest.TestCase):
         self.fake = FakeDocker()
         self.path = Path(self.temp.name) / 'claim.lock'
 
-    def make(self, fake=None):
+    def make(self, fake=None, **kwargs):
         fake = fake or self.fake
         return guard.ValidationGuard('docker', stack_limit_bytes=2 * guard.GIB,
                                      run=fake, lock_path=self.path, now=lambda: fake.now,
-                                     platform_name='Linux')
+                                     platform_name='Linux', **kwargs)
+
+    def retained_manifest(self):
+        project = 'btc-adoption-frozen123'
+        name = project + '_mysql'
+        mountpoint = '/var/lib/docker/volumes/' + name + '/_data'
+        entry = {'name': name, 'project': project, 'driver': 'local',
+                 'created_at': '2026-10-14T06:59:31Z', 'mountpoint': mountpoint,
+                 'state': 'PRESERVED'}
+        self.fake.volume_names = name
+        self.fake.project_volumes = name
+        self.fake.volume_record = {'Name': name, 'Driver': 'local',
+                                   'CreatedAt': entry['created_at'],
+                                   'Mountpoint': mountpoint,
+                                   'Labels': {'com.docker.compose.project': project,
+                                              'com.docker.compose.volume': 'mysql'}}
+        path = Path(self.temp.name) / 'preserved-volumes.json'
+        path.write_text(json.dumps({'schema': guard.PRESERVED_VOLUME_SCHEMA,
+                                    'daemon_id': self.fake.daemon_id,
+                                    'volumes': [entry]}))
+        return path
 
     def test_local_concurrent_claim_refused(self):
         first = self.make()
@@ -126,6 +158,79 @@ class GuardTest(unittest.TestCase):
             with self.make():
                 pass
         self.assertFalse(self.fake.claim)
+
+    def test_exact_preserved_volume_still_requires_all_other_gates(self):
+        path = self.retained_manifest()
+        with self.make(preserved_volume_manifest=path):
+            pass
+        self.assertFalse(self.fake.claim)
+        self.assertTrue(any(call[:2] == ('volume', 'inspect') for call in self.fake.calls))
+        self.assertTrue(any(call[0] == 'start' for call in self.fake.calls))
+        self.fake.available = 3 * guard.GIB
+        with self.assertRaisesRegex(guard.AdmissionError, 'memory admission denied'):
+            with self.make(preserved_volume_manifest=path):
+                pass
+
+    def test_preserved_volume_drift_or_live_owner_blocks(self):
+        path = self.retained_manifest()
+        def check(message):
+            with self.assertRaisesRegex(guard.AdmissionError, message):
+                with self.make(preserved_volume_manifest=path):
+                    pass
+            self.assertFalse(self.fake.claim)
+        self.fake.names = 'btc-adoption-frozen123-mysql-1'
+        check('retained BTC validation resources')
+        self.fake.names = ''
+        self.fake.network_names = 'btc-adoption-frozen123_default'
+        check('retained BTC validation resources')
+        self.fake.network_names = ''
+        self.fake.volume_attached = 'stopped-owner-id'
+        check('still has a container or network')
+        self.fake.volume_attached = ''
+        self.fake.project_networks = 'empty-network-id'
+        check('still has a container or network')
+        self.fake.project_networks = ''
+        self.fake.project_containers = 'renamed-owner-id'
+        check('still has a container or network')
+        self.fake.project_containers = ''
+        self.fake.project_volumes += '\nbtc-adoption-frozen123_other'
+        check('another volume')
+        self.fake.project_volumes = 'btc-adoption-frozen123_mysql'
+        self.fake.volume_names += '\nbtc-test-unknown_mysql'
+        check('inventory changed')
+        self.fake.volume_names = 'btc-adoption-frozen123_mysql'
+        self.fake.daemon_id = 'different-daemon-id'
+        check('daemon identity changed')
+        self.fake.daemon_id = 'synthetic-daemon-id'
+        self.fake.volume_record['CreatedAt'] = 'recreated-at-new-time'
+        check('identity changed')
+        self.fake.volume_record['CreatedAt'] = '2026-10-14T06:59:31Z'
+        self.fake.volume_record['Mountpoint'] = '/different/mount'
+        check('identity changed')
+        self.fake.volume_record['Mountpoint'] = '/var/lib/docker/volumes/btc-adoption-frozen123_mysql/_data'
+        self.fake.volume_record['Labels']['com.docker.compose.project'] = 'btc-test-other'
+        check('identity changed')
+
+    def test_preserved_manifest_is_strict_and_not_a_prefix_exemption(self):
+        path = self.retained_manifest()
+        value = json.loads(path.read_text())
+        value['volumes'][0]['name'] = 'btc-adoption-frozen123_other'
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(guard.AdmissionError, 'invalid preserved-volume identity'):
+            self.make(preserved_volume_manifest=path)
+        value['volumes'][0]['name'] = ['btc-adoption-frozen123_mysql']
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(guard.AdmissionError, 'invalid preserved-volume identity'):
+            self.make(preserved_volume_manifest=path)
+        value['volumes'][0]['name'] = 'btc-adoption-frozen123_mysql'
+        value['volumes'][0]['created_at'] = 'changed-in-registry'
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(guard.AdmissionError, 'identity changed'):
+            with self.make(preserved_volume_manifest=path):
+                pass
+        path.write_text('{broken JSON')
+        with self.assertRaisesRegex(guard.AdmissionError, 'cannot be read'):
+            self.make(preserved_volume_manifest=path)
 
     def test_memory_and_recent_oom_refuse_admission(self):
         self.fake.available = 3 * guard.GIB
