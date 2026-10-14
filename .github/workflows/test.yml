@@ -19,6 +19,8 @@ jobs:
       - name: Prepare the existing pinned Python Docker image
         run: |
           docker pull python:3.11-slim
-          test "$(docker image inspect python:3.11-slim --format '{{.Id}}')" = 'sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce'
+          # RepoDigests records the pulled manifest; Id is the image config hash.
+          pulled="$(docker image inspect python:3.11-slim --format '{{index .RepoDigests 0}}')"
+          test "${pulled##*@}" = 'sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce'
       - name: Verify MySQL, actual CLI and MCP, recovery and business replay
         run: python3 -B scripts/ci_reader.py run
