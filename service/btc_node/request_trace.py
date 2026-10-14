@@ -33,6 +33,21 @@ def _integer(path):
         return None
 
 
+def _memory_classes(path):
+    values = {'anon': None, 'file': None, 'inactive_file': None}
+    try:
+        with path.open('rb') as stream:
+            lines = stream.read(4096).splitlines()
+        for line in lines:
+            key, separator, raw = line.partition(b' ')
+            name = key.decode('ascii', errors='ignore')
+            if separator and name in values and raw.isdigit():
+                values[name] = int(raw)
+    except OSError:
+        pass
+    return values
+
+
 def sample():
     """Read fixed, small kernel fields; unavailable values remain explicit nulls."""
     rss = None
@@ -47,6 +62,7 @@ def sample():
     current = _integer(_CGROUP / 'memory.current')
     peak = _integer(_CGROUP / 'memory.peak')
     swap = _integer(_CGROUP / 'memory.swap.current')
+    classes = _memory_classes(_CGROUP / 'memory.stat')
     try:
         children = resource.getrusage(resource.RUSAGE_CHILDREN)
     except OSError:
@@ -57,6 +73,9 @@ def sample():
             'cgroup_memory_current_bytes': current,
             'cgroup_memory_peak_bytes_cumulative': peak,
             'cgroup_swap_current_bytes': swap,
+            'cgroup_anon_bytes': classes['anon'],
+            'cgroup_file_bytes': classes['file'],
+            'cgroup_inactive_file_bytes': classes['inactive_file'],
             'cgroup_state': 'READABLE' if current is not None and peak is not None else 'UNKNOWN'}
 
 

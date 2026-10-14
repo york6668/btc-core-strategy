@@ -81,9 +81,11 @@ class RequestTraceOfflineTest(unittest.TestCase):
                 missing = trace.sample()
                 self.assertEqual('UNKNOWN', missing['cgroup_state'])
                 self.assertIsNone(missing['process_rss_bytes'])
+                self.assertIsNone(missing['cgroup_file_bytes'])
                 (root / 'memory.current').write_text('1234\n')
                 (root / 'memory.peak').write_text('4567\n')
                 (root / 'memory.swap.current').write_text('89\n')
+                (root / 'memory.stat').write_text('anon 101\nfile 202\ninactive_file 190\nprivate SECRET\n')
                 (root / 'status').write_text('Name:\ttest\nVmRSS:\t20 kB\n')
             with patch.object(trace, '_CGROUP', root), patch.object(trace, '_STATUS', root / 'status'):
                 measured = trace.sample()
@@ -91,6 +93,10 @@ class RequestTraceOfflineTest(unittest.TestCase):
             self.assertEqual(20 * 1024, measured['process_rss_bytes'])
             self.assertEqual(1234, measured['cgroup_memory_current_bytes'])
             self.assertEqual(4567, measured['cgroup_memory_peak_bytes_cumulative'])
+            self.assertEqual(101, measured['cgroup_anon_bytes'])
+            self.assertEqual(202, measured['cgroup_file_bytes'])
+            self.assertEqual(190, measured['cgroup_inactive_file_bytes'])
+            self.assertNotIn('SECRET', json.dumps(measured))
 
     def test_child_pid_and_result_are_correlated_without_command_logging(self):
         with trace.RequestTrace('core.execute') as request:
