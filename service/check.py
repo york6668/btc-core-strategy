@@ -17,8 +17,8 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def verify_disposable_limits(services, app_user):
-    """Require exact limits and one app user across disposable services."""
+def verify_disposable_limits(services, app_user, evidence_source, alias):
+    """Require exact limits and one identity/mount across disposable services."""
     for service, limit in (('core', GIB), ('mysql', GIB),
                            ('scheduler', GIB//2), ('maintenance', GIB//4)):
         effective = services[service]
@@ -27,6 +27,9 @@ def verify_disposable_limits(services, app_user):
     for service in ('core', 'scheduler', 'maintenance'):
         if services[service].get('user') != app_user:
             raise AssertionError('disposable stack app user differs: '+service)
+        if not any(mount.get('source') == str(evidence_source) and mount.get('target') == alias
+                   for mount in services[service].get('volumes', [])):
+            raise AssertionError('disposable stack evidence mount differs: '+service)
 
 
 def cleanup_disposable_mysql_bind(docker, directory, *, run=subprocess.run):
@@ -141,12 +144,13 @@ def _run(docker, reader, reader_image, guard, project):
             'scheduler':{'volumes':[str(evidence)+':'+alias,
                 str(scheduler_settings)+':/run/btc/settings.json:ro'],
                 'user':app_user,'restart':'no','mem_limit':'512m','cpus':0.5},
-            'maintenance':{'user':app_user,'restart':'no','mem_limit':'256m','cpus':0.5}}}))
+            'maintenance':{'volumes':[str(evidence)+':'+alias],
+                'user':app_user,'restart':'no','mem_limit':'256m','cpus':0.5}}}))
         (directory/'mysql-data').mkdir()
         command += ['-f',str(override)]
         effective_test = json.loads(subprocess.check_output(command+[
             '--profile','node-scheduler','config','--format','json'],text=True))['services']
-        verify_disposable_limits(effective_test, app_user)
+        verify_disposable_limits(effective_test, app_user, evidence, alias)
         if not any(mount['target']=='/var/lib/mysql' and mount['source']==str(directory/'mysql-data')
                    for mount in effective_test['mysql']['volumes']):
             raise AssertionError('disposable MySQL must use its own bind mount')

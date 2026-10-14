@@ -36,20 +36,27 @@ class FailureDiagnosticsTests(unittest.TestCase):
                     for name, limit in limits.items()}
         for service in ('core', 'scheduler', 'maintenance'):
             services[service]['user'] = '1001:1001'
-        check.verify_disposable_limits(services, '1001:1001')
+            services[service]['volumes'] = [{'source':'/tmp/isolated-evidence',
+                                            'target':'/fixture/project'}]
+        args = ('1001:1001', '/tmp/isolated-evidence', '/fixture/project')
+        check.verify_disposable_limits(services, *args)
         services['core']['mem_limit'] = check.GIB
-        check.verify_disposable_limits(services, '1001:1001')
+        check.verify_disposable_limits(services, *args)
         services['core']['mem_limit'] = str(check.GIB - 1)
         with self.assertRaisesRegex(AssertionError, 'core'):
-            check.verify_disposable_limits(services, '1001:1001')
+            check.verify_disposable_limits(services, *args)
         services['core']['mem_limit'] = str(check.GIB)
         services['core']['restart'] = 'unless-stopped'
         with self.assertRaisesRegex(AssertionError, 'core'):
-            check.verify_disposable_limits(services, '1001:1001')
+            check.verify_disposable_limits(services, *args)
         services['core']['restart'] = 'no'
         services['maintenance'].pop('user')
         with self.assertRaisesRegex(AssertionError, 'maintenance'):
-            check.verify_disposable_limits(services, '1001:1001')
+            check.verify_disposable_limits(services, *args)
+        services['maintenance']['user'] = '1001:1001'
+        services['maintenance']['volumes'] = []
+        with self.assertRaisesRegex(AssertionError, 'maintenance'):
+            check.verify_disposable_limits(services, *args)
 
     def test_compose_failure_captures_bounded_logs_and_cleans_temp_data(self):
         with tempfile.TemporaryDirectory() as root:
