@@ -81,22 +81,31 @@ def protected_documents(db):
         match = re.search(r'(?:^|/)evidence/([a-f0-9]{64})(?:/|$)', r['path'])
         if match:
             by_bundle.setdefault(match[1], []).append(r['document_key'])
-    pending = [r['document_key'] for r in by_key.values() if r['retention_class'] in {'ACTIVE', 'KEY', 'DAILY'}]
+    # A report may repeat one digest many times, and that digest may have many
+    # catalog paths. Queue each document once so graph expansion stays bounded
+    # by catalog size instead of reference_count * path_count.
+    pending, queued = [], set()
+    def enqueue(keys):
+        for key in keys:
+            if key not in queued:
+                queued.add(key)
+                pending.append(key)
+    enqueue(r['document_key'] for r in by_key.values() if r['retention_class'] in {'ACTIVE', 'KEY', 'DAILY'})
     for paths in namespace_paths.values():
         paths.sort()
     for row in db.rows("SELECT DISTINCT target_key FROM dependencies WHERE target_type='BLOB'"):
-        pending.extend(by_digest.get(row['target_key'], ()))
+        enqueue(by_digest.get(row['target_key'], ()))
     def protect_value(value):
         if isinstance(value, dict):
             for item in value.values(): protect_value(item)
         elif isinstance(value, list):
             for item in value: protect_value(item)
         elif isinstance(value, str):
-            pending.extend(by_digest.get(value.removeprefix('sha256:'), ()))
+            enqueue(by_digest.get(value.removeprefix('sha256:'), ()))
             for namespace, root in roots.items():
                 if root and value.startswith(root.rstrip('/')+'/'):
                     found=by_path.get((namespace,value[len(root.rstrip('/'))+1:]))
-                    if found:pending.append(found)
+                    if found:enqueue((found,))
     for row in db.rows("SELECT request_digest FROM operations WHERE status<>'COMMITTED'"):
         protect_value(db.value(row['request_digest']))
     protected, decoded = set(), set()
@@ -115,12 +124,12 @@ def protected_documents(db):
                 relative = os.path.relpath(os.path.normpath(str(target)), root)
                 key = by_path.get((row['namespace'], relative))
                 if key:
-                    pending.append(key)
+                    enqueue((key,))
                 prefix = relative.rstrip('/') + '/'
                 paths = namespace_paths[row['namespace']]
                 index = bisect_left(paths, prefix)
                 while index < len(paths) and paths[index].startswith(prefix):
-                    pending.append(by_path[(row['namespace'], paths[index])])
+                    enqueue((by_path[(row['namespace'], paths[index])],))
                     index += 1
             continue
         if not row['digest'] or row['digest'] in decoded or not row['path'].endswith('.json') or row['byte_length'] > 32*1024*1024:
@@ -141,15 +150,15 @@ def protected_documents(db):
         for item in strings:
             if re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', item):
                 digest = item.removeprefix('sha256:')
-                pending.extend(by_digest.get(digest, ()))
-                pending.extend(by_bundle.get(digest, ()))
+                enqueue(by_digest.get(digest, ()))
+                enqueue(by_bundle.get(digest, ()))
             for namespace, root in roots.items():
                 if root and item.startswith(root.rstrip('/') + '/'):
                     relative = item[len(root.rstrip('/'))+1:]
                     referenced = by_path.get((namespace, relative))
-                    if referenced: pending.append(referenced)
+                    if referenced: enqueue((referenced,))
             referenced = by_path.get((row['namespace'], item))
-            if referenced: pending.append(referenced)
+            if referenced: enqueue((referenced,))
     return protected
 
 
