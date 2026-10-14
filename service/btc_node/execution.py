@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 import sys
 import tempfile
 from time import monotonic
@@ -168,7 +168,8 @@ def execute(settings, request):
                                BTC_PYTHON=sys.executable, PYTHONPATH='/opt/btc')
             command = [sys.executable, str(release / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *argv]
             command_started = monotonic()
-            process = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True)
+            from .request_trace import run_child
+            process = run_child(command, cwd=project, env=environment)
             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr,
                       'component_binding': component_binding(release)}
             timings = {'command_ms': round((monotonic()-command_started)*1000)}

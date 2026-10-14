@@ -16,6 +16,7 @@ import traceback
 from .api import dispatch
 from .codec import Conflict, encode, millis
 from .database import Database
+from .request_trace import RequestTrace, record_input_failure
 
 
 MAX_REQUEST = 36 * 1024 * 1024
@@ -113,6 +114,35 @@ def call(path, request):
         return json.loads(response)
 
 
+def handle_stream(settings, rfile, wfile):
+    """Keep request evidence on stderr without serializing user input."""
+    try:
+        raw = rfile.readline(MAX_REQUEST + 1)
+    except TimeoutError:
+        record_input_failure('READ_TIMEOUT')
+        return
+    except OSError:
+        record_input_failure('READ_ERROR')
+        return
+    if len(raw) > MAX_REQUEST:
+        record_input_failure('OVERSIZE')
+        return
+    if not raw.endswith(b'\n'):
+        record_input_failure('INVALID_FRAME')
+        return
+    try:
+        request = json.loads(raw)
+    except ValueError:
+        record_input_failure('INVALID_JSON')
+        wfile.write(encode({'ok': False, 'error': 'invalid JSON'}))
+        return
+    method = request.get('method') if isinstance(request, dict) else None
+    with RequestTrace(method) as trace:
+        response = answer(settings, request)
+        trace.outcome = 'OK' if response['ok'] else 'APP_ERROR'
+        wfile.write(encode(response))
+
+
 def serve(settings):
     path = Path(settings['socket'])
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,15 +156,8 @@ def serve(settings):
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
-            raw = self.rfile.readline(MAX_REQUEST + 1)
-            if len(raw) > MAX_REQUEST or not raw.endswith(b'\n'):
-                return
-            try:
-                request = json.loads(raw)
-                response = answer(settings, request)
-            except ValueError:
-                response = {'ok': False, 'error': 'invalid JSON'}
-            self.wfile.write(encode(response))
+            self.request.settimeout(600)
+            handle_stream(settings, self.rfile, self.wfile)
 
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
