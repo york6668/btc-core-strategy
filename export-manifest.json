@@ -39,6 +39,7 @@
     "service/btc_node/mcp.py",
     "service/btc_node/projection.py",
     "service/btc_node/reader_prices.py",
+    "service/btc_node/request_trace.py",
     "service/btc_node/scheduler.py",
     "service/btc_node/schema.py",
     "service/btc_node/series.py",

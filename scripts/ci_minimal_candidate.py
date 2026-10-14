@@ -18,7 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = 'a1577cc6a2c216d832959f5c0c09d84444484427'
-EXPECTED_TREE = '49a51f5c703a9062cb1a95e3c83d2762441c3657'
+EXPECTED_TREE = '1be83c7aea16f55ff9c438d6edfe517b7e68ec41'
 PATCHES = (
     ('4689765c64aaaa7d692132a5a974a4988bc1728d',
      'test_support/minimal_candidate/01-request-trace.patch',
@@ -30,6 +30,8 @@ PATCHES = (
      'test_support/minimal_candidate/03-cgroup-breakdown.patch',
      '205a576668cee046e5a2be0bfbb9d690864ae90edd3e17e6d5e1df126174a6bf'),
 )
+PACKAGING_PATCH = ('test_support/minimal_candidate/04-export-trace.patch',
+                   'e0590dc97a2bcca8f7bd02d9663544d65fdc1981d07623ab15cd0794af20c814')
 
 
 def git(*args: str, env: dict[str, str]) -> str:
@@ -59,6 +61,8 @@ def main() -> None:
         actual = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
         if actual != expected:
             raise ValueError('pinned patch bytes changed: ' + source)
+    if hashlib.sha256((ROOT / PACKAGING_PATCH[0]).read_bytes()).hexdigest() != PACKAGING_PATCH[1]:
+        raise ValueError('pinned release export patch changed')
 
     with tempfile.TemporaryDirectory(prefix='btc-minimal-index-', dir=output.parent) as scratch:
         env = base_env.copy()
@@ -66,6 +70,7 @@ def main() -> None:
         git('read-tree', BASELINE, env=env)
         for _, relative, _ in PATCHES:
             git('apply', '--cached', str(ROOT / relative), env=env)
+        git('apply', '--cached', str(ROOT / PACKAGING_PATCH[0]), env=env)
         tree = git('write-tree', env=env)
         if tree != EXPECTED_TREE:
             raise ValueError('minimal candidate source tree differs: ' + tree)
@@ -81,6 +86,9 @@ def main() -> None:
                   {'source_commit': source, 'path': relative, 'sha256': digest}
                   for source, relative, digest in PATCHES],
               'source_tree': EXPECTED_TREE,
+              'packaging_adjustment': {'path': PACKAGING_PATCH[0],
+                  'sha256': PACKAGING_PATCH[1],
+                  'reason': 'export the traced runtime module in the installed release'},
               'contains_scheduler_cutover': False,
               'contains_model_contract_change': False}
     manifest.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')

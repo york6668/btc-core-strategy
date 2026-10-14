@@ -1,0 +1,9 @@
+diff --git a/export-manifest.json b/export-manifest.json
+--- a/export-manifest.json
++++ b/export-manifest.json
+@@ -38,4 +38,5 @@
+     "service/btc_node/projection.py",
+     "service/btc_node/reader_prices.py",
++    "service/btc_node/request_trace.py",
+     "service/btc_node/schema.py",
+     "service/btc_node/series.py",
