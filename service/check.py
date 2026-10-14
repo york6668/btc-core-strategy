@@ -258,7 +258,7 @@ def _run(docker, reader, reader_image, guard, project):
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         # Capture startup evidence before cleanup, scoped to this disposable
         # test project. Never dump settings, environment or credential files.
-        for diagnostic in (['ps','--all'], ['logs','--no-color','--tail','60','core']):
+        for diagnostic in (['ps','--all'], ['logs','--tail','60','core']):
             try:
                 subprocess.run(command+diagnostic, timeout=15, check=False)
             except (OSError, subprocess.TimeoutExpired):
