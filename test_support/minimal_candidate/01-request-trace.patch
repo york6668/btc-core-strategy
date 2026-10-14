@@ -1,0 +1,445 @@
+diff --git a/service/btc_node/__main__.py b/service/btc_node/__main__.py
+index 67a734a..06560e2 100644
+--- a/service/btc_node/__main__.py
++++ b/service/btc_node/__main__.py
+@@ -16,6 +16,7 @@ import traceback
+ from .api import dispatch
+ from .codec import Conflict, encode, millis
+ from .database import Database
++from .request_trace import RequestTrace, record_input_failure
+ 
+ 
+ MAX_REQUEST = 36 * 1024 * 1024
+@@ -113,6 +114,35 @@ def call(path, request):
+         return json.loads(response)
+ 
+ 
++def handle_stream(settings, rfile, wfile):
++    """Keep request evidence on stderr without serializing user input."""
++    try:
++        raw = rfile.readline(MAX_REQUEST + 1)
++    except TimeoutError:
++        record_input_failure('READ_TIMEOUT')
++        return
++    except OSError:
++        record_input_failure('READ_ERROR')
++        return
++    if len(raw) > MAX_REQUEST:
++        record_input_failure('OVERSIZE')
++        return
++    if not raw.endswith(b'\n'):
++        record_input_failure('INVALID_FRAME')
++        return
++    try:
++        request = json.loads(raw)
++    except ValueError:
++        record_input_failure('INVALID_JSON')
++        wfile.write(encode({'ok': False, 'error': 'invalid JSON'}))
++        return
++    method = request.get('method') if isinstance(request, dict) else None
++    with RequestTrace(method) as trace:
++        response = answer(settings, request)
++        trace.outcome = 'OK' if response['ok'] else 'APP_ERROR'
++        wfile.write(encode(response))
++
++
+ def serve(settings):
+     path = Path(settings['socket'])
+     path.parent.mkdir(parents=True, exist_ok=True)
+@@ -126,15 +156,8 @@ def serve(settings):
+ 
+     class Handler(socketserver.StreamRequestHandler):
+         def handle(self):
+-            raw = self.rfile.readline(MAX_REQUEST + 1)
+-            if len(raw) > MAX_REQUEST or not raw.endswith(b'\n'):
+-                return
+-            try:
+-                request = json.loads(raw)
+-                response = answer(settings, request)
+-            except ValueError:
+-                response = {'ok': False, 'error': 'invalid JSON'}
+-            self.wfile.write(encode(response))
++            self.request.settimeout(600)
++            handle_stream(settings, self.rfile, self.wfile)
+ 
+     class Server(socketserver.ThreadingUnixStreamServer):
+         daemon_threads = True
+diff --git a/service/btc_node/execution.py b/service/btc_node/execution.py
+index 859894a..6fb3910 100644
+--- a/service/btc_node/execution.py
++++ b/service/btc_node/execution.py
+@@ -7,8 +7,8 @@ from __future__ import annotations
+ 
+ import json
+ import os
+-from pathlib import Path
+ import subprocess
++from pathlib import Path
+ import sys
+ import tempfile
+ from time import monotonic
+@@ -168,7 +168,8 @@ def execute(settings, request):
+                                BTC_PYTHON=sys.executable, PYTHONPATH='/opt/btc')
+             command = [sys.executable, str(release / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *argv]
+             command_started = monotonic()
+-            process = subprocess.run(command, cwd=project, env=environment, capture_output=True, text=True)
++            from .request_trace import run_child
++            process = run_child(command, cwd=project, env=environment)
+             result = {'returncode': process.returncode, 'stdout': process.stdout, 'stderr': process.stderr,
+                       'component_binding': component_binding(release)}
+             timings = {'command_ms': round((monotonic()-command_started)*1000)}
+diff --git a/service/btc_node/request_trace.py b/service/btc_node/request_trace.py
+new file mode 100644
+index 0000000..4020148
+--- /dev/null
++++ b/service/btc_node/request_trace.py
+@@ -0,0 +1,170 @@
++"""Small, payload-free resource trace on the existing service stderr stream."""
++from __future__ import annotations
++
++from contextvars import ContextVar
++import json
++import os
++from pathlib import Path
++import resource
++import subprocess
++import sys
++import threading
++import time
++from uuid import uuid4
++
++from .api import HOST_METHODS, READS, WRITES
++
++
++_CURRENT = ContextVar('btc_request_trace', default=None)
++_LOCK = threading.Lock()
++_INFLIGHT = 0
++_LAST_STATUS_NS = 0
++STATUS_SAMPLE_NS = 60_000_000_000
++_CGROUP = Path('/sys/fs/cgroup')
++_STATUS = Path('/proc/self/status')
++
++
++def _integer(path):
++    try:
++        with path.open('rb') as stream:
++            raw = stream.read(32).strip()
++        return int(raw) if raw.isdigit() else None
++    except (OSError, ValueError):
++        return None
++
++
++def sample():
++    """Read fixed, small kernel fields; unavailable values remain explicit nulls."""
++    rss = None
++    try:
++        with _STATUS.open('rb') as stream:
++            for line in stream.read(4096).splitlines():
++                if line.startswith(b'VmRSS:'):
++                    rss = int(line.split()[1]) * 1024
++                    break
++    except (OSError, ValueError, IndexError):
++        pass
++    current = _integer(_CGROUP / 'memory.current')
++    peak = _integer(_CGROUP / 'memory.peak')
++    swap = _integer(_CGROUP / 'memory.swap.current')
++    try:
++        children = resource.getrusage(resource.RUSAGE_CHILDREN)
++    except OSError:
++        children = None
++    return {'process_rss_bytes': rss,
++            'child_peak_rss_bytes_cumulative': (int(children.ru_maxrss) * 1024
++                                                  if children and sys.platform.startswith('linux') else None),
++            'cgroup_memory_current_bytes': current,
++            'cgroup_memory_peak_bytes_cumulative': peak,
++            'cgroup_swap_current_bytes': swap,
++            'cgroup_state': 'READABLE' if current is not None and peak is not None else 'UNKNOWN'}
++
++
++def _record(fields):
++    # Values are from fixed enums, clocks, kernel counters, and generated IDs.
++    # A single line uses the already bounded Docker json-file stderr log.
++    try:
++        line = json.dumps({'schema': 'BTC_RESOURCE_TRACE_V1', **fields},
++                          sort_keys=True, separators=(',', ':'))
++        if len(line) <= 1536:
++            print(line, file=sys.stderr, flush=True)
++    except (OSError, ValueError, TypeError):
++        # Observability must never become a business failure.
++        pass
++
++
++def record_input_failure(outcome):
++    if outcome not in {'READ_TIMEOUT', 'READ_ERROR', 'OVERSIZE', 'INVALID_FRAME', 'INVALID_JSON'}:
++        raise ValueError('invalid trace outcome')
++    _record({'event': 'INPUT_FAILURE', 'request_id': uuid4().hex,
++             'method': 'UNKNOWN', 'outcome': outcome, 'at_ns': time.time_ns(),
++             'pid': os.getpid(), 'thread_id': threading.get_native_id(), **sample()})
++
++
++class RequestTrace:
++    def __init__(self, method):
++        self.method = method if isinstance(method, str) and method in READS | WRITES | HOST_METHODS else 'UNKNOWN'
++        self.request_id = uuid4().hex
++        self.started_ns = None
++        self.started_mono_ns = None
++        self.outcome = 'UNKNOWN'
++        self._token = None
++        self._sampled = True
++
++    def __enter__(self):
++        global _INFLIGHT, _LAST_STATUS_NS
++        self.started_ns = time.time_ns()
++        self.started_mono_ns = time.monotonic_ns()
++        with _LOCK:
++            _INFLIGHT += 1
++            self.inflight_start = _INFLIGHT
++            if self.method == 'status' and self.started_mono_ns - _LAST_STATUS_NS < STATUS_SAMPLE_NS:
++                self._sampled = False
++            elif self.method == 'status':
++                _LAST_STATUS_NS = self.started_mono_ns
++        self._token = _CURRENT.set(self)
++        if self._sampled:
++            _record({'event': 'START', 'request_id': self.request_id,
++                     'method': self.method, 'at_ns': self.started_ns,
++                     'pid': os.getpid(), 'thread_id': threading.get_native_id(),
++                     'inflight': self.inflight_start, **sample()})
++        return self
++
++    def __exit__(self, error_type, error, traceback):
++        global _INFLIGHT
++        finished = time.time_ns()
++        outcome = ('TIMEOUT' if error_type and issubclass(error_type, TimeoutError)
++                   else 'EXCEPTION' if error_type else self.outcome)
++        with _LOCK:
++            inflight = _INFLIGHT
++            _INFLIGHT -= 1
++        try:
++            if self._sampled or outcome != 'OK':
++                _record({'event': 'END', 'request_id': self.request_id,
++                         'method': self.method, 'outcome': outcome,
++                         'at_ns': finished, 'duration_ms': round((time.monotonic_ns() - self.started_mono_ns) / 1e6, 3),
++                         'pid': os.getpid(), 'thread_id': threading.get_native_id(),
++                         'inflight': inflight, **sample()})
++        finally:
++            _CURRENT.reset(self._token)
++
++
++def run_child(command, *, cwd, env):
++    """Preserve the old captured result and attach a child PID when traced."""
++    trace = _CURRENT.get()
++    if trace is None:
++        return subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True)
++    try:
++        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
++                                   stderr=subprocess.PIPE, text=True)
++    except OSError:
++        _record({'event': 'CHILD_END', 'request_id': trace.request_id,
++                 'method': trace.method, 'outcome': 'SPAWN_ERROR',
++                 'at_ns': time.time_ns(), 'pid': os.getpid(),
++                 'child_pid': None, 'thread_id': threading.get_native_id(), **sample()})
++        raise
++    _record({'event': 'CHILD_START', 'request_id': trace.request_id,
++             'method': trace.method, 'at_ns': time.time_ns(),
++             'pid': os.getpid(), 'child_pid': process.pid,
++             'thread_id': threading.get_native_id(), **sample()})
++    try:
++        stdout, stderr = process.communicate()
++    except BaseException:
++        try:
++            process.kill()
++        except OSError:
++            pass
++        try:
++            process.communicate()
++        except BaseException:
++            pass
++        _record({'event': 'CHILD_END', 'request_id': trace.request_id,
++                 'method': trace.method, 'outcome': 'INTERRUPTED',
++                 'at_ns': time.time_ns(), 'pid': os.getpid(),
++                 'child_pid': process.pid, 'thread_id': threading.get_native_id(), **sample()})
++        raise
++    _record({'event': 'CHILD_END', 'request_id': trace.request_id,
++             'method': trace.method, 'outcome': 'OK' if process.returncode == 0 else 'NONZERO',
++             'at_ns': time.time_ns(), 'pid': os.getpid(),
++             'child_pid': process.pid, 'thread_id': threading.get_native_id(), **sample()})
++    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+diff --git a/service/tests/test_request_trace_offline.py b/service/tests/test_request_trace_offline.py
+new file mode 100644
+index 0000000..60f2600
+--- /dev/null
++++ b/service/tests/test_request_trace_offline.py
+@@ -0,0 +1,173 @@
++"""Resource tracing uses synthetic requests and processes, never node data."""
++import io
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from btc_node import request_trace as trace
++from btc_node import __main__ as node
++
++
++class TimeoutReader:
++    def readline(self, limit):
++        raise TimeoutError('synthetic timeout')
++
++
++class TimeoutWriter:
++    def write(self, data):
++        raise TimeoutError('synthetic write timeout')
++
++
++class RequestTraceOfflineTest(unittest.TestCase):
++    def setUp(self):
++        self.stderr = io.StringIO()
++        self.stderr_patch = patch.object(trace.sys, 'stderr', self.stderr)
++        self.stderr_patch.start()
++        self.addCleanup(self.stderr_patch.stop)
++        trace._LAST_STATUS_NS = 0
++
++    def records(self):
++        return [json.loads(line) for line in self.stderr.getvalue().splitlines()]
++
++    def test_success_error_and_sensitive_payload_are_separated(self):
++        secret = 'PRIVATE_POSITION_AND_PASSWORD_MARKER'
++        payload = {'method': 'prices.query', 'params': {'secret': secret}}
++        output = io.BytesIO()
++        with patch.object(node, 'answer', return_value={'ok': True, 'result': {'count': 2}}):
++            node.handle_stream({}, io.BytesIO(json.dumps(payload).encode() + b'\n'), output)
++        self.assertEqual({'ok': True, 'result': {'count': 2}}, json.loads(output.getvalue()))
++        records = self.records()
++        self.assertEqual(['START', 'END'], [row['event'] for row in records])
++        self.assertEqual('prices.query', records[0]['method'])
++        self.assertEqual('OK', records[1]['outcome'])
++        self.assertEqual(records[0]['request_id'], records[1]['request_id'])
++        self.assertNotIn(secret, self.stderr.getvalue())
++        with patch.object(node, 'answer', return_value={'ok': False, 'error': 'synthetic'}):
++            node.handle_stream({}, io.BytesIO(b'{"method":"object.get"}\n'), io.BytesIO())
++        self.assertEqual('APP_ERROR', self.records()[-1]['outcome'])
++
++    def test_invalid_input_and_timeout_paths_emit_fixed_outcomes(self):
++        node.handle_stream({}, TimeoutReader(), io.BytesIO())
++        node.handle_stream({}, io.BytesIO(b'not-json\n'), io.BytesIO())
++        with patch.object(node, 'MAX_REQUEST', 8):
++            node.handle_stream({}, io.BytesIO(b'0123456789\n'), io.BytesIO())
++        node.handle_stream({}, io.BytesIO(b'{}'), io.BytesIO())
++        self.assertEqual(['READ_TIMEOUT', 'INVALID_JSON', 'OVERSIZE', 'INVALID_FRAME'],
++                         [row['outcome'] for row in self.records()])
++        with patch.object(node, 'answer', return_value={'ok': True, 'result': {}}):
++            with self.assertRaises(TimeoutError):
++                node.handle_stream({}, io.BytesIO(b'{"method":"status"}\n'), TimeoutWriter())
++        self.assertEqual('TIMEOUT', self.records()[-1]['outcome'])
++
++    def test_status_rate_limit_and_unknown_method_sanitization(self):
++        with patch.object(node, 'answer', return_value={'ok': True, 'result': {}}):
++            for _ in range(2):
++                node.handle_stream({}, io.BytesIO(b'{"method":"status"}\n'), io.BytesIO())
++            node.handle_stream({}, io.BytesIO(b'{"method":"private-secret"}\n'), io.BytesIO())
++        records = self.records()
++        self.assertEqual(['START', 'END', 'START', 'END'], [r['event'] for r in records])
++        self.assertEqual('UNKNOWN', records[-1]['method'])
++        self.assertNotIn('private-secret', self.stderr.getvalue())
++
++    def test_resource_fields_are_readable_or_explicitly_unknown(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            with patch.object(trace, '_CGROUP', root), patch.object(trace, '_STATUS', root / 'missing'):
++                missing = trace.sample()
++                self.assertEqual('UNKNOWN', missing['cgroup_state'])
++                self.assertIsNone(missing['process_rss_bytes'])
++                (root / 'memory.current').write_text('1234\n')
++                (root / 'memory.peak').write_text('4567\n')
++                (root / 'memory.swap.current').write_text('89\n')
++                (root / 'status').write_text('Name:\ttest\nVmRSS:\t20 kB\n')
++            with patch.object(trace, '_CGROUP', root), patch.object(trace, '_STATUS', root / 'status'):
++                measured = trace.sample()
++            self.assertEqual('READABLE', measured['cgroup_state'])
++            self.assertEqual(20 * 1024, measured['process_rss_bytes'])
++            self.assertEqual(1234, measured['cgroup_memory_current_bytes'])
++            self.assertEqual(4567, measured['cgroup_memory_peak_bytes_cumulative'])
++
++    def test_child_pid_and_result_are_correlated_without_command_logging(self):
++        with trace.RequestTrace('core.execute') as request:
++            result = trace.run_child([sys.executable, '-c', 'print("SENSITIVE_CHILD_OUTPUT")'],
++                                     cwd='.', env=None)
++            request.outcome = 'OK'
++        self.assertEqual(0, result.returncode)
++        self.assertIn('SENSITIVE_CHILD_OUTPUT', result.stdout)
++        records = self.records()
++        self.assertEqual(['START', 'CHILD_START', 'CHILD_END', 'END'], [r['event'] for r in records])
++        self.assertEqual(1, len({r['request_id'] for r in records}))
++        self.assertEqual(records[1]['child_pid'], records[2]['child_pid'])
++        self.assertNotIn('SENSITIVE_CHILD_OUTPUT', self.stderr.getvalue())
++        with patch.object(trace.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as original:
++            trace.run_child(['unused'], cwd='.', env=None)
++            original.assert_called_once()
++
++    def test_interrupted_child_is_killed_and_recorded_without_argv(self):
++        class InterruptedProcess:
++            pid = 54321
++            calls = 0
++            killed = False
++
++            def communicate(self):
++                self.calls += 1
++                if self.calls == 1:
++                    raise TimeoutError('synthetic child interruption')
++                return '', ''
++
++            def kill(self):
++                self.killed = True
++
++        child = InterruptedProcess()
++        with patch.object(trace.subprocess, 'Popen', return_value=child):
++            with self.assertRaises(TimeoutError):
++                with trace.RequestTrace('core.execute'):
++                    trace.run_child(['SECRET_ARGUMENT'], cwd='.', env=None)
++        self.assertTrue(child.killed)
++        self.assertEqual(['START', 'CHILD_START', 'CHILD_END', 'END'],
++                         [row['event'] for row in self.records()])
++        self.assertEqual('INTERRUPTED', self.records()[2]['outcome'])
++        self.assertEqual('TIMEOUT', self.records()[3]['outcome'])
++        self.assertNotIn('SECRET_ARGUMENT', self.stderr.getvalue())
++
++    def test_spawn_and_dispatch_exceptions_still_close_trace(self):
++        with patch.object(trace.subprocess, 'Popen', side_effect=OSError('synthetic spawn failure')):
++            with self.assertRaises(OSError):
++                with trace.RequestTrace('core.execute'):
++                    trace.run_child(['SECRET_ARGUMENT'], cwd='.', env=None)
++        self.assertEqual(['START', 'CHILD_END', 'END'],
++                         [row['event'] for row in self.records()])
++        self.assertEqual('SPAWN_ERROR', self.records()[1]['outcome'])
++        self.assertEqual('EXCEPTION', self.records()[2]['outcome'])
++        self.assertIsNone(self.records()[1]['child_pid'])
++        self.assertNotIn('SECRET_ARGUMENT', self.stderr.getvalue())
++        with patch.object(node, 'answer', side_effect=RuntimeError('synthetic dispatch failure')):
++            with self.assertRaises(RuntimeError):
++                node.handle_stream({}, io.BytesIO(b'{"method":"status"}\n'), io.BytesIO())
++        self.assertEqual('EXCEPTION', self.records()[-1]['outcome'])
++
++    def test_isolated_process_logs_request_without_payload(self):
++        source = Path(__file__).resolve().parents[1]
++        program = ('import sys\nfrom btc_node import __main__ as node\n'
++                   'node.answer=lambda settings,request:{"ok":True,"result":{"fixed":True}}\n'
++                   'node.handle_stream({},sys.stdin.buffer,sys.stdout.buffer)\n')
++        process = subprocess.run([sys.executable, '-c', program],
++                                 input=b'{"method":"prices.query","private_position":"TOKEN_NEVER_LOG"}\n',
++                                 env={**os.environ, 'PYTHONPATH': str(source)},
++                                 capture_output=True, timeout=3)
++        self.assertEqual(0, process.returncode, process.stderr.decode())
++        self.assertEqual({'ok': True, 'result': {'fixed': True}}, json.loads(process.stdout))
++        stderr = process.stderr.decode()
++        records = [json.loads(line) for line in stderr.splitlines() if line.startswith('{')]
++        self.assertEqual(['START', 'END'], [row['event'] for row in records])
++        self.assertEqual(1, len({row['pid'] for row in records}))
++        self.assertNotIn('TOKEN_NEVER_LOG', stderr)
++
++
++if __name__ == '__main__':
++    unittest.main()

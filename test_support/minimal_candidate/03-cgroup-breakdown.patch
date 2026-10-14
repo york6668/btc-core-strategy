@@ -1,0 +1,71 @@
+diff --git a/service/btc_node/request_trace.py b/service/btc_node/request_trace.py
+index 4020148..27dfc15 100644
+--- a/service/btc_node/request_trace.py
++++ b/service/btc_node/request_trace.py
+@@ -33,6 +33,21 @@ def _integer(path):
+         return None
+ 
+ 
++def _memory_classes(path):
++    values = {'anon': None, 'file': None, 'inactive_file': None}
++    try:
++        with path.open('rb') as stream:
++            lines = stream.read(4096).splitlines()
++        for line in lines:
++            key, separator, raw = line.partition(b' ')
++            name = key.decode('ascii', errors='ignore')
++            if separator and name in values and raw.isdigit():
++                values[name] = int(raw)
++    except OSError:
++        pass
++    return values
++
++
+ def sample():
+     """Read fixed, small kernel fields; unavailable values remain explicit nulls."""
+     rss = None
+@@ -47,6 +62,7 @@ def sample():
+     current = _integer(_CGROUP / 'memory.current')
+     peak = _integer(_CGROUP / 'memory.peak')
+     swap = _integer(_CGROUP / 'memory.swap.current')
++    classes = _memory_classes(_CGROUP / 'memory.stat')
+     try:
+         children = resource.getrusage(resource.RUSAGE_CHILDREN)
+     except OSError:
+@@ -57,6 +73,9 @@ def sample():
+             'cgroup_memory_current_bytes': current,
+             'cgroup_memory_peak_bytes_cumulative': peak,
+             'cgroup_swap_current_bytes': swap,
++            'cgroup_anon_bytes': classes['anon'],
++            'cgroup_file_bytes': classes['file'],
++            'cgroup_inactive_file_bytes': classes['inactive_file'],
+             'cgroup_state': 'READABLE' if current is not None and peak is not None else 'UNKNOWN'}
+ 
+ 
+diff --git a/service/tests/test_request_trace_offline.py b/service/tests/test_request_trace_offline.py
+index 60f2600..b11bf76 100644
+--- a/service/tests/test_request_trace_offline.py
++++ b/service/tests/test_request_trace_offline.py
+@@ -81,9 +81,11 @@ class RequestTraceOfflineTest(unittest.TestCase):
+                 missing = trace.sample()
+                 self.assertEqual('UNKNOWN', missing['cgroup_state'])
+                 self.assertIsNone(missing['process_rss_bytes'])
++                self.assertIsNone(missing['cgroup_file_bytes'])
+                 (root / 'memory.current').write_text('1234\n')
+                 (root / 'memory.peak').write_text('4567\n')
+                 (root / 'memory.swap.current').write_text('89\n')
++                (root / 'memory.stat').write_text('anon 101\nfile 202\ninactive_file 190\nprivate SECRET\n')
+                 (root / 'status').write_text('Name:\ttest\nVmRSS:\t20 kB\n')
+             with patch.object(trace, '_CGROUP', root), patch.object(trace, '_STATUS', root / 'status'):
+                 measured = trace.sample()
+@@ -91,6 +93,10 @@ class RequestTraceOfflineTest(unittest.TestCase):
+             self.assertEqual(20 * 1024, measured['process_rss_bytes'])
+             self.assertEqual(1234, measured['cgroup_memory_current_bytes'])
+             self.assertEqual(4567, measured['cgroup_memory_peak_bytes_cumulative'])
++            self.assertEqual(101, measured['cgroup_anon_bytes'])
++            self.assertEqual(202, measured['cgroup_file_bytes'])
++            self.assertEqual(190, measured['cgroup_inactive_file_bytes'])
++            self.assertNotIn('SECRET', json.dumps(measured))
+ 
+     def test_child_pid_and_result_are_correlated_without_command_logging(self):
+         with trace.RequestTrace('core.execute') as request:

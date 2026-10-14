@@ -1,0 +1,47 @@
+diff --git a/service/btc_node/codec.py b/service/btc_node/codec.py
+index be55578..68e9c09 100644
+--- a/service/btc_node/codec.py
++++ b/service/btc_node/codec.py
+@@ -86,7 +86,7 @@ class Blobs:
+         if target.exists():
+             if target.stat().st_size != len(data):
+                 raise Conflict('stored content length mismatch')
+-            if fingerprint(target.read_bytes()) != digest:
++            if fingerprint_file(target) != digest:
+                 raise Conflict('stored content checksum mismatch')
+             return digest
+         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+diff --git a/service/tests/test_blob_memory_offline.py b/service/tests/test_blob_memory_offline.py
+new file mode 100644
+index 0000000..e8836af
+--- /dev/null
++++ b/service/tests/test_blob_memory_offline.py
+@@ -0,0 +1,28 @@
++"""Bounded immutable-blob checks without MySQL or a Docker service."""
++import tempfile
++import tracemalloc
++import unittest
++
++from btc_node.codec import Blobs, Conflict
++
++
++class BlobMemoryTest(unittest.TestCase):
++    def test_existing_blob_recheck_streams_and_rejects_corruption(self):
++        data = b'x' * (4 * 1024 * 1024)
++        with tempfile.TemporaryDirectory(prefix='btc-blob-recheck-') as root:
++            blobs = Blobs(root)
++            digest = blobs.put(data)
++            tracemalloc.start()
++            try:
++                self.assertEqual(digest, blobs.put(data))
++                _, peak = tracemalloc.get_traced_memory()
++            finally:
++                tracemalloc.stop()
++            self.assertLess(peak, 3 * 1024 * 1024)
++            blobs.path(digest).write_bytes(b'y' * len(data))
++            with self.assertRaisesRegex(Conflict, 'stored content checksum mismatch'):
++                blobs.put(data)
++
++
++if __name__ == '__main__':
++    unittest.main()
