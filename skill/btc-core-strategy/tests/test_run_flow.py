@@ -46,6 +46,12 @@ class RunFlowTests(unittest.TestCase):
         self.assertFalse((self.d/'run.json').exists())
         with mock.patch('node_config.load',return_value=settings), \
              mock.patch('model_daily.request',return_value={'scope':'btc/market','allowed':True,'faults':[]}):
+            with self.assertRaisesRegex(Invalid,'lacks correction receipt contract'):
+                self.prep()
+        self.assertFalse((self.d/'run.json').exists())
+        with mock.patch('node_config.load',return_value=settings), \
+             mock.patch('model_daily.request',return_value={'scope':'btc/market','allowed':True,'faults':[],
+                                                            'accepted_corrections':[]}):
             prepared=self.prep()
         self.assertTrue(Path(prepared['run']).is_file())
         # Recovery of that pinned run remains possible while a later defect
@@ -454,6 +460,7 @@ class RunFlowTests(unittest.TestCase):
             self.assertTrue(dataset['coverage']['complete'])
         prepared=self.prep()
         brief=read(self.d/'market-summary.json')
+        self.assertIn('prior_proposition_roles',read(prepared['context']))
         required={row['role'] for row in read(prepared['read_set']['observe'])['required']}
         self.assertIn('market_summary',required)
         for name in ('coinbase_spot_1h','kraken_spot_1h'):
@@ -472,6 +479,46 @@ class RunFlowTests(unittest.TestCase):
         self.assertTrue(binance['retained_row_use']['quote_taker_balance_usable'])
         self.assertEqual(binance['quote_unit'],'USDT')
         self.assertEqual(original,self.f.raw)
+
+    def test_replay_row_keeps_available_binance_flow_and_peer_limits(self):
+        raw=deepcopy(self.f.raw)
+        for name in ('binance_spot_1h','coinbase_spot_1h'):
+            source=raw['datasets'][name]['rows'][-1]
+            replay=run_flow.replay_market_row(raw,name,source['time'])
+            self.assertEqual(source,replay['row'])
+            self.assertEqual(raw['datasets'][name]['quote_unit'],replay['quote_unit'])
+            self.assertEqual(raw['retrievals'][name]['retrieved_at'],replay['retrieved_at'])
+            self.assertTrue(replay['coverage_complete'])
+            if name=='binance_spot_1h':
+                self.assertIsNotNone(replay['row']['quote_volume'])
+                self.assertIsNotNone(replay['row']['taker_buy_quote'])
+                self.assertTrue(replay['quote_taker_balance_usable'])
+            else:
+                self.assertFalse(replay['quote_taker_balance_usable'])
+                self.assertEqual('EXCLUDED_CANDIDATE_NOT_RETAINED_ROW',
+                                 replay['issue_scope']['UNCLOSED_OR_FUTURE'])
+        with self.assertRaisesRegex(Invalid,'one complete retained'):
+            run_flow.replay_market_row(raw,'binance_spot_1h','1900-01-01T00:00:00Z')
+        raw['datasets']['binance_spot_1h']['rows'][-1]['end']='2031-01-01T00:00:00Z'
+        with self.assertRaisesRegex(Invalid,'unclosed price'):
+            run_flow.replay_market_row(raw,'binance_spot_1h',source['time'])
+
+    def test_prior_proposition_roles_keep_future_condition_out_of_original_assertion(self):
+        core={'outlook':{'market_assessment':{'markets':[{'id':'BTC','horizons':[
+            {'id':'BTC_SWING','direction':'BEARISH','confirmation':'PARTIAL',
+             'structure':'Observed purchases slowed; continued decline is unconfirmed',
+             'basis':'Observed 334 BTC purchases',
+             'forward':{'conditions':['Historical purchase slowdown supports the limited claim'],
+                        'invalidations':['If future purchases stop, downside risk increases']}}
+        ]}]}}}
+        roles=run_flow.prior_proposition_roles(core)
+        self.assertEqual(1,len(roles))
+        self.assertEqual('Observed 334 BTC purchases',roles[0]['asserted_state']['basis'])
+        self.assertNotIn('If future purchases stop, downside risk increases',
+                         str(roles[0]['asserted_state']))
+        self.assertIn('If future purchases stop, downside risk increases',
+                      roles[0]['future_invalidations'])
+        self.assertEqual([],run_flow.prior_proposition_roles({'outlook':{}}))
 
     def test_frozen_raw_bytes_survive_packaging(self):
         import json

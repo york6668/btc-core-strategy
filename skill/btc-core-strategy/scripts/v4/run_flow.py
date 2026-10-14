@@ -109,6 +109,41 @@ def market_brief(raw):
         'windows':windows, 'cycle_metrics': {k:v for k,v in reporting.metrics(raw, None).items() if v.get('interval_seconds', market.HOUR) > market.HOUR}}
 
 
+def replay_market_row(raw, dataset, row_time):
+    """Preserve a frozen retained row's available fields and source scope for replay."""
+    ds = raw['datasets'][dataset]
+    rows = [row for row in ds['rows'] if row['time'] == row_time]
+    require(len(rows) == 1 and ds['coverage']['complete'] is True,
+            'replay needs one complete retained market row')
+    row = rows[0]
+    require(market.timestamp(row['end']) <= market.timestamp(raw['cutoff']),
+            'replay cannot use an unclosed price row')
+    return {'dataset': dataset, 'market': ds['market'], 'instrument': ds['instrument'],
+            'quote_unit': ds['quote_unit'],
+            'retrieved_at': raw['retrievals'][dataset]['retrieved_at'], 'row': deepcopy(row),
+            'issues': deepcopy(ds['issues']), 'coverage_complete': True,
+            'issue_scope': ({'UNCLOSED_OR_FUTURE': 'EXCLUDED_CANDIDATE_NOT_RETAINED_ROW'}
+                            if 'UNCLOSED_OR_FUTURE' in ds['issues'] else {}),
+            'quote_taker_balance_usable': (row.get('quote_volume') is not None
+                                           and row.get('taker_buy_quote') is not None)}
+
+
+def prior_proposition_roles(core):
+    """Keep a prior horizon's asserted state separate from its future tests."""
+    result = []
+    markets = (((core.get('outlook') or {}).get('market_assessment') or {}).get('markets') or [])
+    for subject in markets:
+        for horizon in subject.get('horizons', []):
+            forward = horizon.get('forward') or {}
+            result.append({'market_id': subject['id'], 'horizon_id': horizon['id'],
+                           'asserted_state': {key: deepcopy(horizon.get(key)) for key in
+                                              ('direction', 'confirmation', 'structure', 'basis')},
+                           'future_conditions': deepcopy(forward.get('conditions', [])),
+                           'future_invalidations': deepcopy(forward.get('invalidations', [])),
+                           'rule': 'A future condition is a test of the assertion, not an assertion that it already occurred.'})
+    return result
+
+
 def observation_template(ctx, raw):
     form = {'market_review': {
         'assessment_summary': None,
@@ -146,7 +181,9 @@ def admit_new_market_run():
     result = model_daily.request('model.defect.check', {'scope': 'btc/market'})
     require(result.get('allowed') is True,
             'known public-market defect blocks a new run; inspect the original fault and repair evidence')
-    return result.get('accepted_corrections', [])
+    require(isinstance(result.get('accepted_corrections'), list),
+            'node defect gate lacks correction receipt contract; upgrade and verify the matching node before a new run')
+    return result['accepted_corrections']
 
 
 def report_template(ctx):
@@ -417,6 +454,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                 'undelivered_reports': len(recovery['report_delivery_obligations']),
                 'delivery_details_stage': 'report'}
             save(directory / 'market-template.json', market_template(ctx, raw))
+        brief['prior_proposition_roles'] = prior_proposition_roles(core)
         brief['accepted_corrections'] = accepted_corrections
         save(directory / 'context.json', brief)
         save(directory / 'recovery.json', recovery)

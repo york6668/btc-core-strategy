@@ -68,6 +68,9 @@ def run(docker, reader, reader_image=None):
                     'socket':'/run/btc/btc.sock','test_only':True,
                     'maintenance_enabled':False,'recycle_grace_hours':48}
         (directory/'settings.json').write_text(json.dumps(settings))
+        scheduler_settings = directory/'settings-scheduler.json'
+        scheduler_settings.write_text(json.dumps(dict(settings,
+            scheduler_mode='ACTIVE',scheduler_poll_ms=60_000,direct=True)))
         (directory/'compose.env').write_text('\n'.join(['BTC_DATA_DIR='+str(directory),
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
@@ -89,7 +92,10 @@ def run(docker, reader, reader_image=None):
             'user':str(uid)+':'+str(gid),
             'mem_limit':'2g',
             'tmpfs':['/run/btc:uid='+str(uid)+',gid='+str(gid)+',mode=0700'],
-            'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']}}}))
+            'cap_drop':['DAC_OVERRIDE','DAC_READ_SEARCH']},
+            'scheduler':{'volumes':[str(evidence)+':'+alias,
+                str(scheduler_settings)+':/run/btc/settings.json:ro'],
+                'mem_limit':'512m'}}}))
         command += ['-f',str(override)]
         subprocess.run(command+['up','-d','--wait','mysql','core'], check=True, timeout=600)
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
@@ -113,6 +119,46 @@ def run(docker, reader, reader_image=None):
         subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc:/tmp/reader',
                        '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
                        'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True,timeout=900)
+        # The Docker node clock must tick on its own, survive a container
+        # restart and retain task identities without a Codex CLI in its image.
+        scheduler_command = command+['--profile','node-scheduler']
+        effective_scheduler = json.loads(subprocess.check_output(
+            scheduler_command+['config','--format','json'],text=True))['services']['scheduler']
+        if not any(mount.get('target') == '/run/btc/settings.json'
+                   and mount.get('source') == str(scheduler_settings)
+                   for mount in effective_scheduler['volumes']):
+            raise AssertionError('isolated scheduler settings were not mounted')
+        subprocess.run(scheduler_command+['up','-d','--wait','scheduler'],check=True,timeout=120)
+        no_cli = subprocess.check_output(scheduler_command+['exec','-T','scheduler',
+            'python','-c','import shutil; print(shutil.which("codex") is None)'],text=True).strip()
+        if no_cli != 'True':
+            raise AssertionError('test node clock unexpectedly has a Codex CLI')
+        def scheduler_request(method):
+            response = json.loads(subprocess.check_output(scheduler_command+[
+                'exec','-T','scheduler','python','-m','btc_node','request'],
+                input=json.dumps({'method':method,'params':{}}).encode()))
+            if not response.get('ok'):
+                raise AssertionError('isolated scheduler request failed')
+            return response['result']
+        deadline = time.monotonic()+12
+        while True:
+            window = scheduler_request('schedule.window')
+            if window['status'] == 'AVAILABLE':
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError('Docker node clock did not tick independently')
+            time.sleep(0.2)
+        before_tick = scheduler_request('schedule.status')['last_tick_ms']
+        before_tasks = {task['task_id'] for task in scheduler_request('task.status')['tasks']}
+        subprocess.run(scheduler_command+['restart','scheduler'],check=True,timeout=120)
+        deadline = time.monotonic()+12
+        while scheduler_request('schedule.status')['last_tick_ms'] <= before_tick:
+            if time.monotonic() >= deadline:
+                raise AssertionError('Docker node clock did not resume after restart')
+            time.sleep(0.2)
+        if {task['task_id'] for task in scheduler_request('task.status')['tasks']} != before_tasks:
+            raise AssertionError('node restart duplicated or changed scheduled task identities')
+        subprocess.run(scheduler_command+['stop','scheduler'],check=True,timeout=120)
         # Recreate a known failure across two real maintenance process starts.
         # The service must stay idle until a reviewed fault is resolved.
         fault = {'method':'model.defect.open','operation_id':'synthetic-maintenance-lockout',
@@ -175,6 +221,8 @@ def run(docker, reader, reader_image=None):
         if fingerprint_state() != original_state:
             raise AssertionError('business content changed after database outage recovery')
         print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True,
+              'node_scheduler_restart':True,'node_scheduler_without_codex_cli':True,
+              'node_task_identities_stable_after_restart':True,
               'project_evidence_single_mount_and_legacy_path':True,
               'reader_cli_readonly_source_writable_data':True if reader_image else 'NOT_RUN'}))
         result = 0
@@ -188,7 +236,8 @@ def run(docker, reader, reader_image=None):
                 pass  # Preserve the original test failure.
         raise
     finally:
-        stopped = subprocess.run(command+['down','--volumes','--remove-orphans'], timeout=90)
+        stopped = subprocess.run(command+['--profile','node-scheduler',
+            'down','--volumes','--remove-orphans'], timeout=90)
         if stopped.returncode == 0:
             # Desktop file sharing can release bind-mount handles just after
             # Compose returns. Retry this test-owned directory only.
@@ -205,7 +254,14 @@ def run(docker, reader, reader_image=None):
                                 '--entrypoint','chmod','-v',
                                 str(directory)+':/fixture','btc-node:contract',
                                 '-R','a+rwX','/fixture'],check=True,timeout=30)
-                            shutil.rmtree(directory)
+                            for release_attempt in range(10):
+                                try:
+                                    shutil.rmtree(directory)
+                                    break
+                                except PermissionError:
+                                    if release_attempt == 9:
+                                        raise
+                                    time.sleep(0.5)
                         except (OSError,subprocess.CalledProcessError,subprocess.TimeoutExpired):
                             print('Temporary test files retained for cleanup: '+str(directory),file=sys.stderr)
                     else:time.sleep(0.25)
