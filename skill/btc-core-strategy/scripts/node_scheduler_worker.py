@@ -126,6 +126,31 @@ def _native_session(events):
     return identity if completed and _valid_identity(identity) else None
 
 
+def _runtime_preflight(config):
+    """Reject a broken local executor before consuming a durable task attempt."""
+    try:
+        cli = Path(config['node_scheduler']['codex_cli']).expanduser().resolve(strict=True)
+    except (KeyError, OSError):
+        return 'CODEX_CLI_UNAVAILABLE'
+    if not cli.is_file() or not os.access(cli, os.X_OK):
+        return 'CODEX_CLI_UNAVAILABLE'
+    try:
+        project = Path(config['project_dir']).expanduser().resolve(strict=True)
+    except (KeyError, OSError):
+        return 'PROJECT_UNAVAILABLE'
+    if not project.is_dir():
+        return 'PROJECT_UNAVAILABLE'
+    try:
+        root = Path(config['release_root']).expanduser().resolve(strict=True)
+        releases = (root / 'releases').resolve(strict=True)
+        current = (root / 'current').resolve(strict=True)
+    except (KeyError, OSError):
+        return 'PINNED_RELEASE_UNAVAILABLE'
+    if current.parent != releases or not (current / 'RELEASE.json').is_file():
+        return 'PINNED_RELEASE_UNAVAILABLE'
+    return None
+
+
 def launch(config, task, directory):
     runtime_root = Path(config['release_root']).resolve(strict=True)
     release_root = runtime_root / 'releases'
@@ -208,6 +233,9 @@ def run_once(config, client=None, launcher=launch):
         window = client.request('schedule.window')
         if window.get('status') != 'AVAILABLE':
             return {'action': 'NO_ACTIVE_NODE_SCHEDULE', 'window': window}
+        missing = _runtime_preflight(config)
+        if missing:
+            return {'action': 'NODE_RUNTIME_UNAVAILABLE', 'reason': missing}
         if settings.get('window_file'):
             _replace_private(Path(settings['window_file']).expanduser(),
                              json.dumps(window, sort_keys=True).encode())

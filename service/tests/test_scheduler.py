@@ -63,6 +63,10 @@ class SchedulerTests(unittest.TestCase):
         release.mkdir(parents=True)
         (release / 'RELEASE.json').write_text('{}')
         (self.root / 'current').symlink_to(release, target_is_directory=True)
+        (self.root / 'project').mkdir()
+        self.cli = self.root / 'fake-codex-cli'
+        self.cli.write_text('#!/bin/sh\nexit 0\n')
+        self.cli.chmod(0o700)
         self.clock = 1893500000000
         patches = [patch.object(module, 'millis', lambda *args: self.clock)
                    for module in (scheduler, tasks, deep_gate)]
@@ -113,6 +117,9 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual('ALREADY_TRACKED', scheduler.observe_reader(db, self.receipt(db))['status'])
         ticked = scheduler.tick(db)
         self.assertEqual((1, 'READY'), (ticked['reader_registered'], ticked['tasks'][0]['state']))
+        self.assertEqual({}, scheduler.status(db)['pending_reader_batches'])
+        self.assertEqual('ALREADY_TRACKED', scheduler.observe_reader(db, self.receipt(db))['status'])
+        self.assertEqual({}, scheduler.status(db)['pending_reader_batches'])
         self.assertEqual(0, scheduler.tick(db)['reader_registered'])
         # A second process sees the same persisted metadata, not a fresh window.
         restarted = Node(self.root, 'ACTIVE')
@@ -122,6 +129,25 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual('ORIGINAL_ATTEMPT_RUNNING_NO_LAUNCH',
                          scheduler.claim(restarted, attempt_id='attempt-b')['action'])
         self.assertEqual(1, tasks.status(restarted, task_id=first['task']['task_id'])['attempts'])
+
+    def test_legacy_registered_reader_batch_is_compacted_only_with_durable_task(self):
+        db = Node(self.root, 'SHADOW')
+        queued = scheduler.observe_reader(db, self.receipt(db))
+        digest = queued['batch_digest']
+        state = scheduler._state(db)
+        state['pending_reader_batches'][digest]['registered'] = True
+        scheduler._save(db, state)
+        with self.assertRaisesRegex(Conflict, 'no durable task'):
+            scheduler.tick(db)
+        state['pending_reader_batches'][digest]['registered'] = False
+        scheduler._save(db, state)
+        self.assertEqual(1, scheduler.tick(db)['reader_registered'])
+        state = scheduler._state(db)
+        state['pending_reader_batches'][digest] = {
+            'first_seen_ms': self.clock, 'registered': True}
+        scheduler._save(db, state)
+        self.assertEqual(0, scheduler.tick(db)['reader_registered'])
+        self.assertEqual({}, scheduler.status(db)['pending_reader_batches'])
 
     def test_missing_release_blocks_without_rebinding_old_task(self):
         db = Node(self.root, 'SHADOW')
@@ -154,8 +180,9 @@ class SchedulerTests(unittest.TestCase):
 
         attempts = self.root / 'attempts'
         attempts.mkdir(mode=0o700)
-        config = {'node_scheduler': {'enabled': True, 'attempt_dir': str(attempts),
-                                     'codex_cli': '/no/cli'}}
+        config = {'project_dir': str(self.root / 'project'), 'release_root': str(self.root),
+                  'node_scheduler': {'enabled': True, 'attempt_dir': str(attempts),
+                                     'codex_cli': str(self.cli)}}
         calls = []
 
         def uncertain(config, task, directory):
@@ -171,6 +198,28 @@ class SchedulerTests(unittest.TestCase):
 
     def test_worker_disabled_has_no_node_side_effect(self):
         self.assertEqual({'action': 'DISABLED'}, node_scheduler_worker.run_once({}))
+
+    def test_missing_local_executor_does_not_consume_original_attempt(self):
+        db = Node(self.root, 'ACTIVE')
+        scheduler.observe_reader(db, self.receipt(db))
+        scheduler.tick(db)
+        class Client:
+            def __init__(self): self.calls = []
+            def request(self, method, params=None, operation_id=None):
+                self.calls.append(method)
+                if method == 'schedule.window': return scheduler.window(db)
+                raise AssertionError('local preflight must precede ' + method)
+        client = Client()
+        config = {'project_dir': str(self.root / 'project'), 'release_root': str(self.root),
+                  'node_scheduler': {'enabled': True,
+                                     'attempt_dir': str(self.root / 'preflight-attempts'),
+                                     'codex_cli': str(self.root / 'missing-cli')}}
+        result = node_scheduler_worker.run_once(config, client)
+        self.assertEqual({'action': 'NODE_RUNTIME_UNAVAILABLE',
+                          'reason': 'CODEX_CLI_UNAVAILABLE'}, result)
+        self.assertEqual(['schedule.window'], client.calls)
+        self.assertEqual('READY', tasks.status(db)['tasks'][0]['state'])
+        self.assertEqual(0, tasks.status(db)['tasks'][0]['attempts'])
 
     def test_native_session_requires_one_completed_codex_thread(self):
         events=self.root/'events.jsonl'
@@ -212,7 +261,6 @@ print(json.dumps({'type':'thread.started','thread_id':'synthetic-thread-1'}))
 print(json.dumps({'type':'turn.completed'}))
 ''')
         cli.chmod(0o700)
-        (self.root / 'project').mkdir()
         attempts = self.root / 'attempts'
         attempts.mkdir(mode=0o700)
         config = {'release_root': str(self.root),
@@ -241,8 +289,9 @@ print(json.dumps({'type':'turn.completed'}))
                 raise AssertionError(method)
         attempts = self.root / 'attempts'
         attempts.mkdir(mode=0o700)
-        config = {'node_scheduler': {'enabled': True, 'attempt_dir': str(attempts),
-                                     'codex_cli': '/no/cli'}}
+        config = {'project_dir': str(self.root / 'project'), 'release_root': str(self.root),
+                  'node_scheduler': {'enabled': True, 'attempt_dir': str(attempts),
+                                     'codex_cli': str(self.cli)}}
         entered, release = threading.Event(), threading.Event()
         def launcher(config, task, directory):
             entered.set()

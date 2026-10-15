@@ -76,6 +76,11 @@ def observe_reader(db, prices):
               key=lambda row: row['document_key'])}
     digest = 'sha256:' + db.put_blob(encode(record))
     state = _state(db)
+    task_id = 'btc/signal/' + digest[7:]
+    # The durable task owns this identity after registration.  Do not retain
+    # every completed reader batch in the scheduler's metadata indefinitely.
+    if tasks.status(db, task_id=task_id):
+        return {'status': 'ALREADY_TRACKED', 'batch_digest': digest, 'new_batches': 0}
     if digest in state['pending_reader_batches']:
         return {'status': 'ALREADY_TRACKED', 'batch_digest': digest, 'new_batches': 0}
     state['pending_reader_batches'][digest] = {'first_seen_ms': millis(),
@@ -87,16 +92,18 @@ def observe_reader(db, prices):
 def _register_reader(db, state, release_id):
     registered = 0
     for digest, row in sorted(state['pending_reader_batches'].items()):
-        if row['registered']:
-            continue
         task_id = 'btc/signal/' + digest[7:]
-        tasks.submit(db, task_id=task_id, issue_id='BTC_MARKET_SNIFF', kind='SIGNAL',
-            phase='PUBLIC', input_digest=digest, release_id=release_id,
-            evidence_ref=digest, scope='btc/market', due_ms=row['first_seen_ms'],
-            reason_kind='ACTUAL_READER_INCREMENT',
-            reason='Check actual changed reader measurements against the prior market thesis.')
-        row['registered'] = True
-        registered += 1
+        if row['registered']:
+            if not tasks.status(db, task_id=task_id):
+                raise Conflict('registered reader batch has no durable task')
+        else:
+            result = tasks.submit(db, task_id=task_id, issue_id='BTC_MARKET_SNIFF',
+                kind='SIGNAL', phase='PUBLIC', input_digest=digest,
+                release_id=release_id, evidence_ref=digest, scope='btc/market',
+                due_ms=row['first_seen_ms'], reason_kind='ACTUAL_READER_INCREMENT',
+                reason='Check actual changed reader measurements against the prior market thesis.')
+            registered += result['action'] == 'REGISTERED'
+        del state['pending_reader_batches'][digest]
     return registered
 
 

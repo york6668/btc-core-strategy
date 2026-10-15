@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run the real MySQL/CLI/MCP contracts in a disposable Compose project."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -15,6 +17,83 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RESOURCE_SERVICES = frozenset(('core', 'mysql', 'scheduler', 'maintenance'))
+RESOURCE_UNITS = {'memory.*': 'bytes', 'stat.*': 'bytes', 'vm.*': 'KiB'}
+RESOURCE_FIELDS = frozenset((
+    'memory.current', 'memory.max', 'memory.peak', 'memory.swap.current',
+    'stat.anon', 'stat.file', 'stat.inactive_file', 'stat.kernel',
+    'vm.MemTotal', 'vm.MemAvailable', 'vm.SwapTotal', 'vm.SwapFree'))
+RESOURCE_PROBE = ('for f in memory.current memory.max memory.peak memory.swap.current; do '
+                  'printf "%s=" "$f"; cat "/sys/fs/cgroup/$f"; done; '
+                  'awk \'/^(anon|file|inactive_file|kernel) / {print "stat." $1 "=" $2}\' '
+                  '/sys/fs/cgroup/memory.stat; '
+                  'awk \'/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ '
+                  '{name=$1; sub(/:$/, "", name); print "vm." name "=" $2}\' /proc/meminfo')
+
+
+def capture_validation_resources(docker, project, *, run=subprocess.run):
+    """Sample only this disposable project; no application files or logs."""
+    if not re.fullmatch(r'btc-(?:test|adoption)-[a-z0-9]+', project):
+        raise ValueError('invalid disposable project identity')
+
+    def call(args):
+        result = run(args, capture_output=True, text=True, timeout=5)
+        if result.returncode or len(result.stdout) > 4096:
+            raise RuntimeError('bounded Docker resource probe unavailable')
+        return result.stdout
+
+    listing = call([docker, 'ps', '--filter',
+                    'label=com.docker.compose.project=' + project, '--format',
+                    '{{.Label "com.docker.compose.service"}}|{{.ID}}'])
+    active = {}
+    for line in listing.splitlines():
+        service, separator, identity = line.partition('|')
+        if not separator or service not in RESOURCE_SERVICES or not re.fullmatch(r'[0-9a-f]{12,64}', identity):
+            raise ValueError('unexpected disposable resource identity')
+        if service in active:
+            raise ValueError('duplicate disposable service')
+        active[service] = identity
+
+    def probe(item):
+        service, identity = item
+        try:
+            raw = call([docker, 'exec', identity, 'sh', '-c', RESOURCE_PROBE])
+            fields = {}
+            for line in raw.splitlines():
+                key, separator, value = line.partition('=')
+                if not separator or key in fields or not re.fullmatch(
+                        r'(?:memory\.(?:current|max|peak|swap\.current)|stat\.(?:anon|file|inactive_file|kernel)|vm\.(?:MemTotal|MemAvailable|SwapTotal|SwapFree))', key):
+                    raise ValueError('invalid resource probe field')
+                fields[key] = value if key == 'memory.max' and value == 'max' else int(value)
+            if set(fields) != RESOURCE_FIELDS:
+                raise ValueError('resource probe incomplete')
+            return service, {'status': 'OK', 'fields': fields}
+        except Exception as exc:
+            return service, {'status': 'UNAVAILABLE', 'reason': type(exc).__name__}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        services = dict(pool.map(probe, sorted(active.items())))
+    return {'schema': 'BTC_VALIDATION_RESOURCE_V1', 'units': RESOURCE_UNITS,
+            'status': ('NO_RUNNING_SERVICES' if not services else
+                       'OK' if all(row['status'] == 'OK' for row in services.values()) else 'PARTIAL'),
+            'services': services}
+
+
+def record_validation_resources(docker, project, stage, *, run=subprocess.run, stream=None):
+    """Best-effort evidence; sampler failure never changes the test verdict."""
+    try:
+        evidence = capture_validation_resources(docker, project, run=run)
+    except Exception as exc:
+        evidence = {'schema': 'BTC_VALIDATION_RESOURCE_V1', 'units': RESOURCE_UNITS,
+                    'status': 'UNAVAILABLE',
+                    'reason': type(exc).__name__, 'services': {}}
+    evidence['stage'] = stage
+    try:
+        print('BTC_VALIDATION_RESOURCE=' + json.dumps(evidence, sort_keys=True),
+              file=stream or sys.stderr, flush=True)
+    except Exception:
+        pass
+    return evidence
 
 
 def verify_disposable_limits(services, app_user, evidence_source, alias):
@@ -156,6 +235,7 @@ def _run(docker, reader, reader_image, guard, project):
             raise AssertionError('disposable MySQL must use its own bind mount')
         guard.project_started = True
         subprocess.run(command+['up','-d','--wait','mysql','core'], check=True, timeout=600)
+        record_validation_resources(docker, project, 'core-started')
         container = subprocess.check_output(command+['ps','-q','core'], text=True).strip()
         probe = ('import json,os; from pathlib import Path; '
                  'root=Path("/fixture/project"); assert (root/".strategy").resolve()==root/".strategy"; '
@@ -177,6 +257,7 @@ def _run(docker, reader, reader_image, guard, project):
         subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc:/tmp/reader',
                        '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
                        'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True,timeout=900)
+        record_validation_resources(docker, project, 'core-tests-complete')
         # The Docker node clock must tick on its own, survive a container
         # restart and retain task identities without a Codex CLI in its image.
         scheduler_command = command+['--profile','node-scheduler']
@@ -216,6 +297,7 @@ def _run(docker, reader, reader_image, guard, project):
             time.sleep(0.2)
         if {task['task_id'] for task in scheduler_request('task.status')['tasks']} != before_tasks:
             raise AssertionError('node restart duplicated or changed scheduled task identities')
+        record_validation_resources(docker, project, 'scheduler-before-stop')
         subprocess.run(scheduler_command+['stop','scheduler'],check=True,timeout=120)
         # Recreate a known failure across two real maintenance process starts.
         # The service must stay idle until a reviewed fault is resolved.
@@ -254,6 +336,7 @@ def _run(docker, reader, reader_image, guard, project):
             input=b'{"method":"model.defect.check","params":{"scope":"btc/maintenance"}}'))
         if fault_check['result']['allowed'] or len(fault_check['result']['faults']) != 1:
             raise AssertionError('restart changed maintenance fault state')
+        record_validation_resources(docker, project, 'maintenance-checked')
         def fingerprint_state():
             # A restart may recreate core; stage the same checked helper in
             # the current container for every before/after comparison.
@@ -307,6 +390,7 @@ def _run(docker, reader, reader_image, guard, project):
         raise
     finally:
         if guard.project_started:
+            record_validation_resources(docker, project, 'before-cleanup')
             try:
                 cleanup_compose(command+['--profile','node-scheduler'], project, guard)
             except Exception as exc:

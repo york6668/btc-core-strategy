@@ -18,7 +18,11 @@ Sol 对被准入的问题做当前证据、累积变化及相反解释的实际�
 
 `scheduler_mode` 默认 `OFF`；`SHADOW` 记录 reader 实际增量与原到期待办、评估依赖但绝不领取模型任务；`ACTIVE` 才能通过 `schedule.claim` 领取。显式启用 Compose `node-scheduler` profile 后，现有 `btc_node scheduler-loop` 在数据节点内按 `scheduler_poll_ms` 运行 `schedule.tick`，使用同一 MySQL writer、任务状态与故障闸门；宿主与客户端不登记时钟待办。`reader.checkpoint` 仅在真实投影插入后排队 SIGNAL，由节点时钟登记；同值重取不准入。节点时钟追回错过的原到期，保持原对象版本与期限；故障锁止后窗口不可用，必须核清原故障。DEEP 仅当原研究请求投影并明确启用 `scheduler_deep_enabled` 时进入可领取队列；REPORT 因原目的地运输未验证保持阻断。
 
+reader 批次转成同一 MySQL 事务中的持久 SIGNAL 任务后，调度器清除该批次的待登记记录；重复输入由稳定任务 ID 查重。旧版已标记登记的批次只有在对应任务确实存在时才压缩，缺失任务直接锁止，不把待办从状态中静默抹去。
+
 宿主 `scripts/node_scheduler_worker.py --config <现有 node.json>` 是默认关闭的模型执行适配器，节点任务日志和原领域原件仍为权威。它检查节点最近成功时钟窗口、使用同一 Docker 服务领取任务、宿主 `flock`、物理发布目录和本地 Codex CLI，**不调用 `schedule.tick`**；`schedule.tick/claim` 不向客户端 MCP 暴露，客户端可查看状态。同一任务只领取一次，CLI 的非临时 `--json` 会话须返回唯一完成的原生 thread 引用，原领域原件仍由节点核验；私有 `attempt_dir` 保存该映射和不确定结果的诊断证据，不另建模型操作权威。中断后原尝试保持 RUNNING 或 UNKNOWN，不因新轮次重放。宿主适配器的唤醒方式只负责进程存活与领取，不决定业务到期；选定前须验证桌面退出时的 CLI 登录、网络、工具及原生送达能力。`node_scheduler.enabled`、节点 profile 与容器 `scheduler_mode=ACTIVE` 均需在旧正式任务确实停用、投递可验证后才启用；不要把复测定时器当成正式触发。切换后 `runtime_schedule` 才读节点写出的新时间窗口，不再读旧 Codex 自动任务时间。
+
+worker 在领取持久任务之前，还要核对本机 CLI 可执行、项目目录存在、当前物理发布可读取；本地执行器配置缺失时返回 `NODE_RUNTIME_UNAVAILABLE`，保留原 READY 任务及尝试额度。此检查只覆盖静态本机入口，不能证明登录、网络、业务工具或报告传输可用。
 
 macOS `config/local.btc.node-scheduler.plist.example` 只是宿主适配器的一种唤醒候选，不是必选实现或合并条件。若选它，安装位置仅限该用户的 `~/Library/LaunchAgents`、域 `gui/<uid>`；当前 Docker Desktop 与 CLI 在用户会话中，退出登录时该入口不会继续执行。LaunchDaemon 不能假定获得用户会话资源；无登录运行须另行核验 Docker 与 CLI 身份，不能借用 root 或新持久凭据。模板默认 `Disabled=true`，一分钟唤醒仅轮询节点已登记的待办；睡眠或重启错过的业务窗口由节点持久任务扫描恢复。`flock` 和 MySQL writer/operation_id 防止并发领取。其他宿主唤醒方式也必须服从同一节点窗口与任务准入，不创建第二份业务时钟。
 

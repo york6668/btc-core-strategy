@@ -1,4 +1,6 @@
 """Exercise disposable-stack admission details without starting Docker."""
+import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +11,58 @@ import check
 
 
 class FailureDiagnosticsTests(unittest.TestCase):
+    def test_stage_resource_record_is_scoped_bounded_and_never_changes_verdict(self):
+        calls = []
+        sample = ('memory.current=1234\nmemory.max=max\nmemory.peak=4567\n'
+                  'memory.swap.current=89\nstat.anon=100\nstat.file=200\n'
+                  'stat.inactive_file=150\nstat.kernel=20\nvm.MemTotal=8192\n'
+                  'vm.MemAvailable=4096\nvm.SwapTotal=1024\nvm.SwapFree=900\n')
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[1] == 'ps':
+                self.assertIn('label=com.docker.compose.project=btc-test-synthetic', args)
+                return subprocess.CompletedProcess(args, 0,
+                    'core|aaaaaaaaaaaa\nmysql|bbbbbbbbbbbb\n', '')
+            if args[2] == 'bbbbbbbbbbbb':
+                raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+            return subprocess.CompletedProcess(args, 0, sample, 'SECRET must not print')
+
+        output = io.StringIO()
+        result = check.record_validation_resources('docker', 'btc-test-synthetic',
+                                                    'before-cleanup', run=run, stream=output)
+        self.assertEqual('PARTIAL', result['status'])
+        self.assertEqual('OK', result['services']['core']['status'])
+        self.assertEqual('UNAVAILABLE', result['services']['mysql']['status'])
+        self.assertEqual('TimeoutExpired', result['services']['mysql']['reason'])
+        self.assertEqual(4096, result['services']['core']['fields']['vm.MemAvailable'])
+        self.assertTrue(all(kwargs['timeout'] == 5 for _, kwargs in calls))
+        self.assertEqual(3, len(calls))
+        self.assertNotIn('SECRET', output.getvalue())
+        self.assertEqual(result, json.loads(output.getvalue().split('=', 1)[1]))
+
+        def failing_run(args, **kwargs):
+            raise OSError('synthetic Docker failure')
+        output = io.StringIO()
+        unavailable = check.record_validation_resources('docker', 'btc-test-synthetic',
+            'before-cleanup', run=failing_run, stream=output)
+        self.assertEqual('UNAVAILABLE', unavailable['status'])
+        self.assertIn('BTC_VALIDATION_RESOURCE=', output.getvalue())
+
+        def no_containers(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, '', '')
+        empty = check.capture_validation_resources('docker', 'btc-test-synthetic',
+                                                   run=no_containers)
+        self.assertEqual('NO_RUNNING_SERVICES', empty['status'])
+
+        def oversized(args, **kwargs):
+            output = 'core|aaaaaaaaaaaa\n' if args[1] == 'ps' else 'x' * 4097
+            return subprocess.CompletedProcess(args, 0, output, '')
+        bounded = check.record_validation_resources('docker', 'btc-test-synthetic',
+            'core-started', run=oversized, stream=io.StringIO())
+        self.assertEqual('PARTIAL', bounded['status'])
+        self.assertEqual('RuntimeError', bounded['services']['core']['reason'])
+
     def test_mysql_bind_cleanup_is_scoped_to_generated_directory(self):
         with tempfile.TemporaryDirectory(prefix='btc-data-contract-') as root:
             directory = Path(root)
