@@ -45,6 +45,7 @@
     "service/btc_node/series.py",
     "service/btc_node/tasks.py",
     "service/check.py",
+    "service/check_fingerprint.py",
     "service/compose.yaml",
     "service/host_python.py",
     "service/node_capacity.py",

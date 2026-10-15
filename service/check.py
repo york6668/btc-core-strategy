@@ -255,13 +255,15 @@ def _run(docker, reader, reader_image, guard, project):
         if fault_check['result']['allowed'] or len(fault_check['result']['faults']) != 1:
             raise AssertionError('restart changed maintenance fault state')
         def fingerprint_state():
-            code = ('import json,hashlib; from btc_node.database import Database; '
-                    'd=Database(json.load(open("/run/btc/settings.json"))); '
-                    'tables=[next(iter(r.values())) for r in d.rows("SHOW TABLES")]; '
-                    'state={t:sorted([json.dumps(r,sort_keys=True) for r in d.rows("SELECT * FROM `"+t+"`")]) for t in tables}; '
-                    '[d.blobs.get(r["digest"]) for r in d.rows("SELECT digest FROM blobs")]; '
-                    'print(hashlib.sha256(json.dumps(state,sort_keys=True).encode()).hexdigest())')
-            return subprocess.check_output(command+['exec','-T','core','python','-c',code])
+            # A restart may recreate core; stage the same checked helper in
+            # the current container for every before/after comparison.
+            current = subprocess.check_output(command+['ps','-q','core'],text=True).strip()
+            if not current:
+                raise AssertionError('disposable core unavailable for state fingerprint')
+            subprocess.run([docker,'cp',str(ROOT/'service/check_fingerprint.py'),
+                            current+':/tmp/check_fingerprint.py'],check=True)
+            return subprocess.check_output(command+[
+                'exec','-T','core','python','/tmp/check_fingerprint.py'])
         original_state = fingerprint_state()
         # A real restart must preserve both business state and protocol access.
         before = subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
