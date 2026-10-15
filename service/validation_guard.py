@@ -278,11 +278,20 @@ class ValidationGuard:
             names = self._call('ps', '-a', '--format', '{{.Names}}')
             volumes = self._call('volume', 'ls', '--format', '{{.Name}}')
             networks = self._call('network', 'ls', '--format', '{{.Name}}')
+            # Names are mutable. A renamed Compose object still owns its
+            # original project and must not evade validation admission.
+            container_projects = self._call('ps', '-a', '--filter',
+                'label=com.docker.compose.project', '--format',
+                '{{.Label "com.docker.compose.project"}}')
+            network_projects = self._call('network', 'ls', '--filter',
+                'label=com.docker.compose.project', '--format',
+                '{{.Label "com.docker.compose.project"}}')
             container_conflicts = conflicting_stacks(names)
             network_conflicts = conflicting_stacks(networks)
             volume_conflicts = conflicting_stacks(volumes)
-            if container_conflicts or network_conflicts:
-                conflicts = sorted(set(container_conflicts + network_conflicts))
+            labeled_conflicts = conflicting_stacks(container_projects + '\n' + network_projects)
+            if container_conflicts or network_conflicts or labeled_conflicts:
+                conflicts = sorted(set(container_conflicts + network_conflicts + labeled_conflicts))
                 raise AdmissionError('retained BTC validation resources require review: ' +
                                      ', '.join(conflicts[:3]) + (' ...' if len(conflicts) > 3 else ''))
             info = json.loads(self._call('info', '--format', '{{json .}}'))

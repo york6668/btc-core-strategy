@@ -16,6 +16,8 @@ class FakeDocker:
         self.names = ''
         self.volume_names = ''
         self.network_names = ''
+        self.container_project_labels = ''
+        self.network_project_labels = ''
         self.claim = False
         self.created = self.now
         self.available = 6 * guard.GIB
@@ -54,12 +56,17 @@ class FakeDocker:
             else:
                 self.claim = False
         elif command == 'ps':
-            if '--filter' in args:
+            if '{{.Label "com.docker.compose.project"}}' in args:
+                output = self.container_project_labels
+            elif '--filter' in args:
                 output = self.volume_attached if any(part.startswith('volume=') for part in args) else self.project_containers
             else:
                 output = self.names
         elif command == 'network':
-            output = self.project_networks if '--filter' in args else self.network_names
+            if '{{.Label "com.docker.compose.project"}}' in args:
+                output = self.network_project_labels
+            else:
+                output = self.project_networks if '--filter' in args else self.network_names
         elif command == 'volume':
             if args[2] == 'inspect':
                 if self.volume_record is None:
@@ -148,6 +155,21 @@ class GuardTest(unittest.TestCase):
     def test_retained_stack_refuses_new_instance(self):
         self.fake.names = 'btc-adoption-old-core-1\nbtc-analysis-core-1'
         with self.assertRaisesRegex(guard.AdmissionError, 'retained'):
+            with self.make():
+                pass
+        self.assertFalse(self.fake.claim)
+
+    def test_renamed_stack_still_refused_by_compose_project_label(self):
+        self.fake.names = 'renamed-core-1'
+        self.fake.network_names = 'renamed-default'
+        self.fake.container_project_labels = 'btc-adoption-original'
+        with self.assertRaisesRegex(guard.AdmissionError, 'btc-adoption-original'):
+            with self.make():
+                pass
+        self.assertFalse(self.fake.claim)
+        self.fake.container_project_labels = ''
+        self.fake.network_project_labels = 'btc-test-original'
+        with self.assertRaisesRegex(guard.AdmissionError, 'btc-test-original'):
             with self.make():
                 pass
         self.assertFalse(self.fake.claim)
