@@ -37,5 +37,10 @@ jobs:
           python3 -B scripts/run_tests.py --reader test_support/ci_reader/telegram_reader
           PYTHONPATH=service python3 -B -m unittest discover -s service/tests -p 'test_*offline.py' -v
       - name: Verify minimal repair MySQL, CLI, MCP and recovery
-        working-directory: ${{ runner.temp }}/btc-minimal-source
-        run: python3 -B scripts/ci_reader.py run
+        run: |
+          # Keep the pinned resource candidate intact; only its disposable
+          # validation copy receives the current reader mountpoint harness.
+          cp -R "$RUNNER_TEMP/btc-minimal-source" "$RUNNER_TEMP/btc-minimal-check"
+          cp scripts/ci_reader.py "$RUNNER_TEMP/btc-minimal-check/scripts/ci_reader.py"
+          cd "$RUNNER_TEMP/btc-minimal-check"
+          python3 -B scripts/ci_reader.py run

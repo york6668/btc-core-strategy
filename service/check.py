@@ -154,6 +154,14 @@ def export_reader_sources(reader, destination):
         target.write_bytes(source.read_bytes())
 
 
+def stage_reader_source_mount(reader, destination):
+    """Provide an empty target for the nested writable data bind, without state."""
+    export_reader_sources(reader, destination)
+    destination = Path(destination)
+    (destination / 'data').mkdir(mode=0o755)
+    return destination
+
+
 def run_contract_tests(command, label, *, run=subprocess.run):
     """Keep one private, exclusive log per attempt even when tests fail."""
     if label not in ('standalone-domain', 'complete-suite'):
@@ -310,8 +318,10 @@ def _run(docker, reader, reader_image, guard, project, *, contract_only_domain=F
     if not (reader / 'seller_exhaustion.py').is_file():
         raise ValueError('supply --reader with the actual compatible role export')
     directory = Path(tempfile.mkdtemp(prefix='btc-data-contract-'))
-    reader_copy = directory/'reader-export'
-    export_reader_sources(reader, reader_copy)
+    # The reader image and read-only source bind both need an existing target
+    # before Docker can attach the separately writable SQLite data mount.
+    # Only the empty directory is staged; no reader state enters the source.
+    reader_copy = stage_reader_source_mount(reader, directory/'reader-export')
     command = [docker, 'compose', '-p', project, '--env-file', str(directory/'compose.env'),
                '-f', str(ROOT/'service/compose.yaml'), '--profile', 'analysis']
     result = 1

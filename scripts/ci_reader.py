@@ -5,8 +5,10 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,10 +109,27 @@ def commands(root, snapshot, docker, image):
     ]
 
 
+def stage_build_context(snapshot, destination):
+    """Keep the verified source bytes and add only the empty nested mountpoint."""
+    staged = Path(destination) / 'source'
+    shutil.copytree(snapshot, staged)
+    mountpoint = staged / 'telegram_reader' / 'data'
+    mountpoint.mkdir(mode=0o755, exist_ok=True)
+    if any(mountpoint.iterdir()):
+        raise ValueError('reader build mountpoint must be empty')
+    return staged
+
+
 def execute(plan, docker, image):
     try:
-        for command in plan:
-            subprocess.run(command, check=True)
+        with tempfile.TemporaryDirectory(prefix='btc-reader-build-') as temporary:
+            context = stage_build_context(Path(plan[0][-1]), temporary)
+            build = list(plan[0])
+            build[build.index('--file') + 1] = str(context / 'roles/containers/Dockerfile')
+            build[-1] = str(context)
+            subprocess.run(build, check=True)
+            for command in plan[1:]:
+                subprocess.run(command, check=True)
     finally:
         subprocess.run([docker, 'image', 'rm', image], check=False)
 
@@ -127,6 +146,7 @@ def main():
     plan = commands(ROOT, snapshot, args.docker, image)
     if args.command == 'plan':
         print(json.dumps({'status': 'VERIFIED_INPUTS_DOCKER_NOT_RUN', 'commands': plan,
+                          'build_context_preparation': 'copy verified snapshot and add an empty telegram_reader/data mountpoint',
                           'source_commit': lock['commit'],
                           'snapshot_tree': lock['ci_snapshot']['tree']}, indent=2))
     else:

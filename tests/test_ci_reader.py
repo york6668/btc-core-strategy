@@ -98,7 +98,15 @@ class CIReaderTests(unittest.TestCase):
 
     def test_real_entrypoint_receives_both_reader_inputs(self):
         plan = ci.commands(self.root, self.snapshot, '/test/docker', 'btc-reader-ci:test')
-        with patch.object(ci.subprocess, 'run') as run:
+        def inspect_build(command, **kwargs):
+            if command[:2] == ['/test/docker', 'build']:
+                context = Path(command[-1])
+                self.assertTrue((context / 'telegram_reader/data').is_dir())
+                self.assertEqual(list((context / 'telegram_reader/data').iterdir()), [])
+                self.assertEqual(Path(command[command.index('--file') + 1]),
+                                 context / 'roles/containers/Dockerfile')
+                self.assertFalse((self.snapshot / 'telegram_reader/data').exists())
+        with patch.object(ci.subprocess, 'run', side_effect=inspect_build) as run:
             ci.execute(plan, '/test/docker', 'btc-reader-ci:test')
         self.assertEqual(run.call_args_list[0].args[0][0:4],
                          ['/test/docker', 'build', '--tag', 'btc-reader-ci:test'])
@@ -112,10 +120,11 @@ class CIReaderTests(unittest.TestCase):
                          ['/test/docker', 'image', 'rm', 'btc-reader-ci:test'])
 
     def test_docker_failure_propagates_and_cleans_only_its_image(self):
+        plan = ci.commands(self.root, self.snapshot, '/test/docker', 'btc-reader-ci:test')
         with patch.object(ci.subprocess, 'run',
                           side_effect=[None, subprocess.CalledProcessError(1, ['contract']), None]) as run:
             with self.assertRaises(subprocess.CalledProcessError):
-                ci.execute([['build'], ['contract']], '/test/docker', 'btc-reader-ci:test')
+                ci.execute(plan, '/test/docker', 'btc-reader-ci:test')
         self.assertEqual(run.call_args_list[-1].args[0],
                          ['/test/docker', 'image', 'rm', 'btc-reader-ci:test'])
 

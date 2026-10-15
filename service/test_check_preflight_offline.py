@@ -12,6 +12,20 @@ import check
 
 
 class PreflightTests(unittest.TestCase):
+    def test_reader_mount_source_has_only_code_and_empty_data_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root/'reader-source'
+            source.mkdir()
+            (source/'reader.py').write_text('pass\n')
+            (source/'data').mkdir()
+            (source/'data/state.sqlite').write_bytes(b'private state')
+            staged = check.stage_reader_source_mount(source, root/'reader-export')
+            self.assertEqual((staged/'reader.py').read_text(), 'pass\n')
+            self.assertTrue((staged/'data').is_dir())
+            self.assertEqual(list((staged/'data').iterdir()), [])
+            self.assertFalse((staged/'data/state.sqlite').exists())
+
     def test_missing_input_never_claims_the_disposable_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(check, 'ROOT', Path(tmp)), patch.object(check, 'ValidationGuard') as guard:
