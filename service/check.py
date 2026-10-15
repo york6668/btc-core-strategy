@@ -2,6 +2,7 @@
 """Run the real MySQL/CLI/MCP contracts in a disposable Compose project."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,166 @@ RESOURCE_PROBE = ('for f in memory.current memory.max memory.peak memory.swap.cu
                   '/sys/fs/cgroup/memory.stat; '
                   'awk \'/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ '
                   '{name=$1; sub(/:$/, "", name); print "vm." name "=" $2}\' /proc/meminfo')
+
+# Source-only reader contract. The first reader is e6's pinned CI export; the
+# second is the reviewed role checkout at market-roles 34c360d. A new source
+# version must be reviewed and pinned before a guarded validation window.
+READER_COMMON = {
+    'seller_exhaustion.py': '048bcfa068123a8457ae4a1b813453a08ec43a4f6fde96b2ae77605c100d3621',
+    'btc_evidence.py': '24a139cfa3613c4979f586a69a619e1ac284c4ae6c5ef006c5526bd70846a0cc',
+    'tests/test_evidence_v2.py': '38080f32a8c5bce9ea53a60ca216f13d0163642b0596afa48a1ab908a224965d',
+}
+READER_VARIANTS = {
+    'ci_snapshot_c58': '8b05d8b041697efc96d67cb0439761b40a47b0f4337b2c92b339459f2d4414ba',
+    'role_34c': '27ed27b18cd2375ec022cadbb1456e80840e7fcfd556e1675b8511740c25a378',
+}
+READER_TREE_VARIANTS = {
+    'ci_snapshot_c58': 'c22368605c9cd1e9c99da13e320727bbd92631df76c778bb3ac918e264b0d903',
+    'role_34c': '671106a8a5b25cd3c21199f58299d7017dfedbafc259d88877b5f053ec08aa6c',
+}
+
+
+def reader_source_files(reader):
+    reader = Path(reader).resolve()
+    owner_root = reader.parent.parent.resolve()
+    for source in reader.rglob('*.py'):
+        relative = source.relative_to(reader)
+        if (source.is_file() and source.resolve().is_relative_to(owner_root) and
+                not any(part.startswith('.') or part in ('data', '__pycache__')
+                        for part in relative.parts)):
+            yield relative, source
+
+
+def reader_tree_digest(reader):
+    rows = ((relative.as_posix(), hashlib.sha256(source.read_bytes()).hexdigest())
+            for relative, source in reader_source_files(reader))
+    canonical = ''.join(name+'\0'+digest+'\n' for name, digest in sorted(rows))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def reader_source_variant(reader, *, require_actual=False):
+    """Reject missing fixtures, unknown versions, and CI reader in a field run."""
+    reader = Path(reader).resolve()
+    required = dict(READER_COMMON)
+    required['btc_evidence_reader.py'] = None
+    missing = [str(reader/name) for name in required if not (reader/name).is_file()]
+    if missing:
+        raise ValueError('test preflight missing source/export: '+', '.join(missing))
+    for name, digest in READER_COMMON.items():
+        if hashlib.sha256((reader/name).read_bytes()).hexdigest() != digest:
+            raise ValueError('reader compatibility version mismatch: '+name)
+    actual = hashlib.sha256((reader/'btc_evidence_reader.py').read_bytes()).hexdigest()
+    variant = next((name for name, digest in READER_VARIANTS.items() if digest == actual), None)
+    if variant is None or (require_actual and variant != 'role_34c'):
+        raise ValueError('reader compatibility version mismatch: btc_evidence_reader.py')
+    if reader_tree_digest(reader) != READER_TREE_VARIANTS[variant]:
+        raise ValueError('reader compatibility version mismatch: complete Python source export')
+    return variant
+
+
+def probe_actual_reader_contract(reader):
+    """Exercise the real role reader with only a synthetic in-memory store."""
+    script = '''import json
+from btc_evidence_reader import EvidenceReader
+from btc_evidence import encode_bundle
+from test_evidence_v2 import generated
+r = EvidenceReader(":memory:", -1001, clock=lambda: 1000000)
+bundle, body = generated("BTC")
+raw = encode_bundle(bundle)
+posts = ({"message_id": 100, "text": body},
+         {"message_id": 101, "reply_to_message": {"message_id": 100},
+          "document": {"file_id": "synthetic", "file_name": "BTC.json", "file_size": len(raw)}})
+for uid, post in enumerate(posts, 1):
+    result = r.ingest_update({"update_id": uid, "channel_post": dict(post, date=1000000+uid,
+                              chat={"id": -1001})})
+    assert result["status"] == "stored", result
+assert r.process_pending(lambda _: (_ for _ in ()).throw(TimeoutError("private://secret")))[0]["status"] == "pending_download"
+failure = r.db.execute("SELECT detail FROM collector_download_failures").fetchone()
+assert failure and json.loads(failure[0]) == {"classes": ["TimeoutError"]}
+r.db.execute("UPDATE collector_attachments SET download_retry_at=0")
+assert r.process_pending(lambda _: raw)[0]["role"] == "auxiliary_observation"
+transport = r.observations(asset="BTC")[0]["transport"]
+assert transport["raw_available_at"] == 1000000 and transport["download_attempts"] == 1
+r.close()
+'''
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(reader), str(reader/'tests'))),
+               PYTHONDONTWRITEBYTECODE='1')
+    result = subprocess.run([sys.executable, '-B', '-c', script], env=env,
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise ValueError('actual reader synthetic compatibility probe failed: '+result.stderr[-2000:])
+
+
+def preflight_test_sources(root, reader, *, require_actual=False):
+    """Check the source/export inputs before requesting a resource window."""
+    root, reader = Path(root).resolve(), Path(reader).resolve()
+    required = (
+        root/'service/Dockerfile', root/'service/compose.yaml',
+        root/'service/btc_node/__main__.py',
+        root/'service/tests/test_data_contract.py',
+        root/'service/tests/test_domain_runtime.py',
+        root/'scripts/build_synthetic_fixtures.py',
+        root/'skill/btc-core-strategy/scripts/strategy_v4.py',
+        root/'skill/btc-core-strategy/tests/test_run_flow.py',
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise ValueError('test preflight missing source/export: '+', '.join(missing))
+    variant = reader_source_variant(reader, require_actual=require_actual)
+    dockerfile = (root/'service/Dockerfile').read_text()
+    if 'WORKDIR /opt/btc' not in dockerfile or 'COPY service/btc_node /opt/btc/btc_node' not in dockerfile:
+        raise ValueError('test preflight requires the core package at /opt/btc')
+    if variant == 'role_34c':
+        probe_actual_reader_contract(reader)
+    return variant
+
+
+def export_reader_sources(reader, destination):
+    """Stage Python source only; never copy a role's database, cache or secret."""
+    reader, destination = Path(reader).resolve(), Path(destination)
+    destination.mkdir(mode=0o700)
+    for relative, source in reader_source_files(reader):
+        target = destination/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+
+
+def run_contract_tests(command, label, *, run=subprocess.run):
+    """Keep one private, exclusive log per attempt even when tests fail."""
+    if label not in ('standalone-domain', 'complete-suite'):
+        raise ValueError('invalid contract test label')
+    log_dir = Path(tempfile.mkdtemp(prefix='btc-check-evidence-'))
+    log = log_dir/(label+'-'+uuid.uuid4().hex+'.log')
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    with os.fdopen(os.open(log, flags, 0o600), 'w') as stream:
+        print('BTC_CONTRACT_TEST_LOG='+str(log), file=sys.stderr, flush=True)
+        try:
+            result = run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=900)
+        except BaseException:
+            stream.flush()
+            raise
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command, output='log='+str(log))
+    return log
+
+
+def verify_core_service_contract(services, socket_path):
+    """Inspect rendered Compose before building or starting the test stack."""
+    core = services.get('core', {})
+    command = core.get('command')
+    if command != ['serve']:
+        raise AssertionError('test core must start the Unix socket service')
+    health = core.get('healthcheck', {}).get('test', [])
+    if socket_path not in ' '.join(map(str, health)):
+        raise AssertionError('test core healthcheck must probe the configured Unix socket')
+    environment = core.get('environment', {})
+    if isinstance(environment, list):
+        environment = dict(item.split('=', 1) for item in environment if '=' in item)
+    if environment.get('BTC_SERVICE_CONFIG') != '/run/btc/settings.json':
+        raise AssertionError('test core must read the mounted service config')
+    if not any(mount.get('target') == '/run/btc/settings.json' and mount.get('read_only')
+               for mount in core.get('volumes', [])):
+        raise AssertionError('test core config must be mounted read-only')
 
 
 def capture_validation_resources(docker, project, *, run=subprocess.run):
@@ -125,7 +286,12 @@ def cleanup_disposable_mysql_bind(docker, directory, *, run=subprocess.run):
          'python:3.11-slim', '-c', code], check=True, timeout=90)
 
 
-def run(docker, reader, reader_image=None, preserved_volume_manifest=None):
+def run(docker, reader, reader_image=None, preserved_volume_manifest=None,
+        *, require_actual_reader=False, contract_only_domain=False):
+    preflight_test_sources(ROOT, reader, require_actual=require_actual_reader)
+    if require_actual_reader and (not reader_image or not re.fullmatch(
+            r'(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})', reader_image)):
+        raise ValueError('actual reader validation requires an immutable image ID/digest')
     # One local flock and one daemon-wide atomic claim cover separate shell
     # processes and separate clients of the same Docker VM.
     project = 'btc-test-' + uuid.uuid4().hex[:12]
@@ -133,16 +299,19 @@ def run(docker, reader, reader_image=None, preserved_volume_manifest=None):
                          preserved_volume_manifest=preserved_volume_manifest) as guard:
         restore = install_interrupt_handlers()
         try:
-            return _run(docker, reader, reader_image, guard, project)
+            return _run(docker, reader, reader_image, guard, project,
+                        contract_only_domain=contract_only_domain)
         finally:
             restore()
 
 
-def _run(docker, reader, reader_image, guard, project):
+def _run(docker, reader, reader_image, guard, project, *, contract_only_domain=False):
     reader = Path(reader).resolve()
     if not (reader / 'seller_exhaustion.py').is_file():
         raise ValueError('supply --reader with the actual compatible role export')
     directory = Path(tempfile.mkdtemp(prefix='btc-data-contract-'))
+    reader_copy = directory/'reader-export'
+    export_reader_sources(reader, reader_copy)
     command = [docker, 'compose', '-p', project, '--env-file', str(directory/'compose.env'),
                '-f', str(ROOT/'service/compose.yaml'), '--profile', 'analysis']
     result = 1
@@ -150,11 +319,10 @@ def _run(docker, reader, reader_image, guard, project):
         if reader_image:
             # Run the published role entrypoint, not a mocked exec call. The
             # source bind is read-only while its nested SQLite data is writable.
-            (reader/'data').mkdir(exist_ok=True)
             reader_data=directory/'reader';reader_data.mkdir()
             launch=[docker,'run','--rm','--read-only','--tmpfs','/tmp',
                     '--memory','512m','--cpus','1','--restart','no',
-                    '-v',str(reader)+':/app/telegram_reader:ro',
+                    '-v',str(reader_copy)+':/app/telegram_reader:ro',
                     '-v',str(reader_data)+':/app/telegram_reader/data',
                     '-e','BTC_READER_DATA_DIR=/app/telegram_reader/data']
             probe=('import sqlite3; from pathlib import Path; '
@@ -197,6 +365,7 @@ def _run(docker, reader, reader_image, guard, project):
             'BTC_SETTINGS_FILE='+str(directory/'settings.json'), 'BTC_MYSQL_PASSWORD_FILE='+str(directory/'mysql'),
             'BTC_MYSQL_ROOT_PASSWORD_FILE='+str(directory/'mysql-root'), 'BTC_IMAGE_TAG=contract'])+'\n')
         effective = json.loads(subprocess.check_output(command+['config','--format','json'], text=True))
+        verify_core_service_contract(effective['services'], settings['socket'])
         if effective['services']['maintenance']['restart'] != 'unless-stopped':
             raise AssertionError('normal host restart must restore guarded maintenance')
         subprocess.run(command+['build','core'], check=True, timeout=600)
@@ -229,6 +398,7 @@ def _run(docker, reader, reader_image, guard, project):
         command += ['-f',str(override)]
         effective_test = json.loads(subprocess.check_output(command+[
             '--profile','node-scheduler','config','--format','json'],text=True))['services']
+        verify_core_service_contract(effective_test, settings['socket'])
         verify_disposable_limits(effective_test, app_user, evidence, alias)
         if not any(mount['target']=='/var/lib/mysql' and mount['source']==str(directory/'mysql-data')
                    for mount in effective_test['mysql']['volumes']):
@@ -248,16 +418,26 @@ def _run(docker, reader, reader_image, guard, project):
         # The compatible role export contains relative links to its owner
         # repository. Materialize them in a disposable copy because Docker cp
         # preserves nested links that otherwise point outside the container.
-        reader_copy = directory/'reader-export'
-        shutil.copytree(reader,reader_copy,symlinks=False)
         subprocess.run([docker,'cp',str(reader_copy),container+':/tmp/reader'],check=True)
         subprocess.run(command+['exec','-T','core','mkdir','-p','/tmp/source/scripts'],check=True)
         for relative in ('skill','project-methods','scripts/build_synthetic_fixtures.py'):
             subprocess.run([docker,'cp',str(ROOT/relative),container+':/tmp/source/'+relative],check=True)
-        subprocess.run(command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json','-e','PYTHONPATH=/opt/btc:/tmp/reader',
-                       '-e','BTC_TEST_SOURCE=/tmp/source','-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
-                       'core','python','-m','unittest','discover','-s','/tmp/tests','-v'],check=True,timeout=900)
+        test_command = command+['exec','-T','-e','BTC_TEST_CONFIG=/run/btc/settings.json',
+                                '-e','PYTHONPATH=/opt/btc:/tmp/reader:/tmp/tests',
+                                '-e','BTC_TEST_SOURCE=/tmp/source',
+                                '-e','BTC_COLLECTOR_CONTRACT_PATH=/tmp/reader/btc_evidence.py',
+                                'core','python','-m','unittest']
+        if contract_only_domain:
+            test_command += ['test_domain_runtime.DomainRuntime.'
+                             'test_actual_prepare_observe_and_interrupted_result_recovery', '-v']
+        else:
+            test_command += ['discover','-s','/tmp/tests','-v']
+        run_contract_tests(test_command,
+                           'standalone-domain' if contract_only_domain else 'complete-suite')
         record_validation_resources(docker, project, 'core-tests-complete')
+        if contract_only_domain:
+            result = 0
+            return result
         # The Docker node clock must tick on its own, survive a container
         # restart and retain task identities without a Codex CLI in its image.
         scheduler_command = command+['--profile','node-scheduler']
@@ -418,8 +598,21 @@ if __name__ == '__main__':
     parser.add_argument('--reader-image', help='Built analysis-role image for the actual reader entrypoint contract')
     parser.add_argument('--preserved-volume-manifest',
                         help='Exact, previously reviewed retained-volume identities; never bypasses resource admission')
+    parser.add_argument('--preflight-only', action='store_true',
+                        help='check source and reader fixtures without Docker')
+    parser.add_argument('--require-actual-reader', action='store_true',
+                        help='require the reviewed role checkout, not the older CI snapshot')
+    parser.add_argument('--contract-only-domain', action='store_true',
+                        help='run the standalone domain method in a fresh guarded disposable stack')
     args=parser.parse_args()
+    if args.preflight_only:
+        variant = preflight_test_sources(ROOT, args.reader,
+                                         require_actual=args.require_actual_reader)
+        print('BTC_TEST_PREFLIGHT=SOURCE_AND_READER_OK reader='+variant)
+        raise SystemExit(0)
     if not args.docker:
         parser.error('Docker client and daemon are required; this validation cannot be skipped')
     raise SystemExit(run(args.docker, args.reader, args.reader_image,
-                         args.preserved_volume_manifest))
+                         args.preserved_volume_manifest,
+                         require_actual_reader=args.require_actual_reader,
+                         contract_only_domain=args.contract_only_domain))

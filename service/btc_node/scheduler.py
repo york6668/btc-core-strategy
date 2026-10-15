@@ -166,7 +166,12 @@ def _register_due(db, state, release_id, *, limit=500):
 def _dependency(db, task):
     kind, reference = task['kind'], task['evidence_ref']
     if kind in {'SIGNAL', 'RECHECK'}:
-        value = db.value(reference[7:]) if reference.startswith('sha256:') else None
+        value = None
+        if reference.startswith('sha256:'):
+            try:
+                value = db.value(reference[7:])
+            except (FileNotFoundError, KeyError):
+                pass  # The original dependency is unavailable; keep its task.
         if kind == 'SIGNAL':
             valid = bool(value and value.get('schema') == 'BTC_READER_INCREMENT_V1'
                          and any(row['inserted'] > 0 for row in value['receipts']))
@@ -196,7 +201,8 @@ def _dependency(db, task):
         allocation = Entities(db).get('ALLOCATION', 'portfolio')
         payload = (allocation or {}).get('payload', {})
         valid = (payload.get('investment_completion') != 'FORMALLY_ADOPTED'
-                 and bool(payload.get('market_binding')))
+                 and bool(payload.get('market_binding'))
+                 and allocation.get('source_ref') == reference)
         return valid, reference if valid else 'formal-market-binding-or-gap-unavailable'
     if kind == 'REPORT':
         return False, 'native-original-destination-unavailable'
@@ -240,15 +246,28 @@ def claim(db, *, attempt_id):
         return {'action': 'NODE_CLOCK_UNAVAILABLE_NO_LAUNCH'}
     release_id = pinned_release(db)
     all_tasks = tasks.status(db)['tasks']
-    if any(row['state'] == 'RUNNING' and row['namespace'] == 'formal' for row in all_tasks):
-        return {'action': 'ORIGINAL_ATTEMPT_RUNNING_NO_LAUNCH'}
     eligible = [row for row in all_tasks if row['namespace'] == 'formal'
                 and row['release_id'] == release_id and row['state'] == 'READY'
                 and row['kind'] in PRIORITY
                 and (row['kind'] != 'DEEP' or db.settings.get('scheduler_deep_enabled') is True)]
+    eligible = [row for row in eligible if not tasks.same_execution_lane_running(
+                all_tasks, row['kind'])]
     if not eligible:
+        return {'action': ('ORIGINAL_ATTEMPT_RUNNING_NO_LAUNCH'
+                           if any(row['state'] == 'RUNNING' for row in all_tasks)
+                           else 'NO_READY_TASK')}
+    # READY was calculated at an earlier tick. Revisit the original source and
+    # active defect gate before claiming; unrelated READY work may still run.
+    current = []
+    for row in eligible:
+        ready, proof = _dependency(db, row)
+        assessed = tasks.assess(db, task_id=row['task_id'],
+                                dependency_ready=bool(ready), dependency_ref=proof)['task']
+        if assessed['state'] == 'READY':
+            current.append(assessed)
+    if not current:
         return {'action': 'NO_READY_TASK'}
-    selected = min(eligible, key=lambda row: (row['due_ms'], PRIORITY[row['kind']], row['task_id']))
+    selected = min(current, key=lambda row: (row['due_ms'], PRIORITY[row['kind']], row['task_id']))
     result = tasks.start(db, task_id=selected['task_id'], attempt_id=attempt_id,
         release_id=release_id,
         **({'claim_id': attempt_id + '-deep', 'model': 'gpt-6-astra'}

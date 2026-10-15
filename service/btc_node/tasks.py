@@ -42,6 +42,17 @@ def _save(db, value):
     db.metadata(NAME, value, write=True)
 
 
+def same_execution_lane_running(rows, kind):
+    """Serialize ordinary work with ordinary work, and deep with deep.
+
+    Independent Astra research may overlap an hourly Sol obligation. The
+    shared deep day gate separately limits new high-grade starts.
+    """
+    deep = kind == 'DEEP'
+    return any(row['state'] == 'RUNNING' and (row['kind'] == 'DEEP') == deep
+               for row in rows)
+
+
 def _verified_completion(db, task, completion_ref):
     if task['kind'] == 'SIGNAL':
         if not completion_ref.startswith('sha256:') or len(completion_ref) != 71:
@@ -198,7 +209,32 @@ def start(db, *, task_id, attempt_id, release_id, claim_id=None, model=None):
         raise Conflict('task is not ready; inspect its blocker or original attempt')
     if task['release_id'] != release_id:
         raise Conflict('task belongs to another pinned release')
+    # Every entrypoint, including client task.start, reaches this boundary
+    # inside the same writer transaction. READY is not a reservation against
+    # a new fault or another execution in the same lane. Research may remain
+    # in flight while a separate hourly Sol obligation runs.
+    if same_execution_lane_running(state['tasks'].values(), task['kind']):
+        raise Conflict('another original task attempt is running in this execution lane')
+    if task['due_ms'] > millis():
+        raise Conflict('task is no longer due for admission')
+    if not deep_gate.check_scope(db, scope=task['scope'])['allowed']:
+        raise Conflict('known defect blocks affected task scope')
+    if task['namespace'] == 'formal' and not deep_gate.check_scope(
+            db, scope='btc/scheduler')['allowed']:
+        raise Conflict('known node scheduler defect blocks formal admission')
     settings = getattr(db, 'settings', None)
+    # Scheduler-created obligations have verifiable live source dependencies.
+    # Older manually assessed tasks retain their existing proof contract.
+    node_owned = (task['namespace'] == 'formal' and (
+        (task['kind'] == 'SIGNAL' and task_id.startswith('btc/signal/'))
+        or (task['kind'] == 'RECHECK' and task_id.startswith('btc/recheck/'))
+        or (task['kind'] == 'DEEP' and task_id.startswith('btc/research/'))
+        or (task['kind'] == 'MAIN' and task_id == 'btc/portfolio-synthesis/main')))
+    if node_owned and isinstance(settings, dict):
+        from . import scheduler
+        ready, proof = scheduler._dependency(db, task)
+        if not ready or proof != task.get('dependency_ref'):
+            raise Conflict('node task dependency changed after assessment')
     if isinstance(settings, dict) and settings.get('release_root'):
         installed = Path(settings['release_root']) / release_id
         if not installed.is_dir() or not (installed / 'RELEASE.json').is_file():

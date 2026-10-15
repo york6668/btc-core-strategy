@@ -114,6 +114,12 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
         raise Conflict('today deep-research slot already consumed; inspect original claim')
     if any(item['state'] in ('CLAIMED','UNKNOWN') for item in state['days'].values()):
         raise Conflict('earlier in-flight or unknown deep call needs reconciliation')
+    # Only a new high-grade launch needs the execution interlock. Exact
+    # completed-result REUSE above is read-only; ordinary Sol work may proceed
+    # alongside independent research in either admission order.
+    from . import tasks
+    if tasks.same_execution_lane_running(tasks.status(db)['tasks'], 'DEEP'):
+        raise Conflict('another deep research task is running')
     record = {'day':day, 'timezone':TIMEZONE, 'claim_id':claim_id,
               'issue_id':issue_id, 'scope':scope, 'phase':phase, 'input_digest':input_digest,
               'model':model, 'state':'CLAIMED', 'claimed_at_ms':now_ms,

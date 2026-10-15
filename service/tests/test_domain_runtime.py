@@ -209,6 +209,9 @@ class DomainRuntime(unittest.TestCase):
                     service_config.write_text(json.dumps(settings))
                     db=Database(settings)
                     try:
+                        # This method also runs alone against a new disposable
+                        # MySQL node; no prior contract test may seed its schema.
+                        db.initialize()
                         with db.writer(),db.transaction():
                             # The fixture and this database are explicitly disposable.
                             for table in ('mo_completion_attempt','mo_baseline','mo_review','mo_retrieval','mo_evidence'):
@@ -221,6 +224,20 @@ class DomainRuntime(unittest.TestCase):
                             import_sqlite(db,original)
                             Catalog(db).sync('strategy',project/'.strategy')
                             db.metadata('writer',{'owner':'DOCKER'},write=True)
+                            # Give the prepared round its own dated public
+                            # judgement instead of inheriting another test's
+                            # residual object from the shared test database.
+                            from btc_node.entities import Entities
+                            Entities(db).put({'kind':'CYCLE',
+                                'object_id':folder.name+'-initial-public',
+                                'scope':'PUBLIC',
+                                'observed_at':'2030-03-01T13:00:00Z',
+                                'known_at':'2030-03-01T13:00:00Z',
+                                'method_version':'SYNTHETIC_ONLY',
+                                'source_ref':'generated-domain-fixture',
+                                'change_reason':'Seed the isolated prepared round',
+                                'payload':{'direction':'NEUTRAL','synthetic':True}},
+                                expected_version=0)
                     finally:db.close()
                     timing=folder/'execution-window.json'
                     timing.write_text(json.dumps({'schema':'BTC_EXECUTION_WINDOW_V1','status':'UNAVAILABLE',

@@ -14,6 +14,10 @@ Sol 对被准入的问题做当前证据、累积变化及相反解释的实际�
 
 `task.submit` 以稳定 `task_id`、`issue_id`、固定输入摘要、物理发布版本、阶段、来源及业务理由登记 `NEEDED`；相同输入复用原记录。`task.assess` 把原问题与当前准入分开：依赖未齐、开放缺陷、未到实际检验窗口或当天深评名额不可用时为 `BLOCKED`，实际可做才为 `READY`。`task.start` 原子声明一次尝试，深评同时领取原 `model.deep.BTC` 日名额；`task.finish` 验证实际感知、复核、正式决策或独立研究原件后才完成，失败/未知锁止，`task.reconcile` 只核对原尝试，不重放外部动作。节点 writer 锁和 operation_id 包住全部变更。新版本不能在原任务身份下偷偷替换固定发布版本；历史与 UNKNOWN 状态不随升级重写。
 
+节点启动许可分成两类。`task.start`/`schedule.claim` 在同一 writer 事务内复查任务到期、原依赖与受影响故障；直接 `model.deep.claim` 检查原问题身份、作用域缺陷和共享东京日闸门，不把任务依赖检查冒充为该入口已有能力。`DEEP` 是高等级研究，跨日 CLAIMED/UNKNOWN 仍锁止另一项新深评；其他任务是普通执行（含正式与隔离复测），同一时间只准一个普通 `RUNNING`。高等级研究与普通执行可以各有一个在途：先领取 `model.deep.claim` 再启动 Sol 嗅探，或 Sol 先在途再领取唯一深评，均沿各自入口的准入条件。已有 `DEEP RUNNING` 也不阻断另一项普通嗅探；两项普通任务或两项新深评不能并行。已完成的同日同问题、阶段、输入和模型的 `model.deep.claim` 返回 `REUSE`，只读原结果，不算新启动、不补发名额，即使普通任务正在运行也可读取；不同输入、FAILED、UNKNOWN、CANCELED 仍不能复用。报告实际投递仍由原生回执与 UNKNOWN 去重协议拥有，任务并行许可不授予重发权。
+
+上述是**节点服务准入矩阵**。当前宿主 `node_scheduler_worker.py` 的单个 `flock` 覆盖一次 CLI 执行全过程，因此本适配器尚未证明能在其自身 DEEP 进程运行时同时拉起 Sol；通过手工原生研究入口取得的深评状态则不锁住节点普通任务。真实双进程执行能力与原目的地投递仍须单独隔离验收，不能把节点准入测试说成客户端退出后的完整闭环。
+
 调用端重放同一个 `task.start` operation_id 只会得到 `RECONCILE_EXISTING_NO_LAUNCH`。失败任务不能因观察到新输入就自动重开；`task.repair` 需记录实际更改和验证引用，并保留旧尝试历史。研究任务沿已验证的 request、原独立输入和原问题身份投影；独立结果已存在时只标记原待办完成。此阶段仅在节点配置明确设置 `task_shadow_enabled: true` 时投影研究与组合待办；现有正式配置默认不启用。
 
 `scheduler_mode` 默认 `OFF`；`SHADOW` 记录 reader 实际增量与原到期待办、评估依赖但绝不领取模型任务；`ACTIVE` 才能通过 `schedule.claim` 领取。显式启用 Compose `node-scheduler` profile 后，现有 `btc_node scheduler-loop` 在数据节点内按 `scheduler_poll_ms` 运行 `schedule.tick`，使用同一 MySQL writer、任务状态与故障闸门；宿主与客户端不登记时钟待办。`reader.checkpoint` 仅在真实投影插入后排队 SIGNAL，由节点时钟登记；同值重取不准入。节点时钟追回错过的原到期，保持原对象版本与期限；故障锁止后窗口不可用，必须核清原故障。DEEP 仅当原研究请求投影并明确启用 `scheduler_deep_enabled` 时进入可领取队列；REPORT 因原目的地运输未验证保持阻断。
