@@ -12,6 +12,52 @@ import check
 
 
 class PreflightTests(unittest.TestCase):
+    def test_staged_script_needs_explicit_package_root(self):
+        # File-path execution searches the script directory first, even when
+        # the process working directory is the package's parent.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root/'source/path_contract_pkg'
+            package.mkdir(parents=True)
+            (package/'__init__.py').write_text('VALUE = "resolved"\n')
+            script = root/'staged/probe.py'
+            script.parent.mkdir()
+            script.write_text('from path_contract_pkg import VALUE\nprint(VALUE)\n')
+            env = dict(os.environ, PYTHONPATH='', PYTHONDONTWRITEBYTECODE='1')
+            missing = subprocess.run([os.sys.executable, '-B', str(script)],
+                                     cwd=root/'source', env=env, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn('ModuleNotFoundError', missing.stderr)
+            resolved = subprocess.run([os.sys.executable, '-B', str(script)],
+                                      cwd=root/'source', env=dict(env, PYTHONPATH=str(root/'source')),
+                                      capture_output=True, text=True)
+            self.assertEqual(resolved.returncode, 0, resolved.stderr)
+            self.assertEqual(resolved.stdout.strip(), 'resolved')
+
+    def test_fingerprint_command_copies_current_script_and_resolves_core_package(self):
+        compose = ['docker', 'compose', '-p', 'btc-test-synthetic']
+        calls = []
+        def output(command, **kwargs):
+            calls.append(('output', command, kwargs))
+            return 'synthetic-core-id\n' if command[-3:] == ['ps', '-q', 'core'] else b'synthetic-digest\n'
+        def run(command, **kwargs):
+            calls.append(('run', command, kwargs))
+        digest = check.fingerprint_disposable_state(compose, 'docker',
+            run=run, check_output=output)
+        self.assertEqual(digest, b'synthetic-digest\n')
+        self.assertEqual(calls[0][1], compose + ['ps', '-q', 'core'])
+        self.assertEqual(calls[1][1], ['docker', 'cp',
+            str(check.ROOT/'service/check_fingerprint.py'),
+            'synthetic-core-id:/tmp/check_fingerprint.py'])
+        self.assertEqual(calls[2][1], compose + ['exec', '-T', '-e',
+            'PYTHONPATH=/opt/btc', 'core', 'python', '/tmp/check_fingerprint.py'])
+        with self.assertRaisesRegex(ValueError, 'staged /tmp Python file'):
+            check.core_python_script_command(compose, '/opt/btc/unknown.py')
+        with self.assertRaisesRegex(AssertionError, 'core unavailable'):
+            check.fingerprint_disposable_state(compose, 'docker', run=run,
+                check_output=lambda *args, **kwargs: '')
+        self.assertEqual(len(calls), 3)
+
     def test_reader_mount_source_has_only_code_and_empty_data_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

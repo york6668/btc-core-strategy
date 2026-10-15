@@ -18,6 +18,7 @@ from validation_guard import GIB, ValidationGuard, cleanup_compose, install_inte
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CORE_SOURCE_ROOT = '/opt/btc'
 RESOURCE_SERVICES = frozenset(('core', 'mysql', 'scheduler', 'maintenance'))
 RESOURCE_UNITS = {'memory.*': 'bytes', 'stat.*': 'bytes', 'vm.*': 'KiB'}
 RESOURCE_FIELDS = frozenset((
@@ -137,7 +138,8 @@ def preflight_test_sources(root, reader, *, require_actual=False):
         raise ValueError('test preflight missing source/export: '+', '.join(missing))
     variant = reader_source_variant(reader, require_actual=require_actual)
     dockerfile = (root/'service/Dockerfile').read_text()
-    if 'WORKDIR /opt/btc' not in dockerfile or 'COPY service/btc_node /opt/btc/btc_node' not in dockerfile:
+    if (f'WORKDIR {CORE_SOURCE_ROOT}' not in dockerfile or
+            f'COPY service/btc_node {CORE_SOURCE_ROOT}/btc_node' not in dockerfile):
         raise ValueError('test preflight requires the core package at /opt/btc')
     if variant == 'role_34c':
         probe_actual_reader_contract(reader)
@@ -179,6 +181,31 @@ def run_contract_tests(command, label, *, run=subprocess.run):
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, command, output='log='+str(log))
     return log
+
+
+def core_python_script_command(compose_command, script):
+    """Run a staged script with the core image's package root on sys.path.
+
+    Python puts the script's directory, not the container working directory,
+    on sys.path[0]. A script copied to /tmp therefore needs this explicit path.
+    """
+    if not script.startswith('/tmp/') or not script.endswith('.py'):
+        raise ValueError('core validation script must be a staged /tmp Python file')
+    return compose_command + ['exec', '-T', '-e',
+                              'PYTHONPATH=' + CORE_SOURCE_ROOT,
+                              'core', 'python', script]
+
+
+def fingerprint_disposable_state(compose_command, docker, *, root=ROOT,
+                                 run=subprocess.run, check_output=subprocess.check_output):
+    """Fingerprint the current disposable core, including after a restart."""
+    current = check_output(compose_command + ['ps', '-q', 'core'], text=True).strip()
+    if not current:
+        raise AssertionError('disposable core unavailable for state fingerprint')
+    run([docker, 'cp', str(root / 'service/check_fingerprint.py'),
+         current + ':/tmp/check_fingerprint.py'], check=True)
+    return check_output(core_python_script_command(
+        compose_command, '/tmp/check_fingerprint.py'))
 
 
 def verify_core_service_contract(services, socket_path):
@@ -527,17 +554,7 @@ def _run(docker, reader, reader_image, guard, project, *, contract_only_domain=F
         if fault_check['result']['allowed'] or len(fault_check['result']['faults']) != 1:
             raise AssertionError('restart changed maintenance fault state')
         record_validation_resources(docker, project, 'maintenance-checked')
-        def fingerprint_state():
-            # A restart may recreate core; stage the same checked helper in
-            # the current container for every before/after comparison.
-            current = subprocess.check_output(command+['ps','-q','core'],text=True).strip()
-            if not current:
-                raise AssertionError('disposable core unavailable for state fingerprint')
-            subprocess.run([docker,'cp',str(ROOT/'service/check_fingerprint.py'),
-                            current+':/tmp/check_fingerprint.py'],check=True)
-            return subprocess.check_output(command+[
-                'exec','-T','core','python','/tmp/check_fingerprint.py'])
-        original_state = fingerprint_state()
+        original_state = fingerprint_disposable_state(command, docker)
         # A real restart must preserve both business state and protocol access.
         before = subprocess.check_output(command+['exec','-T','core','python','-m','btc_node','request'],
                                          input=b'{"method":"status"}\n')
@@ -547,7 +564,7 @@ def _run(docker, reader, reader_image, guard, project, *, contract_only_domain=F
                                         input=b'{"method":"status"}\n')
         if json.loads(before)['result']['objects'] != json.loads(after)['result']['objects']:
             raise AssertionError('object state changed after container/database restart')
-        if fingerprint_state() != original_state:
+        if fingerprint_disposable_state(command, docker) != original_state:
             raise AssertionError('business values, versions, references, cursors or delivery state changed after restart')
         # The service must fail closed while MySQL is unavailable.
         subprocess.run(command+['stop','mysql'],check=True)
@@ -560,7 +577,7 @@ def _run(docker, reader, reader_image, guard, project, *, contract_only_domain=F
                                             input=b'{"method":"status"}\n')
         if json.loads(before)['result']['objects'] != json.loads(recovered)['result']['objects']:
             raise AssertionError('object state changed after outage recovery')
-        if fingerprint_state() != original_state:
+        if fingerprint_disposable_state(command, docker) != original_state:
             raise AssertionError('business content changed after database outage recovery')
         print('BTC_DATA_SERVICE_RESULT='+json.dumps({'mysql':True,'cli_mcp':True,'restart':True,'outage_recovery':True,
               'node_scheduler_restart':True,'node_scheduler_without_codex_cli':True,
