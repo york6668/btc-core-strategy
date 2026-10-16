@@ -44,10 +44,15 @@ def _document(raw):
 class _Text(HTMLParser):
     def __init__(self):
         super().__init__(); self.parts = []; self.skip = 0; self.rows = []; self.row = None; self.cell = None
+        self.tables = []; self.table_stack = []; self.row_simple = True
 
     def handle_starttag(self, tag, attrs):
         if tag in ('script', 'style', 'noscript'): self.skip += 1
-        if tag == 'tr': self.row = []
+        if tag == 'table':
+            table = []; self.tables.append(table); self.table_stack.append(table)
+        if tag == 'tr': self.row = []; self.row_simple = True
+        if tag in ('td', 'th') and any(key in ('colspan', 'rowspan') and value != '1' for key, value in attrs):
+            self.row_simple = False
         if tag in ('td', 'th'): self.cell = []
         if tag in ('p', 'div', 'li', 'tr', 'br', 'h1', 'h2', 'h3'): self.parts.append(' ')
 
@@ -56,7 +61,11 @@ class _Text(HTMLParser):
         if tag in ('td', 'th') and self.cell is not None:
             if self.row is not None: self.row.append(' '.join(''.join(self.cell).split()))
             self.cell = None
-        if tag == 'tr' and self.row is not None: self.rows.append(self.row); self.row = None
+        if tag == 'tr' and self.row is not None:
+            self.rows.append(self.row)
+            if self.table_stack: self.table_stack[-1].append((len(self.rows) - 1, self.row, self.row_simple))
+            self.row = None
+        if tag == 'table' and self.table_stack: self.table_stack.pop()
         if tag in ('p', 'div', 'li', 'tr', 'td', 'th'): self.parts.append(' ')
 
     def handle_data(self, value):
@@ -217,22 +226,53 @@ def _yahoo(source, raw):
     return records
 
 
+# Named membership of the admitted Farside table schema, not a column count.
+# An omitted known column cannot silently narrow FARSIDE_TRACKED. Additional
+# named fund columns are included in every row's completeness and sum checks.
+_FARSIDE_FUNDS = frozenset('IBIT FBTC BITB ARKB BTCO EZBC BRRR HODL BTCW MSBT GBTC BTC'.split())
+
+
 def _farside(source, payload):
-    text, rows = _plain(payload)
+    parser = _Text(); parser.feed(payload.decode('utf-8'))
+    text = ' '.join(''.join(parser.parts).split())
     if 'Bitcoin ETF Flow (US$m)' not in text: return []
-    headers = next((r for r in rows if r and r[-1] == 'Total'), None)
-    if not headers: return []
     records = []
-    for index, row in enumerate(rows):
-        if len(row) != len(headers): continue
-        try: day = datetime.strptime(row[0], '%d %b %Y').date().isoformat()
-        except ValueError: continue
-        start = day + 'T00:00:00Z'; end = day + 'T23:59:59Z'
-        if not instant(source['start']) <= instant(start) <= instant(end) <= instant(source['end']): continue
-        scope = {'subject': 'BTC', 'product': 'US_SPOT_ETF', 'universe': 'FARSIDE_TRACKED',
-                 'measure': 'NET_FUND_FLOW', 'unit': 'USD_MILLION', 'period_kind': 'DAILY_AGGREGATE', 'period': day}
-        records.append(_record(source, 'farside:' + day + ':total', _number(row[-1]), scope,
-            (start, end), ' | '.join(row), '/html/table/row/' + str(index) + '/Total'))
+    for table in parser.tables:
+        headers = None
+        for index, row, simple in table:
+            names = [cell.upper() for cell in row]
+            if 'DATE' in names or 'TOTAL' in names:
+                # The provider also uses an empty first date-column heading.
+                if names and names[0] == '': names[0] = 'DATE'
+                headers = names if (simple and 'DATE' in names and len(set(names)) == len(names)
+                    and all(re.fullmatch(r'[A-Z][A-Z0-9.\-]*', name) for name in names)
+                    and any(name not in ('DATE', 'TOTAL') for name in names)) else None
+                continue
+            if headers is None or not simple or len(row) != len(headers): continue
+            cells = dict(zip(headers, row))
+            try: day = datetime.strptime(cells['DATE'], '%d %b %Y').date().isoformat()
+            except ValueError: continue
+            start = day + 'T00:00:00Z'; end = day + 'T23:59:59Z'
+            if not instant(source['start']) <= instant(start) <= instant(end) <= instant(source['end']): continue
+            constituents = {name: _number(value) for name, value in cells.items() if name not in ('DATE', 'TOTAL')}
+            missing_columns = sorted(_FARSIDE_FUNDS - constituents.keys())
+            if 'TOTAL' not in cells: missing_columns.append('Total')
+            missing_values = sorted(name for name, value in constituents.items() if value is None)
+            total = _number(cells['TOTAL']) if 'TOTAL' in cells else None
+            if 'TOTAL' in cells and total is None: missing_values.append('Total')
+            # Never reconstruct an absent total or turn a reported subtotal
+            # into a full-universe fact. Inconsistent totals remain unknown.
+            matches = (sum((Decimal(value) for value in constituents.values()), Decimal(0)) == Decimal(total)
+                       if not missing_columns and not missing_values else None)
+            complete = matches is True
+            scope = {'subject': 'BTC', 'product': 'US_SPOT_ETF', 'universe': 'FARSIDE_TRACKED',
+                     'measure': 'NET_FUND_FLOW', 'unit': 'USD_MILLION', 'period_kind': 'DAILY_AGGREGATE', 'period': day}
+            record = _record(source, 'farside:' + day + ':total', total if complete else None, scope,
+                (start, end), ' | '.join(row), '/html/table/row/' + str(index) + '/Total')
+            record['coverage'] = {'status': 'COMPLETE' if complete else 'INCOMPLETE',
+                'constituents': constituents, 'missing_columns': missing_columns, 'missing_values': missing_values,
+                'reported_total': total, 'total_matches_constituents': matches}
+            records.append(record)
     return records
 
 

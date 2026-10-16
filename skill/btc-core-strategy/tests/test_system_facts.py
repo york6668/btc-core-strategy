@@ -199,8 +199,160 @@ class SourceFactsTests(unittest.TestCase):
         self.assertEqual(values[0]['scope']['maturity'], '10YEAR')
         self.assertEqual(values[0]['scope']['unit'], 'ANNUAL_PERCENT')
 
+    @staticmethod
+    def farside_html(values=None, columns=None):
+        # Generated synthetic rows; these are not captured market evidence.
+        from html import escape
+        funds = 'IBIT FBTC BITB ARKB BTCO EZBC BRRR HODL BTCW MSBT GBTC BTC'.split()
+        cells = dict.fromkeys(funds, '0.0')
+        cells.update(Date='02 Jan 2024', IBIT='120.0', FBTC='10.0', Total='130.0')
+        cells.update(values or {})
+        columns = columns if columns is not None else ['Date', *funds, 'Total']
+        return ('<title>Bitcoin ETF Flow (US$m)</title><table><tr>' +
+                ''.join('<th>' + escape(name) + '</th>' for name in columns) + '</tr><tr>' +
+                ''.join('<td>' + escape(cells[name]) + '</td>' for name in columns) + '</tr></table>').encode()
+
+    def flow_fixture(self, values=None, columns=None):
+        old, current, review = self.fixture()
+        self.source('flow', 'https://farside.co.uk/btc/',
+                    observations.document_transport(self.farside_html(values, columns)))
+        later = self.refs('flow')[0]; record = self.resolved(later)
+        scoped = deepcopy(record['scope'])
+        old = deepcopy(old)
+        old.update(id='synthetic-farside-total', scope=deepcopy(scoped), observation_relations=[])
+        old['expectations'][0]['scope'] = deepcopy(scoped)
+        market = {'markets': [{'horizons': [{'forward': {'lifecycle': {'claim': old}}}]}]}
+        owner = self.root / 'farside-freeze.json'; create(owner, {'created_at': T0, 'market_assessment': market})
+        with mock.patch('v4.forward_lifecycle.now', return_value=T0): life.register(self.root, market, owner, '/created_at')
+        current = deepcopy(old); current.update(id='farside-next', formed_at=T2, data_cutoff=T2)
+        review['prior_claim_hash'] = digest(old)
+        review['samples'][0].update(ref=later, scope=deepcopy(scoped))
+        review['outcomes'][0].update(verdict='SUPPORTED', supported_scope=deepcopy(scoped))
+        return old, current, review, record
+
+    def test_farside_missing_ibit_cannot_grant_complete_prior_support(self):
+        old, current, review, value = self.flow_fixture({'IBIT': '-'})
+        self.assertIsNone(value['value'])
+        self.assertEqual(value['coverage']['status'], 'INCOMPLETE')
+        self.assertEqual(value['coverage']['reported_total'], '130.0')
+        self.assertEqual(value['coverage']['missing_values'], ['IBIT'])
+        self.assertIsNone(value['coverage']['constituents']['IBIT'])
+        with self.assertRaisesRegex(Invalid, 'unavailable'): self.verify(old, current, review)
+        review['outcomes'][0].update(verdict='UNKNOWN', supported_scope={})
+        result = self.verify(old, current, review)
+        self.assertFalse(result['complete_prior_support'])
+        self.assertEqual(result['component_support'], [])
+        self.assertEqual(result['verification'][0]['verdict'], 'UNKNOWN')
+
+    def test_farside_explicit_zero_is_known_and_can_support_full_scope(self):
+        old, current, review, value = self.flow_fixture({'IBIT': '0.0', 'FBTC': '130.0'})
+        self.assertEqual(value['value'], '130.0')
+        self.assertEqual(value['coverage']['status'], 'COMPLETE')
+        self.assertEqual(value['coverage']['constituents']['IBIT'], '0.0')
+        self.assertTrue(self.verify(old, current, review)['complete_prior_support'])
+
+    def test_farside_all_zero_is_numeric_not_missing(self):
+        raw = observations.document_transport(self.farside_html({'IBIT': '0.0', 'FBTC': '0.0', 'Total': '0.0'}))
+        self.source('flow', 'https://farside.co.uk/btc/', raw)
+        ref = self.refs('flow')[0]; value = self.resolved(ref)
+        self.assertEqual(value['value'], '0.0')
+        self.assertEqual(value['coverage']['status'], 'COMPLETE')
+        self.assertNotIn('/value', evidence.forward_resolver(self.bundle, self.directory).fact(ref, None)['field_errors'])
+
+    def test_farside_missing_or_nonfinite_cells_are_not_zero(self):
+        for index, token in enumerate(('', '-', '—', 'N/A', 'NaN', 'Infinity')):
+            with self.subTest(token=token):
+                identity = 'flow-' + str(index)
+                self.source(identity, 'https://farside.co.uk/btc/',
+                    observations.document_transport(self.farside_html({'IBIT': token})))
+                ref = self.refs(identity)[0]; value = self.resolved(ref)
+                self.assertIsNone(value['value'])
+                self.assertIsNone(value['coverage']['constituents']['IBIT'])
+                self.assertIn('/value', evidence.forward_resolver(self.bundle, self.directory).fact(ref, None)['field_errors'])
+
+    def test_farside_missing_named_columns_cannot_create_a_complete_total(self):
+        funds = 'IBIT FBTC BITB ARKB BTCO EZBC BRRR HODL BTCW MSBT GBTC BTC'.split()
+        for missing in funds:
+            with self.subTest(column=missing):
+                columns = ['Date', *(fund for fund in funds if fund != missing), 'Total']
+                self.source(missing, 'https://farside.co.uk/btc/',
+                    observations.document_transport(self.farside_html(columns=columns)))
+                value = self.resolved(self.refs(missing)[0])
+                self.assertIsNone(value['value'])
+                self.assertIn(missing, value['coverage']['missing_columns'])
+
+    def test_farside_reordered_columns_keep_msbt_and_btcw_identity(self):
+        columns = 'Total BTC MSBT Date FBTC GBTC BTCW HODL BRRR EZBC BTCO ARKB BITB IBIT'.split()
+        self.source('flow', 'https://farside.co.uk/btc/', observations.document_transport(
+            self.farside_html({'IBIT': '0.0', 'FBTC': '123.3', 'MSBT': '6.7'}, columns)))
+        value = self.resolved(self.refs('flow')[0])
+        self.assertEqual(value['value'], '130.0')
+        self.assertEqual(value['coverage']['constituents']['BTCW'], '0.0')
+        self.assertEqual(value['coverage']['constituents']['MSBT'], '6.7')
+
+    def test_farside_new_named_fund_participates_in_completeness(self):
+        columns = 'Date ADDED IBIT FBTC BITB ARKB BTCO EZBC BRRR HODL BTCW MSBT GBTC BTC Total'.split()
+        for identity, added, expected in [('known', '7.0', '137.0'), ('missing', '-', None)]:
+            self.source(identity, 'https://farside.co.uk/btc/', observations.document_transport(
+                self.farside_html({'ADDED': added, 'Total': '137.0'}, columns)))
+            value = self.resolved(self.refs(identity)[0])
+            self.assertEqual(value['value'], expected)
+            self.assertIn('ADDED', value['coverage']['constituents'])
+            self.assertEqual(value['coverage']['missing_values'], [] if expected else ['ADDED'])
+
+    def test_farside_missing_or_inconsistent_total_is_never_reconstructed(self):
+        cases = [('missing', {'Total': '-'}, None), ('inconsistent', {'Total': '129.0'}, None),
+                 ('column', {}, 'Date IBIT FBTC BITB ARKB BTCO EZBC BRRR HODL BTCW MSBT GBTC BTC'.split())]
+        for identity, values, columns in cases:
+            self.source(identity, 'https://farside.co.uk/btc/',
+                observations.document_transport(self.farside_html(values, columns)))
+            value = self.resolved(self.refs(identity)[0])
+            self.assertIsNone(value['value'])
+            self.assertEqual(value['coverage']['status'], 'INCOMPLETE')
+
+    def test_farside_ambiguous_or_absent_headers_and_ragged_rows_grant_no_fact(self):
+        good = self.farside_html()
+        cases = [good.replace(b'<th>IBIT</th>', b'<th>FBTC</th>'),
+                 good.replace(b'<th>Date</th>', b'<th>Unidentified</th>'),
+                 good.replace(b'<td>120.0</td>', b''),
+                 good.replace(b'<td>120.0</td>', b'<td colspan="2">120.0</td>'),
+                 good.replace(b'<th>IBIT</th>', b'<th rowspan="2">IBIT</th>'),
+                 b'<title>Bitcoin ETF Flow (US$m)</title><table><tr><td>02 Jan 2024</td><td>130.0</td></tr></table>']
+        for index, payload in enumerate(cases):
+            identity = 'bad-' + str(index)
+            self.source(identity, 'https://farside.co.uk/btc/', observations.document_transport(payload))
+            self.assertEqual(self.refs(identity), [])
+
+    def test_farside_blank_date_header_retains_named_fund_mapping(self):
+        payload = self.farside_html().replace(b'<th>Date</th>', b'<th></th>')
+        self.source('flow', 'https://farside.co.uk/btc/', observations.document_transport(payload))
+        value = self.resolved(self.refs('flow')[0])
+        self.assertEqual(value['value'], '130.0')
+        self.assertEqual(value['coverage']['constituents']['IBIT'], '120.0')
+
+    def test_farside_reported_subtotal_metadata_cannot_bypass_unknown_value(self):
+        old, current, review, value = self.flow_fixture({'IBIT': '-'})
+        old = deepcopy(old); old['id'] = 'synthetic-metadata-is-not-full-flow'
+        for condition in ('support', 'falsification'):
+            old['expectations'][0][condition]['left']['path'] = '/coverage/reported_total'
+        market = {'markets': [{'horizons': [{'forward': {'lifecycle': {'claim': old}}}]}]}
+        owner = self.root / 'metadata-freeze.json'; create(owner, {'created_at': T0, 'market_assessment': market})
+        with mock.patch('v4.forward_lifecycle.now', return_value=T0): life.register(self.root, market, owner, '/created_at')
+        current = deepcopy(old); current.update(id='metadata-next', formed_at=T2, data_cutoff=T2)
+        review['prior_claim_hash'] = digest(old)
+        with self.assertRaisesRegex(Invalid, 'unclassified'): self.verify(old, current, review)
+        review['outcomes'][0].update(verdict='UNKNOWN', supported_scope={})
+        self.assertFalse(self.verify(old, current, review)['complete_prior_support'])
+
+    def test_farside_does_not_borrow_headers_from_another_table(self):
+        good = self.farside_html()
+        marker = good.index(b'</tr>') + len(b'</tr>')
+        payload = good[:marker] + b'</table><table>' + good[marker:]
+        self.source('flow', 'https://farside.co.uk/btc/', observations.document_transport(payload))
+        self.assertEqual(self.refs('flow'), [])
+
     def test_farside_actual_total_keeps_daily_window_and_million_usd(self):
-        html = b'<title>Bitcoin ETF Flow (US$m)</title><table><tr><th>Date</th><th>IBIT</th><th>Total</th></tr><tr><td>02 Jan 2024</td><td>5.0</td><td>(20.5)</td></tr></table>'
+        html = self.farside_html({'IBIT': '(30.5)', 'Total': '(20.5)'})
         self.source('flow', 'https://farside.co.uk/btc/', observations.document_transport(html))
         value = self.resolved(self.refs('flow')[0])
         self.assertEqual(value['value'], '-20.5')
@@ -236,7 +388,7 @@ class SourceFactsTests(unittest.TestCase):
 
     def test_midperiod_formation_cannot_claim_full_daily_flow_as_later_response(self):
         old, current, review = self.fixture()
-        html = b'<title>Bitcoin ETF Flow (US$m)</title><table><tr><th>Date</th><th>Total</th></tr><tr><td>02 Jan 2024</td><td>110</td></tr></table>'
+        html = self.farside_html({'IBIT': '100.0', 'Total': '110.0'})
         self.source('flow', 'https://farside.co.uk/btc/', observations.document_transport(html))
         later = self.refs('flow')[0]; scoped = self.resolved(later)['scope']
         old = deepcopy(old); old.update(id='synthetic-full-day-flow', formed_at='2024-01-02T12:00:00Z', scope=deepcopy(scoped))
