@@ -17,6 +17,52 @@ PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--ans
                 '--retained-source-bindings', '--file', '--read-set', '--receipt', '--runtime-schedule')
 
 
+class NodeTransportError(ValueError):
+    """Safe evidence about this client invocation, never a remote retry decision."""
+
+    def __init__(self, reason, *, operation_id=None, process=None, error=None, stage=None):
+        diagnostic = {'stage': stage or ('PROCESS_START' if error is not None else 'CLIENT_RESPONSE'),
+                      'operation_id': operation_id, 'effect': 'UNKNOWN', 'reason': reason}
+        if error is not None:
+            diagnostic.update(error_type=type(error).__name__, errno=getattr(error, 'errno', None))
+        if process is not None:
+            diagnostic['child_exit_code'] = process.returncode
+            for name in ('stdout', 'stderr'):
+                value = getattr(process, name, '') or ''
+                data = value.encode('utf-8') if isinstance(value, str) else value
+                diagnostic[name + '_bytes'] = len(data)
+                diagnostic[name + '_sha256'] = hashlib.sha256(data).hexdigest()
+            stderr = process.stderr or ''
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode('utf-8', errors='replace')
+            diagnostic['stderr_class'] = (
+                'DOCKER_UNIX_SOCKET_PERMISSION_DIAGNOSTIC'
+                if 'permission denied while trying to connect to the docker API at unix://' in stderr
+                else 'CLIENT_DIAGNOSTIC_PRESENT' if stderr else 'NO_CLIENT_DIAGNOSTIC')
+        self.diagnostic = diagnostic
+        # Do not copy stderr, argv, environment or payload into errors: they may
+        # contain credentials. A CLI permission message is not proof of its cause.
+        super().__init__('node transport outcome unknown: ' + json.dumps(diagnostic, sort_keys=True))
+
+
+def decode_node_response(process, operation_id=None):
+    """Require both a successful client exit and an explicit node success."""
+    try:
+        response = json.loads(process.stdout)
+    except (TypeError, ValueError) as exc:
+        raise NodeTransportError('INVALID_JSON', operation_id=operation_id, process=process) from None
+    if not isinstance(response, dict) or type(response.get('ok')) is not bool:
+        raise NodeTransportError('INVALID_ENVELOPE', operation_id=operation_id, process=process)
+    if response['ok']:
+        if type(process.returncode) is not int or process.returncode != 0:
+            raise NodeTransportError('CLIENT_EXIT_NOT_SUCCESSFUL', operation_id=operation_id, process=process)
+        if 'result' not in response:
+            raise NodeTransportError('MISSING_RESULT', operation_id=operation_id, process=process)
+    # An explicit application rejection remains a rejection even if its CLI
+    # exits nonzero. It cannot become a success or authorize another operation.
+    return response
+
+
 def receipt_path(argv, output):
     if '--run' not in argv or '--stage' not in argv:
         raise ValueError('a stage receipt requires --run and --stage')
@@ -155,12 +201,25 @@ def forward_if_enabled(argv, *, requested_release=None):
     for extra in docker.get('override_files', []):
         command += ['-f', extra]
     command += ['exec', '-T', 'core', 'python', '-m', 'btc_node', 'request']
-    process = subprocess.run(command, input=json.dumps(request), capture_output=True, text=True)
     try:
-        response = json.loads(process.stdout)
-    except ValueError:
-        print('Docker core unavailable. No host fallback. Recovery operation: ' + operation, file=sys.stderr)
-        raise SystemExit(75)
+        try:
+            process = subprocess.run(command, input=json.dumps(request), capture_output=True, text=True)
+        except OSError as exc:
+            raise NodeTransportError('CLIENT_START_FAILED', operation_id=operation, error=exc) from None
+        except UnicodeError as exc:
+            raise NodeTransportError('CLIENT_OUTPUT_DECODE_FAILED', operation_id=operation,
+                                     error=exc, stage='CLIENT_RESPONSE') from None
+        response = decode_node_response(process, operation)
+        if response['ok']:
+            result = response['result']
+            if (not isinstance(result, dict) or type(result.get('returncode')) is not int
+                    or not isinstance(result.get('stdout', ''), str)
+                    or not isinstance(result.get('stderr', ''), str)):
+                raise NodeTransportError('INVALID_CORE_RESULT', operation_id=operation, process=process)
+    except NodeTransportError as exc:
+        print('Docker core unavailable. No host fallback. Recovery operation: ' + operation
+              + '\n' + str(exc), file=sys.stderr)
+        raise SystemExit(75) from None
     if not response.get('ok'):
         print(response.get('message', 'Docker core failed') + '\nRecovery operation: ' + operation, file=sys.stderr)
         raise SystemExit(75)

@@ -72,12 +72,24 @@ class NodeClient:
         request = {'method': method, 'params': params or {}}
         if operation_id:
             request['operation_id'] = operation_id
-        result = subprocess.run(self.command, input=json.dumps(request), text=True,
-                                capture_output=True, timeout=120)
+        from node_bridge import NodeTransportError, decode_node_response
         try:
-            response = json.loads(result.stdout)
-        except ValueError as exc:
-            raise RuntimeError('Docker node response unavailable; inspect original operation') from exc
+            try:
+                result = subprocess.run(self.command, input=json.dumps(request), text=True,
+                                        capture_output=True, timeout=120)
+            except subprocess.TimeoutExpired as exc:
+                raise NodeTransportError('CLIENT_WAIT_TIMEOUT', operation_id=operation_id,
+                                         error=exc, stage='CLIENT_WAIT') from None
+            except OSError as exc:
+                raise NodeTransportError('CLIENT_START_FAILED', operation_id=operation_id, error=exc) from None
+            except UnicodeError as exc:
+                raise NodeTransportError('CLIENT_OUTPUT_DECODE_FAILED', operation_id=operation_id,
+                                         error=exc, stage='CLIENT_RESPONSE') from None
+            response = decode_node_response(result, operation_id)
+        except NodeTransportError as exc:
+            failure = RuntimeError('Docker node response unavailable; inspect original operation; ' + str(exc))
+            failure.diagnostic = exc.diagnostic
+            raise failure from None
         if not response.get('ok'):
             raise RuntimeError(response.get('message', 'node request failed'))
         return response['result']

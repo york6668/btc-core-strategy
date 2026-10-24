@@ -13,7 +13,9 @@ import uuid
 
 
 class Blocked(RuntimeError):
-    pass
+    def __init__(self, message, *, diagnostic=None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def sha256(path):
@@ -48,12 +50,20 @@ def request(method, params=None, operation_id=None):
     payload = {'method': method, 'params': params}
     if operation_id:
         payload['operation_id'] = operation_id
+    from node_bridge import NodeTransportError, decode_node_response
     try:
-        process = subprocess.run(command, input=json.dumps(payload), text=True,
-                                 capture_output=True, check=False)
-        response = json.loads(process.stdout)
-    except (OSError, ValueError, KeyError) as exc:
-        raise Blocked('shared BTC node response unknown; inspect original operation') from exc
+        try:
+            process = subprocess.run(command, input=json.dumps(payload), text=True,
+                                     capture_output=True, check=False)
+        except OSError as exc:
+            raise NodeTransportError('CLIENT_START_FAILED', operation_id=operation_id, error=exc) from None
+        except UnicodeError as exc:
+            raise NodeTransportError('CLIENT_OUTPUT_DECODE_FAILED', operation_id=operation_id,
+                                     error=exc, stage='CLIENT_RESPONSE') from None
+        response = decode_node_response(process, operation_id)
+    except NodeTransportError as exc:
+        raise Blocked('shared BTC node response unknown; inspect original operation; ' + str(exc),
+                      diagnostic=exc.diagnostic) from None
     if not response.get('ok'):
         raise Blocked(response.get('message') or 'shared BTC node rejected operation')
     return response['result']
@@ -170,7 +180,10 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except (Blocked, OSError, ValueError, KeyError) as exc:
-        print(json.dumps({'blocked': type(exc).__name__, 'reason': str(exc)}, ensure_ascii=False), file=sys.stderr)
+        failure = {'blocked': type(exc).__name__, 'reason': str(exc)}
+        if getattr(exc, 'diagnostic', None) is not None:
+            failure['diagnostic'] = exc.diagnostic
+        print(json.dumps(failure, ensure_ascii=False), file=sys.stderr)
         return 2
 
 

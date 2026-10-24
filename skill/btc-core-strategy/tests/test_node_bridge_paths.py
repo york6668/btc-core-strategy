@@ -25,7 +25,7 @@ class NativePaths(unittest.TestCase):
                  'binary':'SYNTHETIC_DOCKER','project':'SYNTHETIC_PROJECT','env_file':str(root/'env'),
                  'compose_file':str(root/'compose')}}
             timing={'schema':'BTC_EXECUTION_WINDOW_V1','status':'UNAVAILABLE','run_ref':'SYNTHETIC_RUN'}
-            response=SimpleNamespace(stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}'}}))
+            response=SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}'}}))
             with mock.patch('node_config.load',return_value=cfg), mock.patch.object(node_bridge,'sync_facts'), \
                  mock.patch('runtime_schedule.snapshot',return_value=timing) as lookup, \
                  mock.patch.object(node_bridge.subprocess,'run',return_value=response) as execute, \
@@ -68,7 +68,7 @@ class NativePaths(unittest.TestCase):
             cfg={'project_dir':folder,'docker_service':{'enabled':True,'fact_bridge_dir':str(root/'facts'),
                  'binary':'SYNTHETIC_DOCKER','project':'SYNTHETIC_PROJECT','env_file':str(root/'env'),
                  'compose_file':str(root/'compose')}}
-            response=SimpleNamespace(stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}'}}))
+            response=SimpleNamespace(returncode=0,stderr='',stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}'}}))
             args=['--project',folder,'--root',folder,'delivery','--identity','SYNTHETIC_DELIVERY',
                   '--action','CONFIRM','--receipt',str(receipt)]
             with mock.patch('node_config.load',return_value=cfg), mock.patch.object(node_bridge,'sync_facts'), \

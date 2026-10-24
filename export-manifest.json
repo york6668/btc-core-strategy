@@ -159,6 +159,7 @@
     "skill/btc-core-strategy/tests/test_mobile_report.py",
     "skill/btc-core-strategy/tests/test_multi_asset_pipeline.py",
     "skill/btc-core-strategy/tests/test_node_bridge_paths.py",
+    "skill/btc-core-strategy/tests/test_node_transport_diagnostics.py",
     "skill/btc-core-strategy/tests/test_pattern_integration.py",
     "skill/btc-core-strategy/tests/test_portfolio_risk.py",
     "skill/btc-core-strategy/tests/test_primary_thesis_continuity.py",
