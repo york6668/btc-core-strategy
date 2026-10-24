@@ -238,7 +238,7 @@ class CycleWorkflowTests(unittest.TestCase):
         basis = cycle.baseline(self.f.store, value['assessment'])
         self.assertEqual(basis['result_id'], saved['result_id'])
         self.assertFalse((self.f.store / 'deep-current.json').exists())
-        self.assertEqual(value['assessment']['provenance']['model'], 'gpt-5.6-sol')
+        self.assertEqual(value['assessment']['provenance']['model'], 'gpt-6.1-sol')
         with self.assertRaisesRegex(Invalid, 'actual agent output'):
             research.result(self.f.store, dict(spec, analysis='Forged approval.'))
 

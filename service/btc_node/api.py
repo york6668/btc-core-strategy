@@ -156,6 +156,8 @@ def dispatch(settings, request):
         from .execution import execute
         return execute(settings, request)
     if method == 'core.recover':
+        if 'original_request' in params:
+            return recover_reconciliation(settings, **params)
         from .execution import recover
         return recover(settings, params['operation_id'])
     if method == 'host.capacity':
@@ -199,28 +201,66 @@ def dispatch(settings, request):
             raise ValueError('stable operation_id required for retryable writes')
         request_digest = fingerprint(encode({'method': method, 'params': params}))
         with database.writer(), database.transaction():
-            if (database.metadata('writer') or {}).get('owner') != 'DOCKER':
-                raise Conflict('comparison mode is read only; the Docker writer has not been activated')
-            if database.one("SELECT operation_id FROM operations WHERE status<>'COMMITTED' LIMIT 1"):
-                raise Conflict('recover the interrupted core operation before another business write')
-            prior = database.one('SELECT * FROM operations WHERE operation_id=%s', (operation_id,))
-            if prior:
-                if prior['request_digest'] != request_digest:
-                    raise Conflict('operation_id already used for another request')
-                if prior['status'] != 'COMMITTED':
-                    raise Conflict('operation needs recovery before retry')
-                result = database.value(prior['result_digest'])
-                if method in {'model.deep.claim', 'task.start', 'schedule.claim'}:
-                    # A lost admission response may have preceded a real launch.
-                    # An idempotent replay is never permission to launch again.
-                    return {**result, 'action': 'RECONCILE_EXISTING_NO_LAUNCH'}
-                return result
-            database.put_blob(encode({'method': method, 'params': params}))
-            result = invoke(database, method, params)
-            result_digest = database.put_blob(encode(result))
-            database.execute('INSERT INTO operations(operation_id,request_digest,status,started_ms,finished_ms,'
-                             'result_digest) VALUES(%s,%s,%s,%s,%s,%s)',
-                             (operation_id, request_digest, 'COMMITTED', millis(), millis(), result_digest))
-            return result
+            return _write_operation(database, request)
+    finally:
+        database.close()
+
+
+def _write_operation(database, request):
+    """One writer/transaction owner calls this for the original stable ID."""
+    method, params, operation_id = request['method'], request.get('params', {}), request['operation_id']
+    request_digest = fingerprint(encode({'method': method, 'params': params}))
+    if (database.metadata('writer') or {}).get('owner') != 'DOCKER':
+        raise Conflict('comparison mode is read only; the Docker writer has not been activated')
+    if database.one("SELECT operation_id FROM operations WHERE status<>'COMMITTED' LIMIT 1"):
+        raise Conflict('recover the interrupted core operation before another business write')
+    prior = database.one('SELECT * FROM operations WHERE operation_id=%s', (operation_id,))
+    if prior:
+        if prior['request_digest'] != request_digest:
+            raise Conflict('operation_id already used for another request')
+        if prior['status'] != 'COMMITTED':
+            raise Conflict('operation needs recovery before retry')
+        result = database.value(prior['result_digest'])
+        if method in {'model.deep.claim', 'task.start', 'schedule.claim'}:
+            # A lost admission response may have preceded a real launch.
+            # An idempotent replay is never permission to launch again.
+            return {**result, 'action': 'RECONCILE_EXISTING_NO_LAUNCH'}
+        return result
+    database.put_blob(encode({'method': method, 'params': params}))
+    result = invoke(database, method, params)
+    result_digest = database.put_blob(encode(result))
+    database.execute('INSERT INTO operations(operation_id,request_digest,status,started_ms,finished_ms,'
+                     'result_digest) VALUES(%s,%s,%s,%s,%s,%s)',
+                     (operation_id, request_digest, 'COMMITTED', millis(), millis(), result_digest))
+    return result
+
+
+def recover_reconciliation(settings, *, operation_id, original_request):
+    """Resolve only the saved original node transaction, never an external run.
+
+    Absence alone is not proof that a late request cannot still arrive. Under
+    the same writer barrier, settle using its exact original ID/request; both
+    the delayed original dispatcher and later recovery see that one commit.
+    """
+    if (not isinstance(original_request, dict)
+            or set(original_request) != {'method', 'params', 'operation_id'}
+            or original_request['method'] != 'task.reconcile'
+            or original_request['operation_id'] != operation_id):
+        raise ValueError('exact original task.reconcile request required')
+    params = original_request['params']
+    if (not isinstance(params, dict)
+            or set(params) - {'task_id', 'attempt_id', 'outcome', 'evidence_ref', 'completion_ref'}
+            or not {'task_id', 'attempt_id', 'outcome', 'evidence_ref'} <= set(params)
+            or not isinstance(params['attempt_id'], str)
+            or not isinstance(operation_id, str) or not 0 < len(operation_id) <= 191
+            or operation_id != 'schedule-reconcile-' + params['attempt_id']
+            or params['evidence_ref'] != 'node-worker/' + params['attempt_id'] + '/reconcile-intent.json'):
+        raise ValueError('original attempt and reconciliation intent binding required')
+    database = Database(settings)
+    try:
+        with database.writer(), database.transaction():
+            result = _write_operation(database, original_request)
+            return {'recovery': 'ORIGINAL_NODE_TRANSACTION_RECONCILED',
+                    'operation_id': operation_id, 'result': result}
     finally:
         database.close()

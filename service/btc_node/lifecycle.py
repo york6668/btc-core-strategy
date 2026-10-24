@@ -67,7 +67,7 @@ def protected_documents(db):
     """
     # The graph needs the rows for indexed lookups, but need not first hold a
     # second, buffered copy of the complete MySQL result.
-    by_key = {r['document_key']: r for r in db.iter_rows('SELECT * FROM documents')}
+    by_key = {r['document_key']: r for r in db.iter_rows('SELECT document_key,namespace,path,kind,digest,link_target,byte_length,retention_class FROM documents')}
     by_digest, by_path, by_bundle, namespace_paths = {}, {}, {}, {}
     roots = {}
     for r in by_key.values():
@@ -132,22 +132,24 @@ def protected_documents(db):
                     enqueue((by_path[(row['namespace'], paths[index])],))
                     index += 1
             continue
-        if not row['digest'] or row['digest'] in decoded or not row['path'].endswith('.json') or row['byte_length'] > 32*1024*1024:
+        if not row['digest'] or not row['path'].endswith('.json') or row['byte_length'] > 32*1024*1024:
             continue
-        decoded.add(row['digest'])
+        # Relative references in identical JSON are resolved per namespace.
+        decode_context = (row['digest'], row['namespace'])
+        if decode_context in decoded:
+            continue
+        decoded.add(decode_context)
         try:
             value = db.value(row['digest'])
         except (ValueError, UnicodeError):
             continue
-        strings = []
         def walk(item):
-            if isinstance(item, str): strings.append(item)
+            if isinstance(item, str): yield item
             elif isinstance(item, dict):
-                for v in item.values(): walk(v)
+                for v in item.values(): yield from walk(v)
             elif isinstance(item, list):
-                for v in item: walk(v)
-        walk(value)
-        for item in strings:
+                for v in item: yield from walk(v)
+        for item in walk(value):
             if re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', item):
                 digest = item.removeprefix('sha256:')
                 enqueue(by_digest.get(digest, ()))

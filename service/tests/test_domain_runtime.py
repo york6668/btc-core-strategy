@@ -462,3 +462,175 @@ class DomainRuntime(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class ReferenceGraphRetentionFixture:
+    """Generate an in-memory catalog; SQL text is matched, never executed."""
+    fields = ('document_key', 'namespace', 'path', 'kind', 'digest', 'link_target',
+              'byte_length', 'retention_class')
+
+    @staticmethod
+    def key(n):
+        return format(n, '064x')
+
+    @classmethod
+    def document(cls, n, namespace, path, *, retention='CACHE', digest=None,
+                 kind='FILE', link=None, size=1):
+        return dict(document_key=cls.key(n), namespace=namespace, path=path,
+                    retention_class=retention, digest=digest, kind=kind,
+                    link_target=link, byte_length=size, source_mtime_ns=1,
+                    recorded_ms=1, expires_ms=0)
+
+    def __init__(self, documents, values=None, *, dependencies=(), requests=(),
+                 strict_projection=False):
+        self.documents, self.values = documents, values or {}
+        self.dependencies, self.requests = dependencies, requests
+        self.strict_projection = strict_projection
+        self.value_calls, self.queries = [], []
+
+    def iter_rows(self, query):
+        projected = 'SELECT ' + ','.join(self.fields) + ' FROM documents'
+        assert query == projected or (not self.strict_projection and query == 'SELECT * FROM documents')
+        self.queries.append(query)
+        for row in self.documents:
+            yield {k: row[k] for k in self.fields} if query == projected else dict(row)
+
+    def rows(self, query, *params):
+        if query == "SELECT DISTINCT target_key FROM dependencies WHERE target_type='BLOB'":
+            return [dict(target_key=v) for v in self.dependencies]
+        if query == "SELECT request_digest FROM operations WHERE status<>'COMMITTED'":
+            return [dict(request_digest=v) for v in self.requests]
+        assert query.startswith('SELECT * FROM documents d WHERE expires_ms<=')
+        assert params == ((1,),)
+        return [dict(r) for r in self.documents if r['retention_class'] == 'CACHE']
+
+    def metadata(self, name):
+        assert name.startswith('namespace:')
+        return dict(root='/synthetic/' + name.split(':', 1)[1])
+
+    def value(self, digest):
+        self.value_calls.append(digest)
+        value = self.values[digest]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+class ReferenceGraphRetentionTests(unittest.TestCase):
+    """Exercise only the real graph function and read-only expiry predicates."""
+    @classmethod
+    def setUpClass(cls):
+        import ast
+        from bisect import bisect_left
+        import re
+        source = getattr(cls, 'source_override', None)
+        cls.graph_path = Path(source) if source else Path(__file__).resolve().parents[1] / 'btc_node/lifecycle.py'
+        cls.tree = ast.parse(cls.graph_path.read_bytes())
+        node = next(n for n in cls.tree.body if isinstance(n, ast.FunctionDef) and n.name == 'protected_documents')
+        env = dict(Path=Path, os=os, re=re, bisect_left=bisect_left)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(cls.graph_path), 'exec'), env)
+        cls.graph = staticmethod(env['protected_documents'])
+
+    def fixture(self, *, aliases=1, beta_root=True):
+        f = ReferenceGraphRetentionFixture
+        digest = f.key(901)
+        docs = []
+        for n, namespace in enumerate(('alpha', 'beta')):
+            for i in range(aliases):
+                docs.append(f.document(1 + n*100 + i, namespace, 'root-%d.json' % i,
+                                       retention='KEY' if n == 0 or beta_root else 'CACHE', digest=digest))
+            docs.append(f.document(90 + n*100, namespace, 'target.bin'))
+        return docs, {digest: ['target.bin']}
+
+    def test_same_digest_relative_targets_survive_all_catalog_orders(self):
+        import itertools
+        docs, values = self.fixture()
+        expected = {r['document_key'] for r in docs}
+        for ordered in itertools.permutations(docs):
+            with self.subTest(order=tuple(r['document_key'] for r in ordered)):
+                self.assertEqual(self.graph(ReferenceGraphRetentionFixture(ordered, values)), expected)
+
+    def test_same_namespace_aliases_decode_once(self):
+        for aliases in (1, 3, 8):
+            docs, values = self.fixture(aliases=aliases)
+            db = ReferenceGraphRetentionFixture(docs, values)
+            self.assertEqual(self.graph(db), {r['document_key'] for r in docs})
+            self.assertEqual(len(db.value_calls), 2)
+
+    def test_unreached_namespace_does_not_expand(self):
+        docs, values = self.fixture(beta_root=False)
+        db = ReferenceGraphRetentionFixture(docs, values)
+        self.assertEqual(self.graph(db), {r['document_key'] for r in docs if r['namespace'] == 'alpha'})
+        self.assertEqual(len(db.value_calls), 1)
+
+    def test_non_json_and_oversized_aliases_do_not_suppress_eligible_json(self):
+        f = ReferenceGraphRetentionFixture
+        docs, values = self.fixture()
+        extras = [f.document(300, 'alpha', 'not-json.bin', retention='KEY', digest=f.key(901)),
+                  f.document(301, 'beta', 'too-large.json', retention='KEY', digest=f.key(901), size=32*1024*1024+1)]
+        for rows in (docs + extras, extras + docs):
+            db = f(rows, values)
+            self.assertEqual(self.graph(db), {r['document_key'] for r in rows})
+            self.assertEqual(len(db.value_calls), 2)
+
+    def test_relative_cycles_are_bounded_in_each_namespace(self):
+        f = ReferenceGraphRetentionFixture
+        docs = []
+        for i, namespace in enumerate(('alpha', 'beta')):
+            docs.extend([f.document(1+i*10, namespace, 'root.json', retention='KEY', digest=f.key(901)),
+                         f.document(2+i*10, namespace, 'next.json', digest=f.key(902))])
+        db = f(docs, {f.key(901): ['next.json'], f.key(902): ['root.json']})
+        self.assertEqual(self.graph(db), {r['document_key'] for r in docs})
+        self.assertEqual(len(db.value_calls), 4)
+
+    def test_dependency_request_and_link_roots_preserved(self):
+        f = ReferenceGraphRetentionFixture
+        docs = [f.document(1, 'alpha', 'blob.bin', digest=f.key(901)),
+                f.document(2, 'beta', 'pending.bin'),
+                f.document(3, 'alpha', 'alias', retention='KEY', kind='LINK', link='dir'),
+                f.document(4, 'alpha', 'dir/nested.bin')]
+        db = f(docs, {f.key(902): {'path': '/synthetic/beta/pending.bin'}},
+               dependencies=(f.key(901),), requests=(f.key(902),))
+        self.assertEqual(self.graph(db), {r['document_key'] for r in docs})
+
+    def test_projected_catalog_needs_only_eight_graph_fields(self):
+        docs, values = self.fixture()
+        db = ReferenceGraphRetentionFixture(docs, values, strict_projection=True)
+        self.assertEqual(self.graph(db), {r['document_key'] for r in docs})
+        self.assertEqual(len(db.queries), 1)
+
+    def test_peer_queue_dedup_remains_catalog_bounded(self):
+        f = ReferenceGraphRetentionFixture
+        docs = [f.document(1, 'alpha', 'root.json', retention='KEY', digest=f.key(901))]
+        docs += [f.document(n, 'alpha', 'alias-%d.bin' % n, digest=f.key(902)) for n in range(2, 52)]
+        db = f(docs, {f.key(901): [f.key(902)]*20})
+        peak = [0]
+        def trace(frame, event, arg):
+            if frame.f_code is self.graph.__code__ and event == 'line':
+                peak[0] = max(peak[0], len(frame.f_locals.get('pending', ())))
+            return trace
+        previous = sys.gettrace()
+        try:
+            sys.settrace(trace)
+            protected = self.graph(db)
+        finally:
+            sys.settrace(previous)
+        self.assertEqual(protected, {r['document_key'] for r in docs})
+        self.assertLessEqual(peak[0], len(docs))
+
+    def test_real_read_only_expiry_predicates_keep_both_namespace_targets(self):
+        import ast
+        from copy import deepcopy
+        maintain = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == '_maintain')
+        transaction = next(n for n in maintain.body if isinstance(n, ast.With))
+        start = next(i for i, n in enumerate(transaction.body) if isinstance(n, ast.Assign)
+                     and isinstance(n.targets[0], ast.Name) and n.targets[0].id == 'protected')
+        selected = transaction.body[start:start+3]
+        self.assertEqual([n.targets[0].id for n in selected], ['protected', 'expired', 'expired'])
+        wrapper = ast.parse('def read_only_expiry(db, now_ms):\n    pass\n').body[0]
+        wrapper.body = deepcopy(selected) + [ast.Return(value=ast.Name(id='expired', ctx=ast.Load()))]
+        module = ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[]))
+        env = dict(protected_documents=self.graph)
+        exec(compile(module, 'read-only-expiry-selection', 'exec'), env)
+        docs, values = self.fixture()
+        self.assertEqual(env['read_only_expiry'](ReferenceGraphRetentionFixture(docs, values), 1), [])

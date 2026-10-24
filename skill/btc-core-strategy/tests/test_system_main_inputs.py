@@ -88,7 +88,7 @@ class MainCurrentInputTests(unittest.TestCase):
         with mock.patch('v4.storage.current', return_value={'decision_id': 'CONSTRUCTED_UNIT_OWNER', 'assessment': prior}), \
              mock.patch('v4.sensing.context', return_value={'context_id': 'CONSTRUCTED_UNIT_CONTEXT'}):
             draft, _ = main_flow.assemble(self.base/'store', project, components, directory, self.raw,
-                {'role':'MAIN','model':'gpt-5.6-sol','effort':'high','agent_id':'CONSTRUCTED_UNIT_AGENT','run_ref':'CONSTRUCTED_UNIT_RUN'},
+                {'role':'MAIN','model':'gpt-6.1-sol','effort':'high','agent_id':'CONSTRUCTED_UNIT_AGENT','run_ref':'CONSTRUCTED_UNIT_RUN'},
                 {'checks':dict.fromkeys(main_flow.CHECKS.split(), 'Constructed mechanical finding'), 'unresolved_issues':[], 'material_new_outlook':False}, workflow_revision=9)
         self.assertEqual(cycle.candidate(draft)['assessment']['temporal_scope']['current_market_refs'], [self.ref])
 

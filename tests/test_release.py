@@ -237,7 +237,7 @@ class ReleaseTests(unittest.TestCase):
         sent=[]
         def capture(command,**kwargs):
             sent.append(json.loads(kwargs['input']))
-            return SimpleNamespace(stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}','stderr':''}}))
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({'ok':True,'result':{'returncode':0,'stdout':'{}','stderr':''}}), stderr='')
         with patch.dict(sys.modules,{'node_config':SimpleNamespace(load=lambda:config)}),patch('subprocess.run',side_effect=capture):
             with self.assertRaises(SystemExit) as ended:
                 bridge.forward_if_enabled(['--template',str(template),'--answers',str(answers)],requested_release=self.source)

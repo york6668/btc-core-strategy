@@ -39,6 +39,18 @@ reader 检查点按原附件接收时间增量投影已验证的历史序列；�
 
 ## 生命周期与验收
 
+公开嗅探和研究输入的 `prospective_feedback.research_projection` 是原 claim/freezes 的只读派生元数据，格式为 `BTC_RESEARCH_PROJECTION_V1`。它保留原预测 hash、首次登记、原期限、来源/条件摘要及实际冻结内的复核结果；已有 claim 与注册不重写。`as_of` 使用本轮真实知识截止，未来登记/未来复核不进入视图；复核的作者时间不能替代其冻结持久时间。同一旧 claim 的新增复核沿现有 DecisionSnapshot 或 sensing observation 的身份、内容 hash、公开评估及持久时间绑定，`source_owner` 只接收这两种原身份，不接受任意文件路径。无法绑定时明确 `REVIEW_PERSISTENCE_UNVERIFIED`，不补造前瞻证明；未提供后续 Owner 时不凭输入中的成功标签授予记录。日期型预测只允许原期限内的实际字段观测提供支持，期限后取得的旧期内观测仍按真实发生/获知时间判断。
+
+原失败不能因下一轮省略 reviews 而消失。校验按本轮相关原 claim hash，从原首次登记冻结，以及已有 versions、sensing、research 的内容身份绑定记录中读取当时已持久化的 FORWARD_OBSERVATION 失败；后续同 claim 的复核不要求再登记一次 claim。旧记录不修改，不新建索引或数据库；已保存失败只撤销对应原组件的支持资格，不凭历史标签生成成功授予，也不要求把旧原料复制进当前证据包。失败原预测不能重新成为成功的原预测或该失败组件的已验证前提。新版本、明确 FACT_CORRECTION、独立新事实及风险响应仍按原规则校验；未失败组件可在真实支持范围内授予。若直接前提已失败，prior_check 必须实际 FAILED 或 REVISE，不能通过遗漏复核将其变成 REALIZED。
+
+实际冻结按原生产者读取：run_flow 的 payload.market_assessment 与 result_hash、research 的 market_result.outlook.market_assessment、Decision 的 assessment.outlook.market_assessment、sensing 的 review.market_assessment 使用同一读取边界。每次原 register 调用都将实际冻结原字节追加到既有 freezes，包括原 claim 不变的后续复核；首次 claims 登记及原Owner不改。run工作目录清理后仍可从该原归档恢复，不扫描任意工作目录。保留迁移 assessment=null、旧版混合正文及没有 lifecycle 的旧字段为未评估/事后历史，不补造前瞻；未知、歧义、损坏或缺少原持久时钟的公开冻结明确报缺口，不能默认为没有失败。升级前已持久化的原生版本、观察与研究结果仍按原身份读取；未归档且已不在可核清单内的旧外部run不能凭空发现，真实节点采用前必须核原完整历史与恢复集合，离线通过不证明这项完整性。
+
+脱敏投影也从同一原Owner读取所选预测的已保存失败，保留其 review_hash、原持久时间和失败Owner摘要，并按同一复核去重；不因新输入省略而只展示成功。损坏或无法读取的历史明确 HISTORY_PERSISTENCE_UNVERIFIED；校验不能在该缺口下重新授予相关前提。失败证据的持久时间晚于查询截止时不提前进入历史视图；独立、未关联的新研究不消费该缺口。
+
+该元数据只包含固定枚举、时间、数量及摘要身份，不复制自由叙述、原始报告、账户、节点路径或原始来源标识。`recorded_reviews` 只表示原记录内容，`RECORDED_NOT_REVERIFIED` 不证明本次重新核验市场事实；方向、归因与时间仍由原 claim/REVIEW 证据逐项解释。旧未注册记录保持 `POSTHOC_ONLY`，无本轮截止的到期状态为 `UNKNOWN`。
+
+仅这个子对象适合作为后续最小脱敏读取契约的输入；完整 `prospective_feedback` 和其他上下文仍是本地内部资料。此实现不发布数据、不提供跨端连接器或读写权限、不替换原历史/数据库。`external_read_verified=false` 必须保留；只有真实 ChatGPT 宿主通过已授权且受支持的只读入口读到同一记录后，才能在独立验收中说明该实际读取。未完成时保持 UNKNOWN，不改变原定时研究或发送任务。
+
 证据新鲜度、判断适用期、建议有效期、存储保留期各自独立。缓存/导出 24 小时；已完成运行 7 天；已关闭故障 14 天；普通原文及细于小时观测 30 天；小时序列 400 天；日线、正式决策、重要变化、结果复核、事实版本、最终报告和确认长期保留。活动对象和未决任务的必要证据受引用保护，回收有 48 小时缓冲。普通过程材料须先确认用途结束；未回踩长期锚不按年龄删除。
 
 切换后 `acceptance.start` 从下一个日本完整自然日开始计七日。每日 `acceptance.window` 提取上一完整日的实际输入、状态变化和消费结果，由模型逐项审查后 `acceptance.record`；缺陷登记 `acceptance.defect` 并重验受影响窗口。没有自然发生的场景写 REPLAY_ONLY、实际回放证据与 natural_gap；没有实际 observe 的日不能通过运行链项。七天到期、容器健康及测试通过都不自动关闭验收。GitHub、本机、云端发布、全新云端任务及自然运行分别确认。

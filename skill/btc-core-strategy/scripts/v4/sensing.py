@@ -268,7 +268,10 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         from . import market_state
         from .forward_lifecycle import public_feedback
         basis = market_state.effective(root, core, (pinned or {}).get('decision_id'))
-        value['prospective_feedback'] = public_feedback(root, basis.get('market_assessment'))
+        value['prospective_feedback'] = public_feedback(root, basis.get('market_assessment'),
+            as_of=current_market['cutoff'], source_owner={
+                'kind': 'OBSERVATION' if basis['observation_id'] else 'DECISION',
+                'id': basis['observation_id'] or basis['decision_id']})
     value['due_event_reviews'] = [event['event_id'] for event in ((value['event_cycle'] or {}).get('cycle') or {}).get('events', [])
                                   if event_cutoff and instant(event_cutoff) < instant(event['due_at']) <= instant(current_market['cutoff'])]
     # This is an observation of conditions, never a maintained/withdrawn conclusion.

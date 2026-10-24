@@ -147,6 +147,8 @@ def relation_result(relation,samples,floor,evaluated_at,claim):
         clock=fact.get('field_times',{}).get(field)
         if field not in fact.get('field_scopes',{}) or clock is None:return None
         if not floor<instant(clock)<=instant(evaluated_at):return None
+        end = claim['scale']['end']
+        if end is not None and instant(clock) > instant(end):return None
         start=fact.get('field_period_starts',{}).get(field)
         if start is not None and instant(start)<floor:return None
         owners=[part for part in claim['expectations'] if (operand['sample'],field) in
@@ -227,32 +229,114 @@ def registration(root, identity):
     return value
 
 
+def _public_freeze(value, kind=None, time_pointer=None):
+    """Decode the existing producers' public fields, never arbitrary nested input.
+
+    Archives have no new schema/tag: identify their original envelope. Native
+    stores supply their owning kind so research decision backlinks or request
+    input cannot masquerade as another producer. Legacy mixed prose has no
+    public market result; an unrecognized archived envelope is an error.
+    """
+    require(isinstance(value, dict), 'invalid public freeze envelope')
+    if kind is None:
+        shapes = [name for name, present in (
+            ('RUN', 'payload' in value or 'result_hash' in value),
+            ('RESEARCH', 'market_result' in value),
+            ('DECISION', 'assessment' in value and 'decision_id' in value),
+            ('OBSERVATION', 'review' in value and 'observation_id' in value),
+            ('GENERIC', 'market_assessment' in value)) if present]
+        require(len(shapes) == 1, 'unknown or ambiguous public freeze envelope')
+        kind = shapes[0]
+    if kind == 'RUN':
+        exact(value, 'payload result_hash market_context_id' +
+              (' lifecycle_frozen_at' if 'lifecycle_frozen_at' in value else ''), 'frozen public market result')
+        require(isinstance(value['payload'], dict) and value['result_hash'] == digest(value['payload']),
+                'frozen public result hash changed')
+        market = value['payload']['market_assessment']; field = '/lifecycle_frozen_at'
+    elif kind == 'RESEARCH':
+        # Request/spec/candidate input is not a completed public result.
+        if value.get('market_result') is None:
+            return None, None, None
+        result = value['market_result']
+        require(isinstance(result, dict) and isinstance(result.get('outlook'), dict), 'invalid public research result')
+        market = result['outlook']['market_assessment']; field = '/lifecycle_frozen_at'
+    elif kind == 'DECISION':
+        assessment = value['assessment']
+        if assessment is None: return None, None, None  # migration.seed: explicitly unassessed.
+        require(isinstance(assessment, dict), 'invalid public decision assessment')
+        outlook = assessment.get('outlook') or {}
+        require(isinstance(outlook, dict), 'invalid public decision outlook')
+        if 'market_assessment' not in outlook and assessment.get('revision', 1) < 5:
+            return None, None, None
+        market = outlook['market_assessment']; field = '/created_at'
+    elif kind == 'OBSERVATION':
+        review = value['review']
+        require(isinstance(review, dict), 'invalid public observation review')
+        revision = value.get('revision', (value.get('context') or {}).get('revision', 1))
+        if 'market_assessment' not in review and revision < 5:
+            return None, None, None
+        market = review['market_assessment']; field = '/created_at'
+    else:
+        require(kind == 'GENERIC', 'unknown public freeze producer')
+        market = value['market_assessment']
+        clocks = [key for key in ('/created_at', '/lifecycle_frozen_at') if key[1:] in value]
+        require(len(clocks) == 1, 'generic public freeze needs its original unambiguous clock')
+        field = clocks[0]
+    require(time_pointer is None or time_pointer == field, 'public freeze clock differs from its original producer')
+    lives = list(_public_lifecycles(market))
+    if field[1:] not in value:
+        require(not lives, 'missing original freeze clock remains posthoc')
+        return market, None, field
+    stamp = pointer(value, field); instant(stamp)
+    return market, stamp, field
+
+
+def _public_lifecycles(market):
+    require(isinstance(market, dict) and isinstance(market.get('markets'), list), 'invalid public market history shape')
+    for row in market['markets']:
+        require(isinstance(row, dict) and isinstance(row.get('horizons'), list), 'invalid public horizon history shape')
+        for horizon in row['horizons']:
+            require(isinstance(horizon, dict), 'invalid public horizon history')
+            forward = horizon.get('forward')
+            if forward is None: continue  # Actual revision5 history has no forward contract.
+            require(isinstance(forward, dict), 'invalid public forward history')
+            life = forward.get('lifecycle')
+            if life is None: continue  # Actual revision6..8 history remains posthoc.
+            require(isinstance(life, dict) and isinstance(life.get('claim'), dict) and
+                    isinstance(life.get('reviews', []), list), 'invalid public lifecycle history')
+            yield life
+
+
 def register(root, market_assessment, owner_path=None, time_pointer=None):
-    """Only a first real public freeze/completion registers conditions; no replay upgrade."""
-    for market in (market_assessment or {}).get('markets', []):
-        for horizon in market.get('horizons', []):
-            life = (horizon.get('forward') or {}).get('lifecycle')
-            if not life: continue
-            c = life['claim']; identity = digest(c)
-            if registration(root, identity) is not None: continue
-            require(owner_path is not None and time_pointer is not None, 'first registration requires the actual immutable public freeze owner')
-            path = Path(owner_path).resolve(); require(path.is_file(), 'public freeze must exist before registration')
-            body = path.read_bytes(); original = read(path); clock = pointer(original, time_pointer)
-            require(instant(clock)>=instant(c['formed_at']),'first registration predates claim formation')
-            # Archive the original freeze bytes, without altering its content,
-            # identity or clock. Run folders may be temporary; root restores
-            # retain this proof alongside its index and existing state.
-            archive = Path(root) / 'market-lifecycle' / 'freezes' / (digest(body)[7:] + '.json')
-            if archive.exists(): require(archive.read_bytes() == body, 'public freeze archive collision')
-            else: create(archive, body)
-            path = archive.resolve()
-            require(instant(clock) <= instant(now()), 'public freeze clock is in the future')
-            try: location = str(path.relative_to(Path(root).resolve()))
-            except ValueError: location = str(path)
-            record = {'claim_hash': identity, 'registered_at': clock, 'claim': deepcopy(c),
-                      'owner': {'path':location, 'hash':digest(path.read_bytes()), 'time_pointer':time_pointer}}
-            create(Path(root) / 'market-lifecycle' / 'claims' / (identity[7:] + '.json'), record)
-            registration(root, identity)
+    """Keep first claim identity and every actual public freeze in the same archive."""
+    if market_assessment is None: return
+    lives = list(_public_lifecycles(market_assessment))
+    if not lives: return
+    records = {digest(life['claim']): registration(root, digest(life['claim'])) for life in lives}
+    if owner_path is None or time_pointer is None:
+        require(all(records.values()), 'first registration requires the actual immutable public freeze owner')
+        return  # An ownerless lookup of existing registrations is not a new freeze.
+    path = Path(owner_path).resolve(); require(path.is_file(), 'public freeze must exist before registration')
+    body = path.read_bytes(); original = read(path)
+    selected, clock, field = _public_freeze(original, time_pointer=time_pointer)
+    require(selected == market_assessment, 'public freeze does not own the registered public assessment')
+    require(clock is not None and instant(clock) <= instant(now()), 'public freeze clock is in the future')
+    require(all(instant(clock) >= instant(life['claim']['formed_at']) for life in lives),
+            'first registration predates claim formation')
+    # Run work directories can be external/temporary and a later review need
+    # not create a new claim. Retain each actual original freeze byte-for-byte
+    # in the already existing store; never rewrite its first registration.
+    archive = Path(root) / 'market-lifecycle' / 'freezes' / (digest(body)[7:] + '.json')
+    if archive.exists(): require(archive.read_bytes() == body, 'public freeze archive collision')
+    else: create(archive, body)
+    location = str(archive.relative_to(Path(root)))
+    for life in lives:
+        c = life['claim']; identity = digest(c)
+        if records[identity] is not None: continue
+        record = {'claim_hash': identity, 'registered_at': clock, 'claim': deepcopy(c),
+                  'owner': {'path': location, 'hash': digest(body), 'time_pointer': field}}
+        create(Path(root) / 'market-lifecycle' / 'claims' / (identity[7:] + '.json'), record)
+        records[identity] = registration(root, identity)
 
 
 
@@ -275,6 +359,94 @@ def carried_nonprospective(review, previous, root, old_hash):
     return owns_history(original)
 
 
+def persisted_failures(root, identities, as_of):
+    """Read related recorded failures from existing immutable public owners.
+
+    A stored verdict can inhibit a grant, never establish a new one. Old raw
+    samples need not be present in this round's evidence bundle. No index or
+    state is written; first registrations and later same-claim owners remain
+    authoritative. Missing/corrupt history must not silently become support.
+    """
+    if root is None or as_of is None:
+        return []
+    root = Path(root)
+    # Invalid/nonprospective dependency identities remain the original
+    # dependency validator's responsibility; they cannot be history targets.
+    targets = {identity: registration(root, identity) for identity in identities
+               if isinstance(identity, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', identity)}
+    targets = {identity: record for identity, record in targets.items() if record is not None}
+    if not targets:
+        return []
+    cutoff = instant(as_of); found = {}
+
+    def collect(market, stamp, owner_hash):
+        if market is None or stamp is None or instant(stamp) > cutoff:
+            return
+        for item in _public_lifecycles(market):
+            for review in item.get('reviews', []):
+                require(isinstance(review, dict), 'invalid recorded predecessor review')
+                target = targets.get(review.get('prior_claim_hash'))
+                if target is None or review.get('kind') != 'FORWARD_OBSERVATION':
+                    continue
+                require(isinstance(review.get('outcomes'), list) and
+                        all(isinstance(v, dict) for v in review['outcomes']), 'invalid recorded mechanism outcomes')
+                failed = [v for v in review['outcomes'] if v.get('verdict') == 'FALSIFIED']
+                if not failed:
+                    continue
+                owner_claim = registration(root, digest(item['claim']))
+                require(owner_claim is not None and instant(owner_claim['registered_at']) <= instant(stamp),
+                        'recorded failure owner lacks its original claim registration')
+                exact(review, 'prior_claim_hash kind evaluated_at samples outcomes', 'recorded predecessor review')
+                require(instant(target['registered_at']) < instant(review['evaluated_at']) <= instant(stamp),
+                        'recorded failure has no valid persisted knowledge clock')
+                parts = {p['id'] for p in target['claim']['expectations']}
+                require(all(v['expectation_id'] in parts and not v['supported_scope'] for v in failed),
+                        'recorded failure does not identify an original mechanism')
+                key = (review['prior_claim_hash'], digest(review))
+                record = {'review': deepcopy(review), 'recorded_at': stamp,
+                          'recorded_in': owner_hash, 'owner_claim_hash': digest(item['claim'])}
+                if key not in found or instant(stamp) < instant(found[key]['recorded_at']):
+                    found[key] = record
+
+    # Verify first-registration proofs, then consume every completed freeze in
+    # that same existing archive, including later reviews of unchanged claims.
+    for path in sorted((root / 'market-lifecycle' / 'claims').glob('*.json')):
+        registration(root, 'sha256:' + path.stem)
+    for path in sorted((root / 'market-lifecycle' / 'freezes').glob('*.json')):
+        require(re.fullmatch(r'[a-f0-9]{64}', path.stem) is not None and
+                path.resolve().parent == (root / 'market-lifecycle/freezes').resolve(),
+                'invalid original public freeze archive identity')
+        body = path.read_bytes(); owner_hash = 'sha256:' + path.stem
+        require(digest(body) == owner_hash, 'public freeze archive changed')
+        market, stamp, _ = _public_freeze(read(path))
+        require(market is not None and any(_public_lifecycles(market)),
+                'original public freeze has no recognized lifecycle owner')
+        collect(market, stamp, owner_hash)
+
+    # Later reviews need not register a new claim. Read their existing owners,
+    # checking the same canonical identities as the original store readers.
+    stores = [('versions', '*/decision.json', 'decision_id')]
+    stores += [('sensing', '*.json', 'observation_id')]
+    stores += [('research/' + kind, '*.json', key) for kind, key in
+               (('requests', 'request_id'), ('independent', 'independent_id'),
+                ('candidates', 'candidate_id'), ('results', 'result_id'))]
+    for directory, pattern, key in stores:
+        for path in sorted((root / directory).glob(pattern)):
+            identity = path.parent.name if key == 'decision_id' else path.stem
+            if re.fullmatch(r'[a-f0-9]{64}', identity) is None:
+                continue  # Original .staging generations are not published owners.
+            require(path.resolve().is_relative_to(root.resolve()), 'review owner escapes original store')
+            value = read(path)
+            expected = identity if key == 'decision_id' else 'sha256:' + identity
+            actual_hash = digest({k: v for k, v in value.items() if k != key})
+            require(value[key] == expected and actual_hash == 'sha256:' + identity,
+                    'persisted review owner content changed')
+            kind = 'DECISION' if key == 'decision_id' else 'OBSERVATION' if key == 'observation_id' else 'RESEARCH'
+            market, stamp, _ = _public_freeze(value, kind)
+            collect(market, stamp, digest(path.read_bytes()))
+    return [found[key] for key in sorted(found)]
+
+
 def validate(value, cutoff, resolve, prior=None, fact_view=None, root=None):
     exact(value, 'claim reviews dependencies', 'forward lifecycle')
     current = value['claim']; claim(current, cutoff, resolve)
@@ -287,7 +459,17 @@ def validate(value, cutoff, resolve, prior=None, fact_view=None, root=None):
     else:
         require(instant(current['data_cutoff']) == instant(cutoff), 'new expectation must bind its own current frozen inputs')
     require(isinstance(value['reviews'], list) and isinstance(value['dependencies'], list), 'claim review and dependency lists required')
+    identities = {digest(current)} | ({old_hash} if old_hash else set())
+    identities.update(r['prior_claim_hash'] for r in value['reviews'] if r.get('prior_claim_hash'))
+    identities.update(d['claim_hash'] for d in value['dependencies'])
+    history = persisted_failures(root, identities, cutoff if unchanged else current['formed_at'])
     grants = {}; results = []; completed_reviews = []; falsified_claims = set(); falsified_components = set(); relation_checks = []
+    for record in history:
+        review = record['review']
+        for outcome in review['outcomes']:
+            if outcome['verdict'] == 'FALSIFIED':
+                falsified_claims.add(review['prior_claim_hash'])
+                falsified_components.add((review['prior_claim_hash'], outcome['expectation_id']))
     for review in value['reviews']:
         exact(review, 'prior_claim_hash kind evaluated_at samples outcomes', 'specific predecessor review')
         require(review['kind'] in REVIEW_KINDS, 'unknown verification method')
@@ -365,6 +547,8 @@ def validate(value, cutoff, resolve, prior=None, fact_view=None, root=None):
                 clock = fact.get('field_times', {}).get(field)
                 if clock is None or not floor < instant(clock) <= instant(review['evaluated_at']):
                     error = error or 'original test field predates formation or lacks its own later observation clock'
+                elif target_claim['scale']['end'] is not None and instant(clock) > instant(target_claim['scale']['end']):
+                    error = error or 'observation is after the original forecast deadline'
                 if error:
                     component_errors[(role,field)] = error
                     component_samples[role]['unavailable_fields'].add(field)
@@ -442,13 +626,19 @@ def validate(value, cutoff, resolve, prior=None, fact_view=None, root=None):
             'validated derivation must cite actual supported mechanisms; corrections and independent facts remain independent')
     require(digest(current) not in falsified_claims, 'falsified original claim must be withdrawn or replaced by a corrected claim')
     return {'claim_hash': digest(current), 'verification': results, 'granted_dependencies': len(value['dependencies']),
+            'persisted_falsifications': [{'claim_hash': item['review']['prior_claim_hash'],
+                'review_hash': digest(item['review']), 'recorded_in': item['recorded_in'],
+                'recorded_at': item['recorded_at'],
+                'expectation_ids': [v['expectation_id'] for v in item['review']['outcomes'] if v['verdict'] == 'FALSIFIED']}
+                for item in history],
             'observation_relation_checks':relation_checks,'dependency_support':dependency_support,
             'component_support':[{'claim_hash':key[0],'expectation_id':key[1],'review_hash':key[2],**deepcopy(grant)} for key,grant in grants.items()],
             'falsified_prior': old_hash is not None and old_hash in falsified_claims,
-            'complete_prior_support': old_hash is not None and bool(completed_reviews) and all(completed_reviews)}
+            'complete_prior_support': old_hash is not None and old_hash not in falsified_claims and
+                                      bool(completed_reviews) and all(completed_reviews)}
 
 
-def public_feedback(root, market_assessment):
+def public_feedback(root, market_assessment, *, as_of=None, source_owner=None):
     claims = []
     for market in (market_assessment or {}).get('markets', []):
         for horizon in market.get('horizons', []):
@@ -464,4 +654,166 @@ def public_feedback(root, market_assessment):
                 'prior_reviews': deepcopy(life['reviews']), 'history_is_not_external_fact': True,
                 'observation_relation_status':'DECLARED' if 'observation_relations' in c else 'LEGACY_VALUE_ONLY_NO_COMPLETE_SUPPORT'})
     return {'claims': claims, 'ledger_is_not_market_verification': True,
+            'research_projection': research_projection(root, market_assessment,
+                as_of=as_of, source_owner=source_owner),
             'new_fact_research_corrections_and_risk_response_allowed': True}
+
+
+def research_projection(root, market_assessment, *, as_of=None, source_owner=None):
+    """A derived, read-only metadata view of the original public claim lineage.
+
+    No narrative, local path, raw source identifier or personal field is copied.
+    Digests let an authorized node reader resolve the original evidence; they do
+    not certify the stored verdict or an external reader's access. This view is
+    never another owner, registry, transport or write interface.
+    """
+    def clock(value):
+        return instant(value).isoformat().replace('+00:00', 'Z') if value is not None else None
+
+    cutoff = instant(as_of) if as_of is not None else None
+    records, originals, gaps = {}, {}, {'REFERENCE_DIGESTS_ONLY'}
+    subjects = {'BTC', 'QQQ', 'VOO', 'SPX', 'NDX'}
+
+    # A later review of an unchanged claim belongs to its original immutable
+    # decision/observation, not to a new claim registry or an authored clock.
+    bound_owner = None
+    if source_owner is not None:
+        try:
+            exact(source_owner, 'kind id', 'public projection owner')
+            identity = source_owner['id']
+            if source_owner['kind'] == 'DECISION':
+                require(isinstance(identity, str) and re.fullmatch(r'[a-f0-9]{64}', identity),
+                        'invalid decision identity')
+                path = Path(root) / 'versions' / identity / 'decision.json'
+                require(path.resolve().is_relative_to(Path(root).resolve()), 'owner escapes original store')
+                value = read(path)
+                require(value['decision_id'] == identity == digest(
+                    {k: v for k, v in value.items() if k != 'decision_id'})[7:],
+                    'decision content changed')
+                selected, stamp, _ = _public_freeze(value, 'DECISION')
+            else:
+                require(source_owner['kind'] == 'OBSERVATION' and isinstance(identity, str)
+                        and re.fullmatch(r'sha256:[a-f0-9]{64}', identity),
+                        'invalid observation identity')
+                from .sensing import observation
+                path = Path(root) / 'sensing' / (identity[7:] + '.json')
+                require(path.resolve().is_relative_to(Path(root).resolve()), 'owner escapes original store')
+                value = observation(root, identity)
+                selected, stamp, _ = _public_freeze(value, 'OBSERVATION')
+            require(selected == market_assessment, 'owner does not contain the selected public assessment')
+            bound_owner = (selected, stamp, digest(path.read_bytes()))
+            instant(bound_owner[1])
+        except (OSError, ValueError, KeyError, TypeError):
+            gaps.add('REVIEW_PERSISTENCE_UNVERIFIED')
+
+    def add(identity, claim=None):
+        if identity in records:
+            return records[identity]
+        original = registration(root, identity)
+        if original and cutoff is not None and instant(original['registered_at']) > cutoff:
+            gaps.add('RECORD_NOT_KNOWN_AT_AS_OF')
+            return None
+        if original is not None:
+            claim = original['claim']
+            originals[identity] = original
+        if claim is None:
+            gaps.add('MISSING_PREDECESSOR_REGISTRATION')
+            return None
+        registered = original is not None
+        end = claim['scale']['end'] if registered else None
+        named = claim.get('scope', {}).get('subject', [])
+        named = [named] if isinstance(named, str) else named
+        safe_subjects = sorted({name for name in named if name in subjects})
+        if not safe_subjects or len(safe_subjects) != len(set(named)):
+            safe_subjects = ['UNKNOWN']
+        row = {'forecast_id': identity, 'subjects': safe_subjects,
+               'scope_ref': digest(claim['scope']),
+               'registration_status': 'REGISTERED' if registered else 'POSTHOC_ONLY',
+               'formed_at': clock(claim['formed_at']) if registered else None,
+               'data_cutoff': clock(claim['data_cutoff']) if registered else None,
+               'first_registration': clock(original['registered_at']) if registered else None,
+               'thesis_version': original['owner']['hash'] if registered else None,
+               'horizon_end': clock(end),
+               'due_status': ('UNKNOWN' if not registered or cutoff is None else
+                              'PROCESS' if end is None else
+                              'DUE' if cutoff >= instant(end) else 'NOT_DUE'),
+               'source_refs': [digest(ref) for ref in claim['basis_refs']],
+               'expectations': [{'expectation_ref': digest(part['id']),
+                                 'support_ref': digest(part['support']),
+                                 'falsification_ref': digest(part['falsification'])}
+                                for part in claim['expectations']],
+               'recorded_reviews': [], 'verification_basis': 'RECORDED_NOT_REVERIFIED'}
+        records[identity] = row
+        return row
+
+    def contains(value, expected):
+        if isinstance(value, dict):
+            return value == expected or any(contains(item, expected) for item in value.values())
+        return isinstance(value, list) and any(contains(item, expected) for item in value)
+
+    reviews = {}
+
+    def record_review(review, stamp, owner_hash):
+        identity = review.get('prior_claim_hash')
+        if not isinstance(identity, str) or re.fullmatch(r'sha256:[a-f0-9]{64}', identity) is None:
+            gaps.add('MISSING_PREDECESSOR_REGISTRATION')
+            return
+        row = add(identity)
+        if row is None:
+            return
+        review_hash = digest(review)
+        item = {'review_hash': review_hash, 'recorded_in': owner_hash,
+                'recorded_at': clock(stamp),
+                'kind': review['kind'] if review['kind'] in REVIEW_KINDS else 'UNKNOWN',
+                'evaluated_at': clock(review['evaluated_at']),
+                'outcomes': [{'expectation_ref': digest(item['expectation_id']),
+                              'verdict': item['verdict'] if item['verdict'] in VERDICTS else 'UNKNOWN'}
+                             for item in review['outcomes']]}
+        prior = reviews.get((identity, review_hash))
+        if prior is None or instant(item['recorded_at']) < instant(prior['recorded_at']):
+            reviews[(identity, review_hash)] = item
+
+    for market in (market_assessment or {}).get('markets', []):
+        for horizon in market.get('horizons', []):
+            life = (horizon.get('forward') or {}).get('lifecycle')
+            if not life:
+                gaps.add('LEGACY_POSTHOC_ONLY')
+                continue
+            current_id = digest(life['claim'])
+            current = add(current_id, life['claim'])
+            original = originals.get(current_id) if current is not None else None
+            owner = bound_owner
+            if source_owner is None and original is not None:
+                try:
+                    selected, stamp, _ = _public_freeze(read(Path(root) / original['owner']['path']),
+                                                       time_pointer=original['owner']['time_pointer'])
+                    owner = (selected, stamp, original['owner']['hash'])
+                except (OSError, ValueError, KeyError, TypeError):
+                    gaps.add('HISTORY_PERSISTENCE_UNVERIFIED')
+            for review in life['reviews']:
+                # An unspecified knowledge cutoff never grants a review scope.
+                if cutoff is None or instant(review['evaluated_at']) > cutoff:
+                    gaps.add('REVIEW_NOT_KNOWN_AT_AS_OF')
+                    continue
+                # evaluated_at is authored. Only its actual immutable owner
+                # supplies the persisted knowledge clock. An unsealed later
+                # review of the same claim cannot be backdated into this view.
+                if (owner is None or cutoff < instant(owner[1]) or
+                        not contains(owner[0], review) or
+                        instant(review['evaluated_at']) > instant(owner[1])):
+                    gaps.add('REVIEW_PERSISTENCE_UNVERIFIED')
+                    continue
+                record_review(review, owner[1], owner[2])
+    # Omission from a later input cannot remove an earlier recorded failure.
+    # Only related originals and their actual failure owners enter this view.
+    try:
+        for item in persisted_failures(root, set(records), as_of):
+            record_review(item['review'], item['recorded_at'], item['recorded_in'])
+            add(item['owner_claim_hash'])
+    except (OSError, ValueError, KeyError, TypeError):
+        gaps.add('HISTORY_PERSISTENCE_UNVERIFIED')
+    for (identity, _), review in sorted(reviews.items()):
+        records[identity]['recorded_reviews'].append(review)
+    return {'schema': 'BTC_RESEARCH_PROJECTION_V1', 'as_of': clock(as_of),
+            'records': [records[key] for key in sorted(records)],
+            'gaps': sorted(gaps), 'external_read_verified': False}

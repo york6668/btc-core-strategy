@@ -31,7 +31,7 @@ CONTEXT_SCHEMA = 'BTC_MARKET_CONTEXT_V1'
 PATTERN_KINDS = {'ABSORPTION', 'POSSIBLE_DISTRIBUTION', 'ACTIVE_SELLING', 'DELEVERAGING', 'LEVERAGED_RISE_OR_SHORT_COVER'}
 STAGES = {'UNRESOLVED', 'FORMING', 'ACCUMULATING', 'STRENGTHENING', 'WEAKENING', 'REVERSED', 'FALSIFIED'}
 CONFIDENCES = {'UNRESOLVED', 'LOW', 'MEDIUM', 'HIGH'}
-CURRENT_HOURLY_MODEL = {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'}
+CURRENT_HOURLY_MODEL = {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}
 # Historical bindings remain readable, including the original isolated comparisons.
 MODELS = {('gpt-6.1-sol', 'high'), ('gpt-6-sol', 'high'), ('gpt-5.6-sol', 'high'), ('gpt-5.6-sol', 'medium'), ('gpt-5.6-terra', 'high')}
 ISSUES = {'OUTSIDE_REQUESTED_WINDOW', 'UNCLOSED_OR_FUTURE', 'INVALID_SAMPLE', 'DUPLICATE_SAMPLE', 'CONFLICTING_DUPLICATE', 'SOURCE_UNAVAILABLE'}

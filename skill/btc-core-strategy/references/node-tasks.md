@@ -28,6 +28,14 @@ reader 批次转成同一 MySQL 事务中的持久 SIGNAL 任务后，调度器�
 
 worker 在领取持久任务之前，还要核对本机 CLI 可执行、项目目录存在、当前物理发布可读取；本地执行器配置缺失时返回 `NODE_RUNTIME_UNAVAILABLE`，保留原 READY 任务及尝试额度。此检查只覆盖静态本机入口，不能证明登录、网络、业务工具或报告传输可用。
 
+每次宿主入口取得原 `flock` 后，先从原 `task.status` 检查 formal 的 RUNNING/UNKNOWN attempt，再检查新领取所需节点窗口和本机执行器；原 release 已变化、节点没有新窗口或 CLI 不可用，都不免除消费原结果的责任。读取仅限本适配器原私有 attempt 目录，不搜索原生会话存储。原 claim 的问题、阶段、输入、证据、release 与 started_ms 必须逐一相等；原生事件须属于原调用的唯一 thread 和同一唯一 turn，按 thread.started→turn.started→turn.completed 顺序且结束后无新轮，显式 thread/turn ID 一致；缺开始、结束后新启动、交错轮次及 error/turn.failed 均不能完成。CLI未提供服务端turn ID时保留None与有序单轮的证据边界，不编造真实ID；最后结果须标识同一 task/attempt。随后调用原 `task.reconcile`，仍由原领域校验实际业务原件，不能从 JSON 自述或模型 final 签业务完成。已成功核清的一次入口不再领取新模型，下一次才按原准入继续。
+
+新 attempt 在实际调用前先持久写入 revision2 claim 与 launch-intent，并 fsync 文件和父目录。只有本适配器锁已取得、revision2 claim 存在、launch-intent 与任何执行产物都不存在，才可记录明确未执行；旧 claim 缺 launch-intent、进程退出、超时或时间经过均不能推出未执行。已经花费的研究名额不退还。原生结果/持久效果仍未知则保留原 attempt，不启动替代模型；不影响无依赖的源码、取证和独立工作。
+
+核清变更也先按原 attempt 以固定 `reconcile-intent.json` O_EXCL 写证据及固定 operation_id，再调用原节点；任何旧版 `reconcile-*.json` 意图也阻止自动重发。晚到事件或证据字节变化不生成第二个提交身份；响应丢失时下一入口只读原 task 状态，不能重新提交同一核清。仍未核清时使用保存的原完整请求调用原 `core.recover`，在同一 writer/operation 日志中核清；完整原请求缺失或旧版 journal 状态不明时保留待明确核清，不重放外部动作。该持久文件仅绑定原节点日志，不是另一套任务库。当前实现与隔离通过不证明原宿主接口可用、节点接管已采用或真实跨轮唤醒。
+
+业务验收仍围绕同一原投资问题：按机制确定非日内主周期与适用方法，实际读取原结论、未决事项和新增事实；首次冻结与正式采用沿原 run_flow/forward_lifecycle/DecisionSnapshot，后续真实事实只在其实际支持范围形成后继，证伪以关联新版本修正并保留旧失败。不能把支持偏空的事实写作偏空的失效条件；此语义由原作者与领域独验核对，程序结构与测试数量不能代审。一次退出后的真实节点唤醒、后继接收和原报告消费须各有实际回执；旧客户端时钟只是迁移前事实，不能作为目标能力的最终依赖。
+
 macOS `config/local.btc.node-scheduler.plist.example` 只是宿主适配器的一种唤醒候选，不是必选实现或合并条件。若选它，安装位置仅限该用户的 `~/Library/LaunchAgents`、域 `gui/<uid>`；当前 Docker Desktop 与 CLI 在用户会话中，退出登录时该入口不会继续执行。LaunchDaemon 不能假定获得用户会话资源；无登录运行须另行核验 Docker 与 CLI 身份，不能借用 root 或新持久凭据。模板默认 `Disabled=true`，一分钟唤醒仅轮询节点已登记的待办；睡眠或重启错过的业务窗口由节点持久任务扫描恢复。`flock` 和 MySQL writer/operation_id 防止并发领取。其他宿主唤醒方式也必须服从同一节点窗口与任务准入，不创建第二份业务时钟。
 
 现有 `local.btc.host-watchdog` 会周期性打开 ChatGPT 桌面应用，不能把它视作独立模型/报告运输；桌面不可用验收必须在不依赖其重开的受控环境中进行。本源码不会停止该现有监控，也不会把它作为节点任务的调度器。
@@ -41,3 +49,5 @@ macOS `config/local.btc.node-scheduler.plist.example` 只是宿主适配器的�
 现有小时 Codex 自动任务在生产切换前保持原状。先用锁定真实数据做隔离回放，检查无增量跳过、实质信号进入正确阶段、研究问题身份和 blocked/ready 区分、模型预算、市场/组合隔离、前瞻验证、报告语义与身份来源、UNKNOWN 去重、故障锁止、并发与重启恢复、版本回滚和复测隔离。工程通过后仍须验证数据节点在桌面客户端不可用时具备 Sol 调用、所需工具与**原报告目的地的真实原生投递/回读**能力；仅有定时 shell 或 CLI 回答不算完整闭环。不能擅自增加付费 API、凭据或更换报告目的地。
 
 满足以上能力后，在旧运行完成或安全锁止的窗口，通过受支持的入口停用旧 Codex `ACTIVE` 自动任务，读回停用状态，再启用节点唯一正式调度源。保留旧物理版本和状态供回滚；新旧调度不得同时推进正式业务。若投递能力或受支持的停用入口未验证，节点新入口只可 shadow/隔离运行，不能宣称切换完成。
+
+原核清请求现在与固定operation_id一起在reconcile-intent中先持久化。响应未知时，后续入口先读task.status；仍需核清且有完整新意图时，调用原core.recover(original_request=原完整task.reconcile信封)。原服务在同一writer/事务屏障中核原ID及request digest：已COMMITTED只取原结果；没有记录则执行同一原领域核清并原子保存该ID。缺记录不被当作模型未执行；晚到原请求只能读取这一个提交，不能另改业务状态。此分支不执行core.execute、模型、报告、额度退还或另一attempt。旧per-proof、缺完整信封或身份不符的意图保留待原operation明确审阅，不自动猜参恢复。

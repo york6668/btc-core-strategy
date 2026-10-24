@@ -2,6 +2,7 @@
 """Run every core test using synthetic facts and pinned reader test dependencies."""
 from __future__ import annotations
 import argparse
+import fnmatch
 from contextlib import ExitStack
 import json
 import os
@@ -59,7 +60,9 @@ def main():
         subprocess.run([sys.executable, str(ROOT / 'scripts/build_synthetic_fixtures.py'),
                         '--output', str(node / 'fixtures')], check=True)
         sys.path[:0] = [str(skill / 'scripts'), str(skill / 'tests'),
-                        str(reader), str(reader / 'tests')]
+                        str(reader), str(reader / 'tests'),
+                        str(ROOT / 'service'), str(ROOT / 'service/tests')]
+        os.environ['BTC_TEST_SOURCE'] = str(ROOT)
         from build_reader_fixtures import build
         build(node / 'reader-fixtures')
         def deny_network(*args, **kwargs):
@@ -68,6 +71,12 @@ def main():
         suite = unittest.defaultTestLoader.discover(str(skill / 'tests'), pattern=args.pattern)
         packaging = unittest.TestLoader().discover(str(ROOT / 'tests'), pattern=args.pattern)
         suite.addTests(packaging)
+        # The installed worker and its node journal are an explicit offline
+        # part of this release; service's live-DB suites remain separate.
+        for filename in ('test_scheduler.py', 'test_tasks.py', 'test_worker_recovery.py', 'test_operation_recovery_offline.py'):
+            if fnmatch.fnmatch(filename, args.pattern):
+                suite.addTests(unittest.TestLoader().discover(
+                    str(ROOT / 'service/tests'), pattern=filename))
         # Historical contract cases deliberately construct old publications.
         # They exercise their original field/runtime contracts in isolation;
         # current lifecycle entry tests always retain the real revision9 floor.

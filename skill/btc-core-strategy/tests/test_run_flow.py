@@ -275,15 +275,15 @@ class RunFlowTests(unittest.TestCase):
         self.assertFalse(list(self.d.glob('*layout-template.json')))
         saved = sensing.observation(self.f.store, out['observation_id'])
         self.assertEqual(saved['review']['market_review']['model'],
-                         {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'})
+                         {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'})
 
     def test_old_completed_observation_retry_and_native_recovery_keep_provenance(self):
         import market_observation as market
         with mock.patch.object(market, 'CURRENT_HOURLY_MODEL',
-                               {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}):
+                               {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'}):
             out, path = self.observe()
         saved = sensing.observation(self.f.store, out['observation_id'])
-        self.assertEqual(saved['review']['market_review']['model']['name'], 'gpt-6.1-sol')
+        self.assertEqual(saved['review']['market_review']['model']['name'], 'gpt-5.6-sol')
         original = {p: p.read_bytes() for p in (self.f.store / 'sensing').glob('*.json')}
         with mock.patch('v4.run_flow.sensing.record', side_effect=AssertionError('must reuse completed observation')):
             self.assertTrue(run_flow.advance(self.d / 'run.json', 'observe', path)['replayed'])
@@ -296,14 +296,14 @@ class RunFlowTests(unittest.TestCase):
     def test_uncompleted_old_observation_intent_is_rejected_without_relabelling(self):
         import market_observation as market
         with mock.patch.object(market, 'CURRENT_HOURLY_MODEL',
-                               {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}):
+                               {'name': 'gpt-5.6-sol', 'reasoning_effort': 'high'}):
             prepared = self.prep(); path = self.file(self.authored(prepared))
             with mock.patch('v4.run_flow.sensing.record', side_effect=RuntimeError('before observation')):
                 with self.assertRaises(RuntimeError):
                     run_flow.advance(prepared['run'], 'observe', path)
         intent = next(self.d.glob('observe-*-intent.json'))
         original = intent.read_bytes()
-        with self.assertRaisesRegex(Invalid, 'gpt-5.6-sol/high'):
+        with self.assertRaisesRegex(Invalid, 'gpt-6.1-sol/high'):
             run_flow.advance(prepared['run'], 'observe', path)
         self.assertEqual(intent.read_bytes(), original)
         self.assertFalse((self.f.store / 'sensing-current.json').exists())
@@ -362,7 +362,7 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual(before, {str(p): p.read_bytes() for p in self.f.base.rglob('*') if p.is_file()})
         result=run_flow.advance(self.d/'run.json','main',template_path=out['main_template'],answers_path=answers)
         current=storage.current(self.f.store)
-        self.assertEqual(current['assessment']['provenance']['model'], 'gpt-5.6-sol')
+        self.assertEqual(current['assessment']['provenance']['model'], 'gpt-6.1-sol')
         self.assertEqual(current['assessment']['recommendations'],prior['assessment']['recommendations'])
         self.assertEqual(current['assessment']['section_provenance']['outlook']['mode'],'REUSED')
         self.assertIn('report_template',result)
@@ -627,7 +627,7 @@ class ReportStageTests(RunFlowTests):
         out,_=self.observe();p=self.file(self.report_input(out));r=run_flow.advance(self.d/'run.json','report',p)
         self.assertEqual(r['action'],'SILENT');self.assertTrue(run_flow.advance(self.d/'run.json','report',p)['replayed'])
         self.assertFalse((self.f.store/'reported-current.json').exists())
-        self.assertEqual(reporting.review(self.f.store, r['review_id'])['provenance']['model'], 'gpt-5.6-sol')
+        self.assertEqual(reporting.review(self.f.store, r['review_id'])['provenance']['model'], 'gpt-6.1-sol')
 
     def test_report_due_without_new_hour_requires_report_and_freezes_source(self):
         out,_=self.observe();run_flow.advance(self.d/'run.json','report',self.file(self.report_input(out)))

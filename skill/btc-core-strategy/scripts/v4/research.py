@@ -365,7 +365,9 @@ def request(root, project, spec, workflow_revision=None):
             packet['workflow_revision'] = workflow_revision
             if workflow_revision >= 9:
                 from .forward_lifecycle import public_feedback
-                packet['prospective_feedback'] = public_feedback(root, anchor.get('outlook', {}).get('market_assessment'))
+                packet['prospective_feedback'] = public_feedback(root,
+                    anchor.get('outlook', {}).get('market_assessment'), as_of=package['cutoff'],
+                    source_owner={'kind': 'DECISION', 'id': pinned['decision_id']})
             public_instructions = market_state.INSTRUCTIONS
             if workflow_revision >= 6:
                 from .closed_loop import MARKET_INSTRUCTIONS

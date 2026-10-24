@@ -168,11 +168,12 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual('NO_ACTIVE_NODE_SCHEDULE', node_scheduler_worker.run_once(
             {'node_scheduler': {'enabled': True, 'attempt_dir': str(self.root / 'empty-attempts'),
                                 'codex_cli': '/no/cli'}},
-            type('Idle', (), {'request': lambda _, method: scheduler.window(db)})())['action'])
+            type('Idle', (), {'request': lambda _, method: tasks.status(db) if method == 'task.status' else scheduler.window(db)})())['action'])
         scheduler.tick(db)
 
         class Client:
             def request(self, method, params=None, operation_id=None):
+                if method == 'task.status': return tasks.status(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)
@@ -207,6 +208,7 @@ class SchedulerTests(unittest.TestCase):
             def __init__(self): self.calls = []
             def request(self, method, params=None, operation_id=None):
                 self.calls.append(method)
+                if method == 'task.status': return tasks.status(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 raise AssertionError('local preflight must precede ' + method)
         client = Client()
@@ -217,13 +219,13 @@ class SchedulerTests(unittest.TestCase):
         result = node_scheduler_worker.run_once(config, client)
         self.assertEqual({'action': 'NODE_RUNTIME_UNAVAILABLE',
                           'reason': 'CODEX_CLI_UNAVAILABLE'}, result)
-        self.assertEqual(['schedule.window'], client.calls)
+        self.assertEqual(['task.status', 'schedule.window'], client.calls)
         self.assertEqual('READY', tasks.status(db)['tasks'][0]['state'])
         self.assertEqual(0, tasks.status(db)['tasks'][0]['attempts'])
 
     def test_native_session_requires_one_completed_codex_thread(self):
         events=self.root/'events.jsonl'
-        events.write_text('{"type":"thread.started","thread_id":"synthetic-thread-1"}\n')
+        events.write_text('{"type":"thread.started","thread_id":"synthetic-thread-1"}\n{"type":"turn.started"}\n')
         self.assertIsNone(node_scheduler_worker._native_session(events))
         with events.open('a') as output:
             output.write('{"type":"turn.completed"}\n')
@@ -236,6 +238,7 @@ class SchedulerTests(unittest.TestCase):
 
         class Client:
             def request(self, method, params=None, operation_id=None):
+                if method == 'task.status': return tasks.status(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)
@@ -258,6 +261,7 @@ value['observation_id'] = identity
 pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({
     'task_id':task['task_id'], 'attempt_id':task['attempt_id'], 'completion_ref':identity}))
 print(json.dumps({'type':'thread.started','thread_id':'synthetic-thread-1'}))
+print(json.dumps({'type':'turn.started'}))
 print(json.dumps({'type':'turn.completed'}))
 ''')
         cli.chmod(0o700)
@@ -270,7 +274,7 @@ print(json.dumps({'type':'turn.completed'}))
                                      'window_file': str(self.root / 'node-window.json')}}
         result = node_scheduler_worker.run_once(config, Client())
         self.assertEqual('COMPLETED', result['action'])
-        self.assertEqual('gpt-5.6-sol', result['model'])
+        self.assertEqual('gpt-6.1-sol', result['model'])
         trace=json.loads(next(attempts.glob('node-*/result.json')).read_text())
         self.assertEqual('synthetic-thread-1',trace['native_thread_id'])
         self.assertEqual('BTC_NODE_SCHEDULER_V1',
@@ -283,6 +287,7 @@ print(json.dumps({'type':'turn.completed'}))
         scheduler.tick(db)
         class Client:
             def request(self, method, params=None, operation_id=None):
+                if method == 'task.status': return tasks.status(db)
                 if method == 'schedule.window': return scheduler.window(db)
                 if method == 'schedule.claim': return scheduler.claim(db, **params)
                 if method == 'task.finish': return tasks.finish(db, **params)

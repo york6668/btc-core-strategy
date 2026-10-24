@@ -11,7 +11,7 @@ from v4.common import create,read,digest,Invalid
 class MarketReportingTests(unittest.TestCase):
     def test_old_model_cannot_write_new_report_review(self):
         spec = self.spec(action='SILENT')
-        spec['provenance']['model'] = 'gpt-6.1-sol'
+        spec['provenance']['model'] = 'gpt-5.6-sol'
         with self.assertRaisesRegex(Invalid, 'Sol/high'):
             reporting.record(self.root, spec)
         self.assertFalse((self.root / 'report-review-current.json').exists())
@@ -31,7 +31,7 @@ class MarketReportingTests(unittest.TestCase):
         return {'schema':'BTC_REPORT_REVIEW_V1','context_id':self.context(self.root)['context_id'],'action':action,'purposes':['MARKET_SUMMARY'],
                 'reason':'本轮现货修复变化尚未向用户实际展示，值得汇报。','next_observation':'继续观察现货买盘是否持续以及价格能否留存。',
                 'baseline_review':'已对照此前真实展示稿，新解释与观察结果没有重复。','applicability_review':'策略维持有本轮观察证据支持，正文保留方向未知及风险。',
-                'information':{'market':meaning},'provenance':{'role':'MAIN','model':'gpt-5.6-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_MANUAL_RUN'},
+                'information':{'market':meaning},'provenance':{'role':'MAIN','model':'gpt-6.1-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_MANUAL_RUN'},
                 'layout':{'format':'MARKET_CONCISE_V1','overview':'维持现有策略，暂不追加仓位。',
                           'market':'现货最新收盘为{{/metrics/binance_spot_1h/latest/close}}USDT，永续为{{/metrics/binance_futures_1h/latest/close}}USDT。',
                           'explanation':'局部修复仍不足以确认趋势改变。','risk':'方向与资金来源尚未确认，保留风险。','next_observation':'继续观察现货买盘是否持续及有效回测。','include_recommendations':False} if action=='REPORT' else None}
@@ -169,7 +169,7 @@ class RealContextIntegrationTests(unittest.TestCase):
         spec={'schema':'BTC_REPORT_REVIEW_V1','context_id':ctx['context_id'],'action':'SILENT','purposes':[],
               'reason':'本次是合成测试，模型明确记录信息重复而静默。','next_observation':'继续观察独立窗口是否出现新的买盘证据。','baseline_review':'合成历史没有完整展示记录，保持未知且不补造。',
               'applicability_review':'合成观察与当前策略事实及证据完全匹配，未改变策略。','information':{},'layout':None,
-              'provenance':{'role':'MAIN','model':'gpt-5.6-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_CONTEXT_INTEGRATION'}}
+              'provenance':{'role':'MAIN','model':'gpt-6.1-sol','effort':'high','agent_id':'SYNTHETIC_MAIN','run_ref':'SYNTHETIC_CONTEXT_INTEGRATION'}}
         reporting.record(self.f.store,spec)
         self.assertFalse(reporting.review_required(self.f.store))
         self.assertEqual(reporting.context(self.f.store)['previous_silence']['action'],'SILENT')

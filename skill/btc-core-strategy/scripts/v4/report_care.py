@@ -8,7 +8,7 @@ AUTHORING = {
     'significance': 'Maintain the original cycle argument and compare decisive new evidence, mechanism, counterevidence and current participation value with the actual last display. material means an unreported substantive change in this meaning, an important factual correction or actual portfolio danger. Internal REVISE, expiry, data freshness or a short price/risk change does not by itself require notification. Explain why a move is noise or why it weakens/replaces the thesis; do not lock the old thesis or its recognition conditions.',
     'reason': 'maintenance.triggers[i].reason must explain which existing judgment the condition would change and why. At least 12 stripped characters is only an input floor, not proof of meaningful analysis; do not pad or repeat text.',
     'continuity': 'Retain unchanged trigger explanations; checked still requires fresh actual evidence for every prior condition. UNKNOWN is not NOT_MET.',
-    'timing': 'Read report_care.execution_window. Select a meaningful review deadline no earlier than the verified next execution plus observed execution allowance. This feasibility floor is not an automatic new deadline or an extension of research/advice validity. Preserve missed deadlines and assess their actual impact.'}
+    'timing': 'Read report_care.execution_window. Select a meaningful review deadline no earlier than the verified next execution plus observed execution allowance. This feasibility floor is not an automatic new deadline or an extension of research/advice validity. UNAVAILABLE/NOT_OBSERVED is diagnostic only: do not claim an automatic execution or completion guarantee. A justified business review deadline is still required, and missing market observations, approvals or provenance are not supplied by timing metadata. Preserve missed deadlines and assess their actual impact.'}
 
 
 def timing_evidence(ctx, reviewed_at):
@@ -133,7 +133,7 @@ def validate(root,spec,ctx):
             require(all(ref.startswith(PUBLIC + ('/market_result/', '/applicability/market/')) for ref in t['refs']), 'private account condition cannot be a market trigger')
     current_time=ctx['evaluated_at'];require(instant(m['recheck_at'])>instant(current_time),'next review must be in the future')
     window=(ctx.get('report_care') or {}).get('execution_window') or {}
-    if window.get('automation_id'):
+    if window.get('automation_id') or window.get('status') == 'AVAILABLE':
         require(window.get('run_ref')==spec['provenance']['run_ref'],'execution window belongs to another run; refresh native timing')
         require(window.get('status')=='AVAILABLE','next execution is unverified: '+window.get('reason','refresh native timing'))
         age=(instant(current_time)-instant(window['checked_at'])).total_seconds()
