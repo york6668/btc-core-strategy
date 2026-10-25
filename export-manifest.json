@@ -194,7 +194,8 @@
     "skill/btc-core-strategy/tests/test_system_main_inputs.py",
     "skill/btc-core-strategy/tests/test_market_window_arithmetic.py",
     "skill/btc-core-strategy/tests/test_model_daily.py",
-    "skill/btc-core-strategy/tests/test_model_guard_registration.py"
+    "skill/btc-core-strategy/tests/test_model_guard_registration.py",
+    "skill/btc-core-strategy/tests/test_local_research_output_contract.py"
   ],
   "content_contract": {
     "read_revisions": [
