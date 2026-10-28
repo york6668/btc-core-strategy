@@ -64,7 +64,9 @@ def validate_outlook(outlook, revision, resolve, cutoff=None, prior_market=None,
         scenario(alternative)
     if revision >= 9:
         scenarios = [outlook['semantic']['baseline']] + outlook['semantic']['alternatives']
-        dated = all(h['forward']['lifecycle']['claim']['scale']['end_ref'] is not None
+        # Valid persisted legacy forwards have no registration and cannot
+        # supply calendar evidence for a newly authored outlook.
+        dated = all('lifecycle' in h['forward'] and h['forward']['lifecycle']['claim']['scale']['end_ref'] is not None
                     for m in outlook['market_assessment']['markets'] for h in m['horizons'])
         require(dated or all(s['horizon']['unit'] == 'PROCESS' for s in scenarios),
                 'new outlook cannot mechanically inherit long calendar forecasts')

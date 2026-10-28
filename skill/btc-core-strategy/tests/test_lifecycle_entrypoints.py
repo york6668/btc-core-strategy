@@ -50,6 +50,32 @@ class EntryTests(unittest.TestCase):
         with mock.patch('v4.forward_lifecycle.now',return_value=T2), self.assertRaisesRegex(Invalid,'support label'):
             research._public_result(self.root,req,json.dumps(bad),directory)
 
+    def test_research_legacy_review_needs_no_registration_and_cannot_supply_calendar_proof(self):
+        directory,package=self.package()
+        registrations=list((self.root/'market-lifecycle/claims').glob('*.json'))
+        for mixed in (False,True):
+            with self.subTest(mixed=mixed):
+                result=self.result();market=result['outlook']['market_assessment']
+                horizons=[h for m in market['markets'] for h in m['horizons']]
+                for h in horizons[:1] if mixed else horizons:
+                    h['forward'].pop('lifecycle')
+                    h['forward']['prior_check']['outcome']='EVIDENCE_LIMITED'
+                prior=deepcopy(market)
+                for m in prior['markets']:
+                    m['horizons']=[h for h in m['horizons'] if 'lifecycle' not in h['forward']]
+                packet='legacy-packet-'+str(mixed)+'.json'
+                create(self.root/packet,{'historical_hypotheses':{'historical_anchor':{
+                    'outlook':{'market_assessment':prior}}}})
+                req={'workflow_revision':9,'evidence_id':package['evidence_id'],'independent_input_path':packet}
+                with mock.patch('v4.forward_lifecycle.now',return_value=T2):
+                    accepted=research._public_result(self.root,req,json.dumps(result),directory)
+                    self.assertEqual(accepted['market_result'],result)
+                    calendar=deepcopy(result)
+                    calendar['outlook']['semantic']['baseline']['horizon']={'unit':'DAYS','minimum':1,'maximum':2}
+                    with self.assertRaisesRegex(Invalid,'cannot mechanically inherit long calendar forecasts'):
+                        research._public_result(self.root,req,json.dumps(calendar),directory)
+        self.assertEqual(list((self.root/'market-lifecycle/claims').glob('*.json')),registrations)
+
     def test_text_and_amendment_readback_recognize_revision9_without_fake_resolver(self):
         result=self.result()
         self.assertEqual(market_state.parse_result(json.dumps(result)),result)
