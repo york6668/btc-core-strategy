@@ -14,7 +14,7 @@ from stat import S_ISLNK
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from .codec import Conflict, encode, fingerprint, identity, millis
+from .codec import Conflict, encode, fingerprint, identity, millis, sync_directory
 
 
 DAY = 86400000
@@ -420,8 +420,16 @@ def measure_capacity(db, *, now=None):
 
 
 def prune_backups(root, *, now_ms, keep_days):
+    root = Path(root)
+    # Renaming first makes deletion intent survive a process/VM interruption,
+    # including one after rmtree has already removed the backup manifest.
+    # Only this reserved namespace is resumable; incomplete backups stay put.
+    for path in root.iterdir():
+        if re.fullmatch(r'\.pruning-[a-f0-9]{32}', path.name) and not path.is_symlink() and path.is_dir():
+            shutil.rmtree(path)
+            sync_directory(root)
     backups=[]
-    for path in Path(root).iterdir():
+    for path in root.iterdir():
         manifest=path/'manifest.json'
         if path.is_symlink() or not path.is_dir() or not manifest.is_file():continue
         value=json.loads(manifest.read_bytes())
@@ -431,7 +439,12 @@ def prune_backups(root, *, now_ms, keep_days):
     removed=[]
     for created,path in sorted(backups)[:-2]:
         if created < now_ms-keep_days*DAY:
-            shutil.rmtree(path);removed.append(path.name)
+            retired = root / ('.pruning-' + uuid.uuid4().hex)
+            os.rename(path, retired)
+            sync_directory(root)
+            shutil.rmtree(retired)
+            sync_directory(root)
+            removed.append(path.name)
     return removed
 
 
