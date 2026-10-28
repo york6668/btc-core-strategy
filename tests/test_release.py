@@ -20,6 +20,19 @@ spec.loader.exec_module(release)
 
 
 class ExportManifestTests(unittest.TestCase):
+    def test_exported_validation_entrypoint_imports_without_repository_fallback(self):
+        files = json.loads((ROOT / 'export-manifest.json').read_text())['files']
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            for name in files:
+                output = target / name
+                output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / name, output)
+            result = subprocess.run([sys.executable, '-E', '-s', '-B',
+                                     str(target / 'service/check.py'), '--help'],
+                                    cwd=target, check=True, capture_output=True, text=True)
+            self.assertIn('--reader-image', result.stdout)
+
     def test_node_launchagent_template_is_disabled_and_has_one_calendar_wake(self):
         template = plistlib.loads((ROOT / 'config/local.btc.node-scheduler.plist.example').read_bytes())
         self.assertEqual('local.btc.node-scheduler', template['Label'])

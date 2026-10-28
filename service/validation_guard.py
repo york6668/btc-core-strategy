@@ -14,6 +14,7 @@ import re
 import signal
 import socket
 import subprocess
+from python_image import python_image
 
 
 GIB = 1024 ** 3
@@ -234,6 +235,7 @@ class ValidationGuard:
         return True
 
     def __enter__(self):
+        image = python_image()
         self.handle = self.lock_path.open('a+')
         try:
             fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -243,10 +245,10 @@ class ValidationGuard:
             raise AdmissionError('another local BTC Docker validation is active') from exc
         created = self.now().isoformat()
         try:
-            self._call('image', 'inspect', 'python:3.11-slim')
+            self._call('image', 'inspect', image)
         except AdmissionError as exc:
             self._unlock_local()
-            raise AdmissionError('prebuilt python:3.11-slim image is required for safe admission') from exc
+            raise AdmissionError('prebuilt pinned Python image is required for safe admission: ' + image) from exc
         try:
             self.claim_id = self._call('create', '--name', LOCK_NAME, '--label', 'btc.validation=admission',
                        '--label', 'btc.created_utc=' + created,
@@ -254,7 +256,7 @@ class ValidationGuard:
                        '--label', 'btc.owner_pid=' + str(os.getpid()),
                        '--label', 'btc.project=' + (self.project or 'unknown'),
                        '--network', 'none', '--restart', 'no', '--pull', 'never', '--memory', '32m',
-                       '--cpus', '0.1', '--entrypoint', '/bin/cat', 'python:3.11-slim',
+                       '--cpus', '0.1', '--entrypoint', '/bin/cat', image,
                        '/proc/meminfo')
             if not self.claim_id:
                 raise AdmissionError('Docker claim returned no container identity')

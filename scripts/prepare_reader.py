@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, default=ROOT / '.local/reader')
     parser.add_argument('--ssh', action='store_true',
-                        help='use existing GitHub SSH authentication for all private dependencies')
+                        help='use existing GitHub SSH authentication for source dependencies')
     args = parser.parse_args()
     destination = args.output_dir.expanduser().absolute()
     if destination.exists() or destination.is_symlink():

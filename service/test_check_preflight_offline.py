@@ -132,11 +132,12 @@ class PreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'version mismatch'):
                     check.preflight_test_sources(root, reader, require_actual=True)
 
-    def test_actual_role_contract_and_source_only_export(self):
+    def test_reviewed_role_contract_and_source_only_export(self):
         reader = os.environ.get('BTC_ACTUAL_READER')
         if not reader:
             self.skipTest('set BTC_ACTUAL_READER to the reviewed role source')
-        self.assertEqual(check.reader_source_variant(reader, require_actual=True), 'role_34c')
+        variant = check.reader_source_variant(reader, require_actual=True)
+        self.assertTrue(variant.startswith('role_'))
         check.probe_actual_reader_contract(Path(reader))
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp)/'reader'
@@ -147,7 +148,7 @@ class PreflightTests(unittest.TestCase):
             self.assertFalse((staged/'data').exists())
             self.assertFalse((staged/'__pycache__').exists())
             self.assertTrue(all(path.suffix == '.py' for path in staged.rglob('*') if path.is_file()))
-            self.assertEqual(check.reader_tree_digest(staged), check.READER_TREE_VARIANTS['role_34c'])
+            self.assertEqual(check.reader_tree_digest(staged), check.READER_TREE_VARIANTS[variant])
             check.probe_actual_reader_contract(staged)
 
     def test_unique_logs_preserve_a_failed_attempt(self):

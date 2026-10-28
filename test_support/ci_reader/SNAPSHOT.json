@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "git_blob_sha": "cd83b0ffcc82706481ccf9225b75a901ad51c779",
+      "git_blob_sha": "cd035f3139a2d861f1b987c2727204e803de0940",
       "mode": "100644",
       "path": "requirements.txt",
-      "sha256": "c268b0b1271ebc75e7ed082400abc1d252889a0298e2a4e547c03ee441a3e976",
+      "sha256": "8bdc5aa0183094060538e5493a07980039539efd29666e4b9e1978954ad19649",
       "source_path": "requirements.txt"
     },
     {
@@ -22,10 +22,10 @@
       "source_path": "roles/containers/entrypoint.py"
     },
     {
-      "git_blob_sha": "487df7ae1a43156e8f1e9f5003ed3887974ce8ac",
+      "git_blob_sha": "046c790a4821406ee1dee1e6390deb9aea3d7135",
       "mode": "100644",
       "path": "telegram_reader/README.md",
-      "sha256": "23e6db33461cacaee79320d14bd3cbe7005b39e4d81f1ae2bd0c9ac8adc7f597",
+      "sha256": "2d400627eed3ac6024db134f35bccfd57a5346aeb764555f42ec3733eaa558ae",
       "source_path": "analysis/telegram_reader/README.md"
     },
     {
@@ -50,10 +50,10 @@
       "source_path": "btc_evidence.py"
     },
     {
-      "git_blob_sha": "a3b421093ee26342411a041f8b4618a1a001d983",
+      "git_blob_sha": "8186f116683b6bc80108b3faec95df93b180433d",
       "mode": "100644",
       "path": "telegram_reader/btc_evidence_reader.py",
-      "sha256": "8b05d8b041697efc96d67cb0439761b40a47b0f4337b2c92b339459f2d4414ba",
+      "sha256": "27ed27b18cd2375ec022cadbb1456e80840e7fcfd556e1675b8511740c25a378",
       "source_path": "btc_evidence_reader.py"
     },
     {
@@ -211,10 +211,10 @@
       "source_path": "test_btc_evidence_reader.py"
     },
     {
-      "git_blob_sha": "71267efbe23e2960b971aae0aea985afd1447b8f",
+      "git_blob_sha": "0e0f5b62042d2fd6d8a8a56ded8ab7cabb737f44",
       "mode": "100644",
       "path": "telegram_reader/tests/collector_replay_fixture.py",
-      "sha256": "77b92a8b59dba856d6dbffdc18fc96e3451802d17e08283e7ee575446ef839ce",
+      "sha256": "e286bacd6326f04d36bc3a6bc71d6987a0931ac26080a04f611230776f004a5c",
       "source_path": "analysis/telegram_reader/tests/collector_replay_fixture.py"
     },
     {
@@ -260,10 +260,10 @@
       "source_path": "analysis/telegram_reader/tests/test_collector_sync_ordering.py"
     },
     {
-      "git_blob_sha": "5560c1a90f9a5bdd3c42426fe779f557d19aa7f9",
+      "git_blob_sha": "20f527b51b5b39f9f970d0b3f3472d86cc5031f5",
       "mode": "100644",
       "path": "telegram_reader/tests/test_current_attachment_priority.py",
-      "sha256": "ec9b685ab78d0072c4bdfd938a3cc975b1df0d7e4a239dd88331ef9602bbddc1",
+      "sha256": "5c2f67baddbb73df2f619e57ca0b7056915d35174ddf357539cffbb6fd1739fd",
       "source_path": "analysis/telegram_reader/tests/test_current_attachment_priority.py"
     },
     {
@@ -310,8 +310,8 @@
     }
   ],
   "schema": 1,
-  "source_commit": "c58d21a79f7ab014e09b117af88a91822129565e",
+  "source_commit": "9b47d1eb58fdb3efc41b74ef8e1bacb269834c09",
   "source_map_blob": "9e4277075fedf76f4b03614cc09c8432a78811fb",
   "source_repository": "https://github.com/york6668/market-roles.git",
-  "source_tree": "f802e320f26c7275d95957d301f315f9e65e4cb3"
+  "source_tree": "478160576a563db983caa00942fae7eb1dd76d6a"
 }

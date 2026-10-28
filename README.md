@@ -2,7 +2,7 @@
 
 BTC、QQQ、VOO 的研究、嗅探、正式状态、报告判断和交付恢复作为同一个版本维护。模型负责研究与综合判断；程序负责材料、校验、状态推进、去重和恢复。
 
-本仓库为私有源码仓库，默认分支 `main`。账户事实、市场数据库、策略状态、研究记录、报告正文、游标、投递记录和凭据留在执行节点。
+本仓库为源码仓库，默认分支 `main`。账户事实、市场数据库、策略状态、研究记录、报告正文、游标、投递记录和凭据留在执行节点。
 
 - `skill/btc-core-strategy/`：完整 Skill、模型方法、策略脚本、节点配置适配及 策略测试模块。
 - `project-methods/`：项目职责与价值因子指引，随代码发布，供模型阅读。
@@ -24,7 +24,7 @@ python3 scripts/run_tests.py
 
 本机已配置 GitHub SSH 时，使用 `python3 scripts/prepare_reader.py --ssh`，无需修改全局 Git 配置。
 
-首次准备依赖需要对 `market-roles` 私有仓库的读取权限；只有准备阶段访问 Git，离线测试阶段禁止网络。共享采集源码已由该仓库直接维护，reader 导出不递归获取核心仓库。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
+首次准备依赖需要能够读取 `market-roles` 的固定提交；只有准备阶段访问 Git，离线测试阶段禁止网络。共享采集源码已由该仓库直接维护，reader 导出不递归获取核心仓库。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
 
 与 `market-roles` 当前 reader 组合验证：
 
@@ -45,9 +45,9 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 按照 `enter` 返回的固定路径读取 Skill，并用该版本的脚本执行本轮。研究请求和投递任务产生时绑定上下文；恢复使用原上下文，不能因升级重新研究或重发。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
 
-代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–7，新入口准备 revision 7；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
+代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–9，新入口准备 revision 9；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
 
-完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 只运行离线检查。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
+完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 运行合成输入下的离线及隔离容器检查。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
 
 revision 7 的市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。全部回放材料由 scripts/build_synthetic_fixtures.py 和 scripts/build_reader_fixtures.py 在测试临时目录构造，源码导出不包含测试数据文件。
 
@@ -62,3 +62,11 @@ CI 的 reader 输入保存在 `test_support/ci_reader/`，仅供测试，不加�
 该目录是固定版本的生成快照，不手工维护第二套 reader。重建时从锁定的 `market-roles` 提交取得 `roles/source-map.json` 的 analysis 中所有 `telegram_reader/` 映射，再取同提交的 `requirements.txt`、`roles/containers/Dockerfile` 和 `roles/containers/entrypoint.py`；按 `SNAPSHOT.json` 保存的来源路径、模式与摘要逐一复核，生成仅排除 `.git` 的 `.dockerignore`。来源提交、来源 tree、映射 blob 和全部文件摘要随快照记录；版本变化时同步更新来源记录和锁中的快照 tree。源码可含测试程序与样本构造逻辑，运行状态、配置实例、凭据及生成的测试数据不得进入快照。
 
 当前开发入口准备内容 revision 9；原内容 1–8 保留读取与恢复，不补造其前瞻通过。新增条件首次注册、后续真实事实的值/时间/范围检验及后继依赖保护见判断生命周期与 v4 契约。锁定复测只验证接口、依赖和报告保护，不证明市场预期或策略有效。
+
+## 历史资源修复复现（已退出默认 CI）
+
+`a1577cc6a2c216d832959f5c0c09d84444484427` 的最小修复候选和 `test_support/minimal_candidate/` 补丁原地保留，用于原资源事故的精确复现。它们不属于当前版本的通过证据，不进入角色导出或默认 CI；现行回归直接运行本次提交的源码。历史材料只保留其原对象和输入，不能作为新任务的默认安装或验证入口。
+
+确需复核原事故时，从包含该历史提交的完整 Git 检出调用 `scripts/ci_minimal_candidate.py --output <新的本地目录> --manifest <本地结果路径>`。输出仅在本地保存；历史候选的运行环境、资源条件及其测试结果由原事故任务核验，不能以当前 CI 通过关闭本地事故。
+
+CI 镜像来源由 `service/Dockerfile` 的不可变摘要统一确定。准备步骤直接拉取该摘要，探针、清理容器和当前服务使用同一引用；缺少镜像时不回退到可变标签。锁定 reader 源码保持原字节，CI 仅在临时目录生成基础镜像固定为同一摘要的构建文件，不修改来源快照或其身份记录。

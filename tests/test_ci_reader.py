@@ -25,7 +25,7 @@ class CIReaderTests(unittest.TestCase):
             'telegram_reader/reader.py': 'pass\n',
             'telegram_reader/seller_exhaustion.py': 'pass\n',
             'requirements.txt': '',
-            'roles/containers/Dockerfile': 'FROM scratch\n',
+            'roles/containers/Dockerfile': 'FROM python:3.11-slim\nWORKDIR /app\n',
             'roles/containers/entrypoint.py': 'pass\n',
         }
         manifest = {'schema': 1, 'source_repository': 'https://example.invalid/roles.git',
@@ -60,6 +60,14 @@ class CIReaderTests(unittest.TestCase):
         self.assertFalse(any(p.startswith('test_support/ci_reader/') for p in exported))
         self.assertNotIn('scripts/ci_reader.py', exported)
         self.assertNotIn('tests/test_ci_reader.py', exported)
+
+    def test_pinned_reader_is_accepted_by_the_real_service_boundary(self):
+        import check as service_check
+        lock = ci.read_lock(ROOT)
+        snapshot = ci.verify_snapshot(ROOT / lock['ci_snapshot']['path'], lock)
+        variant = service_check.reader_source_variant(snapshot / 'telegram_reader', require_actual=True)
+        self.assertTrue(variant.startswith('role_'))
+        service_check.probe_actual_reader_contract(snapshot / 'telegram_reader')
 
     def test_missing_tree_is_rejected(self):
         self.lock['ci_snapshot']['tree'] = None
@@ -104,7 +112,11 @@ class CIReaderTests(unittest.TestCase):
                 self.assertTrue((context / 'telegram_reader/data').is_dir())
                 self.assertEqual(list((context / 'telegram_reader/data').iterdir()), [])
                 self.assertEqual(Path(command[command.index('--file') + 1]),
-                                 context / 'roles/containers/Dockerfile')
+                                 context.parent / 'Dockerfile.reader')
+                self.assertEqual((context.parent / 'Dockerfile.reader').read_text(),
+                                 'FROM ' + ci.python_image() + '\nWORKDIR /app\n')
+                self.assertEqual((context / 'roles/containers/Dockerfile').read_text(),
+                                 'FROM python:3.11-slim\nWORKDIR /app\n')
                 self.assertFalse((self.snapshot / 'telegram_reader/data').exists())
         with patch.object(ci.subprocess, 'run', side_effect=inspect_build) as run:
             ci.execute(plan, '/test/docker', 'btc-reader-ci:test')
@@ -127,6 +139,22 @@ class CIReaderTests(unittest.TestCase):
                 ci.execute(plan, '/test/docker', 'btc-reader-ci:test')
         self.assertEqual(run.call_args_list[-1].args[0],
                          ['/test/docker', 'image', 'rm', 'btc-reader-ci:test'])
+
+    def test_unexpected_reader_build_recipe_never_builds_or_runs(self):
+        (self.snapshot / 'roles/containers/Dockerfile').write_text('FROM other:latest\n')
+        plan = ci.commands(self.root, self.snapshot, '/test/docker', 'btc-reader-ci:test')
+        with patch.object(ci.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'unexpected reader base image'):
+                ci.execute(plan, '/test/docker', 'btc-reader-ci:test')
+        self.assertEqual([call.args[0] for call in run.call_args_list],
+                         [['/test/docker', 'image', 'rm', 'btc-reader-ci:test']])
+
+    def test_mutable_or_missing_service_base_is_rejected(self):
+        dockerfile = self.root / 'Dockerfile'
+        for contents in ('', 'FROM python:3.11-slim\n', 'FROM python:latest\n'):
+            dockerfile.write_text(contents)
+            with self.subTest(contents=contents), self.assertRaisesRegex(ValueError, 'manifest digest'):
+                ci.python_image(dockerfile)
 
 
 if __name__ == '__main__':

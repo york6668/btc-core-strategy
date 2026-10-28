@@ -12,6 +12,8 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'service'))
+from python_image import python_image
 
 
 def read_lock(root=ROOT):
@@ -110,7 +112,7 @@ def commands(root, snapshot, docker, image):
 
 
 def stage_build_context(snapshot, destination):
-    """Keep the verified source bytes and add only the empty nested mountpoint."""
+    """Keep verified source bytes and add the empty nested mountpoint."""
     staged = Path(destination) / 'source'
     shutil.copytree(snapshot, staged)
     mountpoint = staged / 'telegram_reader' / 'data'
@@ -120,12 +122,23 @@ def stage_build_context(snapshot, destination):
     return staged
 
 
+def stage_dockerfile(snapshot, destination):
+    """Pin the build base without changing the locked reader source snapshot."""
+    lines = (Path(snapshot) / 'roles/containers/Dockerfile').read_text().splitlines(keepends=True)
+    if not lines or lines[0].strip() != 'FROM python:3.11-slim':
+        raise ValueError('unexpected reader base image; review the locked build recipe')
+    lines[0] = 'FROM ' + python_image() + '\n'
+    recipe = Path(destination) / 'Dockerfile.reader'
+    recipe.write_text(''.join(lines))
+    return recipe
+
+
 def execute(plan, docker, image):
     try:
         with tempfile.TemporaryDirectory(prefix='btc-reader-build-') as temporary:
             context = stage_build_context(Path(plan[0][-1]), temporary)
             build = list(plan[0])
-            build[build.index('--file') + 1] = str(context / 'roles/containers/Dockerfile')
+            build[build.index('--file') + 1] = str(stage_dockerfile(Path(plan[0][-1]), temporary))
             build[-1] = str(context)
             subprocess.run(build, check=True)
             for command in plan[1:]:
@@ -146,7 +159,8 @@ def main():
     plan = commands(ROOT, snapshot, args.docker, image)
     if args.command == 'plan':
         print(json.dumps({'status': 'VERIFIED_INPUTS_DOCKER_NOT_RUN', 'commands': plan,
-                          'build_context_preparation': 'copy verified snapshot and add an empty telegram_reader/data mountpoint',
+                          'build_context_preparation': 'copy verified snapshot, add an empty data mountpoint and pin only the external build recipe base',
+                          'python_image': python_image(),
                           'source_commit': lock['commit'],
                           'snapshot_tree': lock['ci_snapshot']['tree']}, indent=2))
     else:

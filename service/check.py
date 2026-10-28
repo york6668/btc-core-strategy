@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 from validation_guard import GIB, ValidationGuard, cleanup_compose, install_interrupt_handlers
+from python_image import python_image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,19 +33,21 @@ RESOURCE_PROBE = ('for f in memory.current memory.max memory.peak memory.swap.cu
                   'awk \'/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ '
                   '{name=$1; sub(/:$/, "", name); print "vm." name "=" $2}\' /proc/meminfo')
 
-# Source-only reader contract. The first reader is e6's pinned CI export; the
-# second is the reviewed role checkout at market-roles 34c360d. A new source
-# version must be reviewed and pinned before a guarded validation window.
+# Source-only reader contracts: preserve previously reviewed exports and add
+# the exact role revision used by reader.lock.json. Match the complete Python
+# tree as well as its entrypoint; no version is inferred from a mutable branch.
 READER_COMMON = {
     'seller_exhaustion.py': '048bcfa068123a8457ae4a1b813453a08ec43a4f6fde96b2ae77605c100d3621',
     'btc_evidence.py': '24a139cfa3613c4979f586a69a619e1ac284c4ae6c5ef006c5526bd70846a0cc',
     'tests/test_evidence_v2.py': '38080f32a8c5bce9ea53a60ca216f13d0163642b0596afa48a1ab908a224965d',
 }
 READER_VARIANTS = {
+    'role_9b47d1e': '27ed27b18cd2375ec022cadbb1456e80840e7fcfd556e1675b8511740c25a378',
     'ci_snapshot_c58': '8b05d8b041697efc96d67cb0439761b40a47b0f4337b2c92b339459f2d4414ba',
     'role_34c': '27ed27b18cd2375ec022cadbb1456e80840e7fcfd556e1675b8511740c25a378',
 }
 READER_TREE_VARIANTS = {
+    'role_9b47d1e': '5b43ce165d7ce1a299c23b7bc64f543e7dab18c0a6bd6d7a12b0d56962779c0e',
     'ci_snapshot_c58': 'c22368605c9cd1e9c99da13e320727bbd92631df76c778bb3ac918e264b0d903',
     'role_34c': '671106a8a5b25cd3c21199f58299d7017dfedbafc259d88877b5f053ec08aa6c',
 }
@@ -80,11 +83,11 @@ def reader_source_variant(reader, *, require_actual=False):
         if hashlib.sha256((reader/name).read_bytes()).hexdigest() != digest:
             raise ValueError('reader compatibility version mismatch: '+name)
     actual = hashlib.sha256((reader/'btc_evidence_reader.py').read_bytes()).hexdigest()
-    variant = next((name for name, digest in READER_VARIANTS.items() if digest == actual), None)
-    if variant is None or (require_actual and variant != 'role_34c'):
+    tree = reader_tree_digest(reader)
+    variant = next((name for name, digest in READER_VARIANTS.items()
+                    if digest == actual and READER_TREE_VARIANTS[name] == tree), None)
+    if variant is None or (require_actual and not variant.startswith('role_')):
         raise ValueError('reader compatibility version mismatch: btc_evidence_reader.py')
-    if reader_tree_digest(reader) != READER_TREE_VARIANTS[variant]:
-        raise ValueError('reader compatibility version mismatch: complete Python source export')
     return variant
 
 
@@ -141,7 +144,7 @@ def preflight_test_sources(root, reader, *, require_actual=False):
     if (f'WORKDIR {CORE_SOURCE_ROOT}' not in dockerfile or
             f'COPY service/btc_node {CORE_SOURCE_ROOT}/btc_node' not in dockerfile):
         raise ValueError('test preflight requires the core package at /opt/btc')
-    if variant == 'role_34c':
+    if variant.startswith('role_'):
         probe_actual_reader_contract(reader)
     return variant
 
@@ -318,7 +321,7 @@ def cleanup_disposable_mysql_bind(docker, directory, *, run=subprocess.run):
     run([docker, 'run', '--rm', '--network', 'none', '--pull', 'never',
          '--memory', '128m', '--cpus', '0.25', '--restart', 'no',
          '-v', str(directory) + ':/fixture', '--entrypoint', 'python',
-         'python:3.11-slim', '-c', code], check=True, timeout=90)
+         python_image(), '-c', code], check=True, timeout=90)
 
 
 def run(docker, reader, reader_image=None, preserved_volume_manifest=None,

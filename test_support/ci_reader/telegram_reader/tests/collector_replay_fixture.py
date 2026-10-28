@@ -98,8 +98,8 @@ def build_case(case="valid", evidence_module=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--collector-root", type=Path, default=Path("/Users/york/scripts"))
-    parser.add_argument("--output-dir", type=Path, default=Path(__file__).with_suffix(""))
+    parser.add_argument("--collector-root", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     # Block network before importing production code; retain no permanent patches.
     network_attempts = []

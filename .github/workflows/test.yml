@@ -9,38 +9,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          # The minimal resource candidate starts from the installed a157 commit.
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Verify pinned test dependency and export boundary
         run: python3 -B -m unittest discover -s tests -p test_ci_reader.py -v
+      - name: Verify current source full offline regression
+        run: python3 -B scripts/run_tests.py --reader test_support/ci_reader/telegram_reader
       - name: Verify Docker admission and failure diagnostics without starting a stack
+        env:
+          BTC_ACTUAL_READER: test_support/ci_reader/telegram_reader
         run: python3 -B -m unittest discover -s service -p 'test_*offline.py' -v
-      - name: Prepare the existing pinned Python Docker image
+      - name: Verify current data service offline regressions
+        run: PYTHONPATH=service python3 -B -m unittest discover -s service/tests -p 'test_*offline.py' -v
+      - name: Prepare the pinned Python Docker image
         run: |
-          docker pull python:3.11-slim
-          # RepoDigests records the pulled manifest; Id is the image config hash.
-          pulled="$(docker image inspect python:3.11-slim --format '{{index .RepoDigests 0}}')"
-          test "${pulled##*@}" = 'sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce'
-      - name: Verify MySQL, actual CLI and MCP, recovery and business replay
+          python_image="$(python3 -B service/python_image.py)"
+          docker pull "$python_image"
+          docker image inspect "$python_image" --format '{{index .RepoDigests 0}}'
+      - name: Verify current MySQL, actual CLI and MCP, recovery and business replay
         run: python3 -B scripts/ci_reader.py run
-      - name: Materialize exact a157 resource repair
-        run: |
-          python3 -B scripts/ci_minimal_candidate.py \
-            --output "$RUNNER_TEMP/btc-minimal-source" \
-            --manifest "$RUNNER_TEMP/btc-minimal-manifest.json"
-      - name: Verify minimal repair full offline regression
-        working-directory: ${{ runner.temp }}/btc-minimal-source
-        run: |
-          python3 -B scripts/run_tests.py --reader test_support/ci_reader/telegram_reader
-          PYTHONPATH=service python3 -B -m unittest discover -s service/tests -p 'test_*offline.py' -v
-      - name: Verify minimal repair MySQL, CLI, MCP and recovery
-        run: |
-          # Keep the pinned resource candidate intact; only its disposable
-          # validation copy receives the current reader mountpoint harness.
-          cp -R "$RUNNER_TEMP/btc-minimal-source" "$RUNNER_TEMP/btc-minimal-check"
-          cp scripts/ci_reader.py "$RUNNER_TEMP/btc-minimal-check/scripts/ci_reader.py"
-          cd "$RUNNER_TEMP/btc-minimal-check"
-          python3 -B scripts/ci_reader.py run

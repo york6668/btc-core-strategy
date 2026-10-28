@@ -42,7 +42,7 @@ Token 只保存在 macOS 钥匙串，服务名为 `btc.telegram.reader`，账户
 ## 2. 安装和发现目标频道
 
 ```bash
-cd /Users/york/Documents/ChatGPT/btc/telegram_reader
+cd /absolute/reader-source
 ./install.sh
 ```
 
@@ -71,7 +71,7 @@ cd /Users/york/Documents/ChatGPT/btc/telegram_reader
 数据库位置：
 
 ```text
-/Users/york/Documents/ChatGPT/btc/telegram_reader/data/messages.sqlite3
+<本机 reader 数据目录>/messages.sqlite3
 ```
 
 核心表和视图：
@@ -124,36 +124,8 @@ all 按三标的分别输出最新辅助观察或明确缺口，v4 主流程读�
 部署时必须将 `btc_evidence.py`、`btc_evidence_reader.py` 与读取入口一起发布；
 单独更新入口或只复制旧模块清单不足以启用结构化证据。
 
-## 4. 每小时第 10 分钟自动同步
+## 4. 节点部署与调度
 
-先发布一条非 `/btc` 指令的数据内容，运行一次 `sync`，确认 `status` 中入库内容
-大于 0。然后启用系统任务：
+现行部署入口是[分析部署说明](../roles/ANALYSIS_DEPLOYMENT.md)。由节点现有配置提供源码、数据、解释器、服务标签、日志路径和 `reader_minute`，通过 `roles/analysis_role.py --config <本机配置> render-reader <候选 plist>` 生成候选。生成候选不安装或启动服务。
 
-```bash
-./install_launch_agent.sh
-```
-
-macOS 会限制无人值守的 LaunchAgent 直接从 `Documents` 启动 Python。安装脚本会
-把只读采集程序、独立虚拟环境和采集数据放到本机
-`~/Library/Application Support/btc-telegram-reader/`，先现场验证后台同步成功，
-再让项目内的 `telegram_reader/data` 和`策略证据.md`链接到该本机运行目录。
-迁移前文件会保存在 `telegram_reader/migration-backups/<时间>/`，不会删除。
-
-个人资产配置、操作记录和纠正记录仍只保存在本项目；后台运行目录只承载数据采集
-频道的原始市场证据和自动生成快照，不写入 Codex/OpenAI 记忆或云端存储。
-
-任务按本机时钟在每小时的第 10 分钟运行，例如 `01:10、02:10、03:10`，不是
-每隔 10 分钟运行。日志只记录数量、时间和脱敏错误类型：
-
-```text
-/Users/york/Library/Logs/btc-telegram-reader.log
-/Users/york/Library/Logs/btc-telegram-reader.error.log
-```
-
-停用任务：
-
-```bash
-./uninstall_launch_agent.sh
-```
-
-停用不会删除数据库或钥匙串中的 Token。
+旧独立安装脚本的操作说明已退出；不再从本 README 发起固定机器布局和固定分钟数的安装。节点已有服务、数据、Keychain、迁移备份及调度保持原样，只有明确的部署任务才能沿现行入口切换。日志只记录数量、时间和脱敏错误类型，具体文件位置取自本机配置。

@@ -27,6 +27,25 @@ def _json(value):
                       separators=(",", ":"), allow_nan=False)
 
 
+def _download_failure(exc):
+    """Keep transport classes/status, never exception text or credential URLs."""
+    allowed = {'TimeoutError', 'ConnectionError', 'ConnectionResetError', 'HTTPError',
+               'URLError', 'SSLError', 'IncompleteRead', 'TelegramReaderError',
+               'TypeError', 'ValueError', 'OSError'}
+    detail = {'classes': []}
+    seen = set()
+    while exc is not None and id(exc) not in seen and len(seen) < 4:
+        seen.add(id(exc))
+        name = type(exc).__name__
+        detail['classes'].append(name if name in allowed else 'OTHER')
+        code = getattr(exc, 'code', None)
+        if name == 'HTTPError' and type(code) is int and 100 <= code <= 599:
+            detail['http_status'] = code
+        reason = getattr(exc, 'reason', None)
+        exc = reason if isinstance(reason, BaseException) else exc.__context__
+    return detail
+
+
 def _snapshot_identity(path):
     try:
         info = path.stat()
@@ -134,6 +153,12 @@ class EvidenceReader:
                 download_retry_at REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY(chat_id,message_id,revision));
         """)
+        columns = {row['name'] for row in self.db.execute('PRAGMA table_info(collector_attachments)')}
+        if 'raw_available_at' not in columns:
+            self.db.execute('ALTER TABLE collector_attachments ADD COLUMN raw_available_at REAL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS collector_download_failures('
+                        'chat_id INTEGER,message_id INTEGER,revision TEXT,attempt INTEGER,'
+                        'failed_at REAL,detail TEXT,PRIMARY KEY(chat_id,message_id,revision,attempt))')
 
     @contextmanager
     def _tx(self):
@@ -324,12 +349,15 @@ class EvidenceReader:
                     raise TypeError("document_not_bytes")
                 if declared is not None and len(raw) != declared:
                     raise ValueError("document_size_mismatch")
-            except Exception:
+            except Exception as exc:
                 with self._tx() as db:
+                    failed_at = self.clock()
+                    db.execute('INSERT OR IGNORE INTO collector_download_failures VALUES(?,?,?,?,?,?)',
+                               (*key, row['download_attempts'] + 1, failed_at, _json(_download_failure(exc))))
                     db.execute("UPDATE collector_attachments SET download_error='download_failed',"
                                "download_attempts=download_attempts+1,download_retry_at=? "
                                "WHERE chat_id=? AND message_id=? AND revision=?",
-                               (self.clock() + min(3600, 30 * 2 ** min(7, row["download_attempts"])), *key))
+                               (failed_at + min(3600, 30 * 2 ** min(7, row["download_attempts"])), *key))
                 outcomes.append({"message_id": row["message_id"], "status": "pending_download"})
                 continue
             with self._tx() as db:
@@ -346,6 +374,8 @@ class EvidenceReader:
                                "download_error=NULL WHERE chat_id=? AND message_id=? AND revision=?",
                                (digest, *key))
                     self._revalidate(db, key=key)
+                    db.execute('UPDATE collector_attachments SET raw_available_at=COALESCE(raw_available_at,?) '
+                               'WHERE chat_id=? AND message_id=? AND revision=?', (self.clock(), *key))
                 updated = db.execute("SELECT validation FROM collector_attachments WHERE "
                                      "chat_id=? AND message_id=? AND revision=?", key).fetchone()
                 outcomes.append({"message_id": row["message_id"],
@@ -461,6 +491,8 @@ class EvidenceReader:
                 observation["transport"] = {
                     "chat_id": row["chat_id"], "text_message_id": row["parent_id"],
                     "document_message_id": row["message_id"], "received_at": row["received_at"],
+                    "raw_available_at": row.get("raw_available_at"),
+                    "download_attempts": row.get("download_attempts", 0),
                 }
                 observation["requires_independent_verification"] = True
                 observation["requires_current_source_check"] = True

@@ -12,7 +12,9 @@ class RepeatedReferenceDB:
     references = 500
 
     def iter_rows(self, sql):
-        assert sql == 'SELECT * FROM documents'
+        # The current catalog scan deliberately excludes large payload columns.
+        assert sql == ('SELECT document_key,namespace,path,kind,digest,link_target,'
+                       'byte_length,retention_class FROM documents')
         yield {'document_key': 'root', 'namespace': 'fixture', 'path': 'root.json',
                'digest': self.root_digest, 'retention_class': 'ACTIVE',
                'kind': 'FILE', 'byte_length': 16, 'link_target': None}

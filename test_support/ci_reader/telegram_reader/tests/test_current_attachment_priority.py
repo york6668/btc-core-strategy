@@ -1,6 +1,8 @@
 """A historical burst cannot consume the current three-asset download budget."""
 import tempfile
 import unittest
+import json
+import urllib.error
 from pathlib import Path
 
 from btc_evidence_reader import EvidenceReader
@@ -68,6 +70,28 @@ class CurrentAttachmentPriorityTests(unittest.TestCase):
         self.assertEqual(gap['transport']['download_attempts'], 1)
         self.assertEqual(gap['transport']['download_error'], 'download_failed')
         self.assertEqual(gap['role'], 'auxiliary_observation_gap')
+
+    def test_retry_records_raw_availability_and_safe_failure_without_backdating(self):
+        self.post(100, 'BTC')
+        def fail(_file):
+            raise urllib.error.HTTPError('https://secret-token.invalid', 503, 'secret-token', {}, None)
+        self.reader.process_pending(fail)
+        failure = self.reader.db.execute('SELECT * FROM collector_download_failures').fetchone()
+        self.assertEqual(json.loads(failure['detail'])['http_status'], 503)
+        self.assertNotIn('secret-token', failure['detail'])
+        self.reader.clock = lambda: 2000000040
+        self.reader.process_pending(lambda file: self.raw[file])
+        row = self.reader.db.execute('SELECT * FROM collector_attachments').fetchone()
+        self.assertEqual(row['received_at'], 2000000000)
+        self.assertEqual(row['raw_available_at'], 2000000040)
+        self.assertEqual(row['download_attempts'], 1)
+        self.assertIsNone(row['download_error'])
+        observation = self.reader.observations(latest_only=True, asset='all')[0]
+        self.assertEqual(observation['transport']['raw_available_at'], 2000000040)
+        self.reader.clock = lambda: 2000000080
+        self.reader.process_pending(lambda _: self.fail('completed input must not redownload'))
+        self.assertEqual(self.reader.db.execute('SELECT raw_available_at FROM collector_attachments').fetchone()[0], 2000000040)
+        self.assertEqual(self.reader.db.execute('SELECT count(*) FROM collector_download_failures').fetchone()[0], 1)
 
 
 if __name__ == '__main__':

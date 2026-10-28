@@ -129,6 +129,16 @@ class GuardTest(unittest.TestCase):
                     pass
         self.assertFalse(self.fake.claim)
 
+    def test_probe_uses_the_immutable_service_base_without_pulling(self):
+        with self.make():
+            pass
+        image = guard.python_image()
+        self.assertIn(('image', 'inspect', image), self.fake.calls)
+        create = next(call for call in self.fake.calls if call[0] == 'create')
+        self.assertEqual(create[-2:], (image, '/proc/meminfo'))
+        self.assertEqual(create[create.index('--pull') + 1], 'never')
+        self.assertFalse(any(call[0] == 'pull' for call in self.fake.calls))
+
     def test_remote_claim_and_stale_lock_fail_closed(self):
         self.fake.claim = True
         self.fake.created -= dt.timedelta(hours=2)
