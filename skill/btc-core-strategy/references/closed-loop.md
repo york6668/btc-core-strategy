@@ -1,6 +1,6 @@
 # 投资决策闭环
 
-当前新入口采用 revision 8：[完整投资决策及反馈](investment-process.md)。在同一正式 DecisionSnapshot 中汇合事前政策与独立市场研究，保留以下风险和机会结果，再由 investment_decision 承担候选比较、总体取舍、优先关系、具体缺口依赖和事后评价。报告传递这个完成结果，不在风险与分项机会之间遗漏综合责任。旧 revision 1–7 与其上下文按原字节读取，不自动迁移或续期。
+当前新入口采用 revision 9，承接[完整投资决策及反馈](investment-process.md)及[判断生命周期](decision-lifecycle.md)。在同一正式 DecisionSnapshot 中汇合事前政策与独立市场研究，保留以下风险和机会结果，再由 investment_decision 承担候选比较、总体取舍、优先关系、具体缺口依赖和事后评价。报告传递这个完成结果，不在风险与分项机会之间遗漏综合责任。旧 revision 1–8 与其上下文按原字节读取，不自动迁移或续期。
 
 # 完整研究、两个结果与持续验证（content revision 7）
 
@@ -45,7 +45,7 @@
 
 实际 actions 复用下述 revision 6 action 结构及数量/动作缺口约束，但风险结论不从动作状态汇总。比例、数量、批次和先后顺序仅在有依据且必要时提供，不默认减半。敞口、资金和保护的必要检查留在内部，正文只呈现影响判断的内容。原有定投、折价买入、独立BTC/黄金等机会建议不受风险应对触发条件替代，也不把无依据的风险动作改名为机会建议。
 
-观察保留 `allocation_review` 名称，revision 7 将其中 `allocation_decision_hash` 改为 `portfolio_risk_hash`，同时加入strategy_advice_hash绑定独立机会建议，其他字段不变。报告消费 `portfolio_risk`，result_binding 使用 `portfolio_risk_hash`；新报告不允许从旧 allocation_decision 引用个人结论。旧结果未完成真实个人重评时为 EVIDENCE_LIMITED，不能改名冒充新结果。新入口采用 revision 7，可读 revision 1–7；以下 revision 6 字段仅用于历史恢复。
+观察保留 `allocation_review` 名称，revision 7 将其中 `allocation_decision_hash` 改为 `portfolio_risk_hash`，同时加入strategy_advice_hash绑定独立机会建议，其他字段不变。报告消费 `portfolio_risk`，result_binding 使用 `portfolio_risk_hash`；新报告不允许从旧 allocation_decision 引用个人结论。旧结果未完成真实个人重评时为 EVIDENCE_LIMITED，不能改名冒充新结果。这些字段在 revision 7 引入；当前新入口版本与可读范围见[版本入口](releases.md)，以下 revision 6 字段仅用于历史恢复。
 
 原 upper_short/lower_spot 价量接口保留。其他已形成的机会建议使用 `recommendations.portfolio.strategy_advice[]`，复用 action 结构、允许为空，与风险应对分开；报告提供 `strategy_advice` 并以 `strategy_advice_hash` 绑定，同一评估的市场、事实和期限仍适用。不得将完整内部研究或无风险依据的减仓包装为机会建议。
 
@@ -88,7 +88,7 @@ AUTHORED_REPORT_V1 原文交付、实际助手回读及 UNKNOWN 恢复保持。�
 
 ## 兼容与验收
 
-代码可读 revision 1–7；旧冻结记录按原格式校验和恢复，任何安装不改历史、资产事实、当前策略或未知投递。新入口准备 revision 7 材料，正式状态等待真实评估采纳；不把旧叙述或旧动作补成 risk_assessment。在办研究通常沿固定原版本，仅程序缺陷按[版本入口](releases.md)显式登记兼容修复后由新恢复运行接续；UNKNOWN 始终沿原物理版本上下文。回退只切代码，并须匹配当前内容可读范围，不回滚数据。
+当前可读范围和新入口版本以[版本入口](releases.md)为准；旧冻结记录按原格式校验和恢复，任何安装不改历史、资产事实、当前策略或未知投递。新入口按当前内容契约准备材料，正式状态等待真实评估采纳；不把旧叙述或旧动作补成 risk_assessment。在办研究通常沿固定原版本，仅程序缺陷按[版本入口](releases.md)显式登记兼容修复后由新恢复运行接续；UNKNOWN 始终沿原物理版本上下文。回退只切代码，并须匹配当前内容可读范围，不回滚数据。
 
 临时合成测试覆盖依赖隔离、历史假设非事实、期限落空、数量/动作缺口、市场与组合独立更新及联动、最终结果输入、旧版本与过期/延迟/重复/跨日/UNKNOWN 恢复。真实历史预览只在节点读取。内容验收逐项对照实际证据、判断和正文，不以字段、关键词或自评通过代替分析质量。程序验证、真实送达、自然耗时与成本分别验收，保留未关闭的运行缺陷。
 

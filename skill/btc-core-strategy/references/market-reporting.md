@@ -41,6 +41,8 @@
 }
 ```
 
+示例中的旧布局和型号仅供历史格式说明；新运行的 provenance 按真实轨迹记录，并满足 `CURRENT_HOURLY_MODEL`，不能照抄旧型号或改写历史身份。
+
 action支持REPORT、SILENT、EVIDENCE_LIMITED。后两者layout=null，保存理由和下一观察条件但不产生源稿、不推进已报告基线。purposes支持MARKET_SUMMARY、STRATEGY_UPDATE或两者；主策略有重要变化时使用STRATEGY_UPDATE并说明改变、理由及影响。旧报告缺少conclusion意味着未知，不自动视为相同或重要变化；对照旧实际正文完成baseline_review。纯格式迁移可静默，不能让之后新增解释长期跳过审阅。
 
 layout每段最多240字符，不嵌套额外表格或多段全文。数字仅用/metrics或/assessment JSON Pointer绑定；数值显示四舍五入至两位小数。net_taker_quote_wan为主动买卖金额除以一万，单位仍由dataset.quote_unit决定；负数表示净卖。observed_return_percent为窗口首开至末收收益百分比。recommendations表机械来自当前策略，区分空单名义额和现货投入，不重算或另填建议。行情窗口不足时必须正文说明所用部分窗口，不能称完整日行情。不得把不同货币或合约/标记/指数价混成三所现货范围。

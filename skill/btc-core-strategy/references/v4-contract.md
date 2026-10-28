@@ -1,4 +1,4 @@
-当前新内容使用 revision 7，个人结果为 `recommendations.portfolio.risk_assessment`；`allocation_review`绑定`portfolio_risk_hash`，报告消费`portfolio_risk`。完整新契约见[完整闭环](closed-loop.md)；以下 revision 1–6 仅描述历史兼容，不为新研究强制生成动作。
+当前新内容使用 revision 9，个人结果继续使用 revision 7 引入的 `recommendations.portfolio.risk_assessment`；`allocation_review`绑定`portfolio_risk_hash`，报告消费`portfolio_risk`。完整新契约见[完整闭环](closed-loop.md)；以下 revision 1–6 仅描述历史兼容，不为新研究强制生成动作。
 
 > 报告的分析依据、触发复核和日本每日反馈以[报告复核契约](report-care.md)为当前规则。新报告包含maintenance；旧格式保持兼容。
 
@@ -15,9 +15,9 @@
 
 精简pin/commit明确返回assessment_revision、minimum_write_revision、domain_strategy_revision、has_current_conclusion和assessment_owner。domain历史版本与主评估revision含义不同；assessment_revision=3表示既有主评估，=4表示已发布动态因子格式，=5表示已发布独立市场与分歧区格式；新写入门不证明当前版本已经迁移。读取计划先用这些字段和固定decision_path，不靠全库检索猜测格式。
 
-主评估仍为BTC_ASSESSMENT_DRAFT_V4，当前revision=5。保留draft_id、evidence_id、evidence_bindings、fact_version、temporal_scope、domain、outlook、robustness、portfolio_analysis、recommendations、maintenance_binding、stop_reason；**不含report**。沿用revision 3主任务字段并增加factor_assessment：
+该历史格式的主评估仍为BTC_ASSESSMENT_DRAFT_V4，revision=5。保留draft_id、evidence_id、evidence_bindings、fact_version、temporal_scope、domain、outlook、robustness、portfolio_analysis、recommendations、maintenance_binding、stop_reason；**不含report**。沿用revision 3主任务字段并增加factor_assessment：
 
-- provenance={role:MAIN,model:gpt-5.6-sol,effort:high,agent_id,run_ref}，记录真实主任务；类型允许不证明真实运行，样本和自然验收须核对日志。
+- 历史 revision 3–5 的 provenance 示例为 {role:MAIN,model:gpt-5.6-sol,effort:high,agent_id,run_ref}，保留原真实主任务身份；新运行按 CURRENT_HOURLY_MODEL 及真实轨迹记录；类型允许不证明真实运行，样本和自然验收须核对日志。
 - conclusion={business_meaning,narrative}。business_meaning为开放的稳定键到已审阅业务陈述映射，涵盖价值判断/解释/前瞻/条件等重要含义；主任务复用仍相同的含义，不能用分类名掩盖判断变化。narrative保存当前可读说明，同义改写不自动报告。
 - factor_assessment保存本次模型实际选用的因子及理由，结构见下节。它属于同一DecisionSnapshot，不建立factor-current或macro-current；conclusion与outlook拥有采纳后的核心含义，recommendations继续唯一拥有建议。
 - section_provenance在revision 4/5恰好覆盖domain、outlook、robustness、portfolio_analysis、recommendations、conclusion、factor_assessment；revision 3保留原六项。每项={mode:ASSESSED|REUSED,decision_id,assessed_at,evidence_id,explanation}。ASSESSED绑定当前证据，decision_id=null；REUSED必须逐字匹配真实祖先的对应字段，保留其原始评估时间/证据，说明为何仍适用。修改的部分不伪称复用；历史无因子字段不能伪称REUSED。
@@ -210,7 +210,7 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 `recover`不晋升孤立generation或草稿。主发布先原子切current，当前版本本身即读取依据；main收据中断不要求伪造deep修复。旧域适配只可改变 control、fingerprints、previous_fingerprints、previous_projection_baseline；发生这种标准化时，main收据同时保存原 submitted_draft，原审阅继续绑定提交身份，接受内容继续精确绑定正式版本，收据文件以 completion_hash 命名。历史无此字段的收据仍按原草稿身份校验。已实际发布但旧收据因标准化身份中断，可用 `repair-completion --main-draft <原提交>` 核验原提交、实际当前发布及仅限适配的差异后新增恢复收据；保留旧收据和正式版本，不重发策略，再继续原 run-advance。历史DEEP只允许`repair-completion --completion`修复有真实发布证据的实物。outbox独立保留，不因新观察覆盖。
 
-先以兼容旧格式的代码完成新入口、真实引用、空因子、复用、版本迁移、发布与报告独立性的隔离验证。切换新写入规则时短暂停原任务并核验当前运行状态，同步已验证的代码、Skill、项目规则和同一任务提示，revision 7 新入口按内容能力准备材料；在办研究和未知投递保持原物理版本，不通过统一提高写入门中断旧上下文。正式迁移必须来自真实评估采纳，不能转换旧叙述。写入门只要求新格式，不要求任何具体因子或目录覆盖。新主评估与报告均兼容现有当前指针；不修改历史、资产事实、独立事件任务、全局规则或Git/Engine。
+先以兼容旧格式的代码完成新入口、真实引用、空因子、复用、版本迁移、发布与报告独立性的隔离验证。切换新写入规则时短暂停原任务并核验当前运行状态，同步已验证的代码、Skill、项目规则和同一任务提示，当前新入口按内容能力准备材料；在办研究和未知投递保持原物理版本，不通过统一提高写入门中断旧上下文。正式迁移必须来自真实评估采纳，不能转换旧叙述。写入门只要求新格式，不要求任何具体因子或目录覆盖。新主评估与报告均兼容现有当前指针；不修改历史、资产事实、独立事件任务、全局规则或Git/Engine。
 
 回滚必须能读取已发布的revision 5及带dispute_zone的交付；只有未生成新格式时才可恢复完整基线实现。若旧实现不兼容则暂停自动写入，保留最新结论与交付现场，不能覆盖新状态。隔离结构验证不证明模型实际评估质量或自然运行成功；自然主运行核对真实模型输入、因子选择和依据，专项与报告分别验收，未发生的标待验收，不制造触发。文件内容与结构检查不代表本会话已重新加载新规则。
 
