@@ -194,6 +194,8 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 5. 失真保存实际展示稿并进入CORRECTION_REQUIRED；BEGIN_CORRECTION最多一次，发送本地源稿要求原样展示，再绑定实际消息并回读。仍失败保留交付异常，不重启研究。超时或空回读用UNKNOWN；一次空结果、尚未索引或只看到发送前游标都不证明未发送。NOT_SENT仅用于尚未绑定请求且发送工具明确证明未派发，原缺席回读还须提供dispatch_evidence={outcome:NOT_DISPATCHED,record_ref,detail}，record_ref来自实际发送失败记录并列入record_refs；已绑定真实请求不能标未派发。
 6. 验收保存源稿、展示稿、实际消息关联与审阅，再推进reported-current。晚确认旧稿不得倒退基线。`repair-completion --delivery-id`只重验已完成交付，不重新发送。
 
+AUTHORED_REPORT_V1 的源稿与会话文本只允许单个文件结束 LF 差异；不改变内部换行、空格、语义或源稿哈希，presentation.text_match 记录 EXACT 或 TERMINAL_LF_ONLY，旧回执没有该字段仍按实际正文核验。末尾 LF 导致的旧 CORRECTION_REQUIRED 可重新 BIND_REQUEST 核正同一请求的实际文本，再以同一助手身份、原正文和完成时间 CONFIRM；原 journal 与尝试次数保留，不能借此替换另一请求、改稿或补造发送。其他更正沿原一次重发链。
+
 历史错误绑定到较早请求而卡在SENDING/UNKNOWN时，使用同一delivery的`RECONCILE_REQUEST`，不手改status、不再次发送。receipt为`{schema:BTC_REQUEST_RECONCILIATION_V1,previous_request:{record_ref,started_at,body},binding:<完整BTC_SENT_REQUEST_V1>,readback:<完整BTC_CLOUD_READBACK_V5>,reason}`。previous_request取实际云端记录，必须匹配原绑定且早于当前尝试；binding取当前尝试后真实请求；readback对应该请求的完成助手正文并通过全部语义核验。接口保留原绑定和缺席记录，新增恢复证据后原子确认；失败不修改状态，相同恢复证据可幂等重放。确认旧日报不替代今日反馈；随后重新审阅过时PENDING稿并完成当前日摘要。
 
 ## 兼容、切换与恢复

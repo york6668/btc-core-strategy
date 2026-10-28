@@ -79,6 +79,71 @@ class AuthoredReportTests(unittest.TestCase):
             self.assertEqual(source['body'], value['layout']['body'])
         self.source(self.spec('BTC 最近完成小时收盘 80,001.25 USDT。\n\n1. 观察条件。\n2. 保留未知。'))
 
+    def test_file_terminal_lf_is_preserved_but_not_required_in_chat(self):
+        value = self.spec(); value['layout']['body'] += '\n'
+        identity, source = self.queue(value)
+        outbox = self.root/'outbox'/identity
+        original = (outbox/'artifact.json').read_bytes()
+        self.begin(identity, source)
+        status = delivery.transition(self.root, identity, 'CONFIRM', self.receipt(identity, source['body'][:-1]))
+        self.assertEqual(status['state'], 'DELIVERED')
+        self.assertEqual(read(outbox/status['presentation'])['text_match'], 'TERMINAL_LF_ONLY')
+        self.assertEqual((outbox/'artifact.json').read_bytes(), original)
+        self.assertEqual(reporting.reported(self.root)['display'], source['body'][:-1])
+        delivery.validate_delivered(self.root, identity)
+        for changed in (source['body']+'\n', source['body'].replace('\n\n', '\n'),
+                        source['body'][:-1]+' ', source['body'].replace('数量未知', '数量已知')):
+            with self.subTest(changed=repr(changed[-20:])):
+                self.assertIn('VERBATIM_SOURCE_CHANGED', delivery.presentation_errors(
+                    read(outbox/'artifact.json'), self.receipt(identity, changed)))
+
+    def test_terminal_lf_readback_repair_keeps_original_attempt_and_journals(self):
+        value = self.spec(); value['layout']['body'] += '\n'
+        identity, source = self.queue(value); self.begin(identity, source)
+        outbox = self.root/'outbox'/identity
+        status = read(outbox/'status.json')
+        old_binding = read(outbox/status['request_binding'])
+        old_binding['request_body'] += '\n'  # Older sender journal copied the file LF.
+        status = delivery.transition(self.root, identity, 'BIND_REQUEST', old_binding)
+        old_binding_path = outbox/status['request_binding']
+        prior = self.receipt(identity, source['body'][:-1])
+        prior['review']['unresolved_issues'] = ['APP_READBACK_TERMINAL_LF_DIFFERS_FROM_FROZEN_SOURCE']
+        status = delivery.transition(self.root, identity, 'CONFIRM', prior)
+        self.assertEqual(status['state'], 'CORRECTION_REQUIRED')
+        old_receipt_path = outbox/status['receipt']
+        actual_binding = dict(old_binding, request_body=old_binding['request_body'][:-1])
+        wrong = dict(actual_binding, request_body=actual_binding['request_body'].replace('数量未知', '数量已知'))
+        with self.assertRaisesRegex(Invalid, 'same request terminal LF'):
+            delivery.transition(self.root, identity, 'BIND_REQUEST', wrong)
+        delivery.transition(self.root, identity, 'BIND_REQUEST', actual_binding)
+        actual_receipt = self.receipt(identity, source['body'][:-1])
+        wrong = deepcopy(actual_receipt); wrong['assistant']['record_ref'] = 'ANOTHER_ASSISTANT'
+        wrong['record_refs'].append('ANOTHER_ASSISTANT')
+        with self.assertRaisesRegex(Invalid, 'same actual assistant'):
+            delivery.transition(self.root, identity, 'CONFIRM', wrong)
+        status = delivery.transition(self.root, identity, 'CONFIRM', actual_receipt)
+        self.assertEqual(status['state'], 'DELIVERED')
+        self.assertEqual(status['attempts'], 1)
+        self.assertEqual(read(old_binding_path), old_binding)
+        self.assertEqual(read(old_receipt_path), prior)
+        self.assertEqual(read(outbox/status['request_binding']), actual_binding)
+        delivery.validate_delivered(self.root, identity)
+
+    def test_multiple_terminal_newlines_and_crlf_are_not_normalized(self):
+        for ending in ('\n\n', '\r\n'):
+            with self.subTest(ending=repr(ending)):
+                value = self.spec(); value['layout']['body'] += ending
+                value['user_request'] = {'reference': 'SYNTHETIC_FORMAT_' + repr(ending),
+                                         'reason': 'Explicit synthetic request verifies preserved final line boundaries.'}
+                identity, source = self.queue(value); self.begin(identity, source)
+                artifact = read(self.root/'outbox'/identity/'artifact.json')
+                self.assertTrue(delivery.request_body(artifact).endswith(ending))
+                changed = source['body'][:-1]
+                self.assertIn('VERBATIM_SOURCE_CHANGED', delivery.presentation_errors(artifact, self.receipt(identity, changed)))
+                delivery.transition(self.root, identity, 'CONFIRM', self.receipt(identity))
+                delivery.validate_delivered(self.root, identity)
+                self.f.seq += 1
+
     def test_reading_review_belongs_to_new_sources_and_legacy_sources_keep_their_contract(self):
         quote = 'BTC 最近完成小时收盘 80,001.25 USDT。'
         value = self.spec(quote)

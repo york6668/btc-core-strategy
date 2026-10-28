@@ -24,12 +24,26 @@ def verbatim(artifact):
     return artifact.get('source', {}).get('layout', {}).get('format') == AUTHORED_FORMAT
 
 
+def message_text(body):
+    """A file's final LF is not part of its chat text; retain all other bytes."""
+    return body[:-1] if body.endswith('\n') and not body.endswith(('\n\n', '\r\n')) else body
+
+
+def same_display_text(source, displayed):
+    return source == displayed or message_text(source) == message_text(displayed)
+
+
+def _request_contains_source(artifact, request):
+    body = message_text(artifact['body']) if verbatim(artifact) else artifact['body']
+    return body in request
+
+
 def request_body(artifact):
     """Ready-to-send instruction; the source is already the final report."""
     require(verbatim(artifact), 'request body helper is for authored reports')
     return ('VERBATIM：请将下方正文逐字作为唯一回复，保留所有 Markdown、换行、空格和顺序。'
             '不要整理、润色、压缩、补充解释、加前后缀或代码围栏；不要调用工具或重新分析。'
-            '正文从下一空行开始直至消息结束。\n\n' + artifact['body'])
+            '正文从下一空行开始直至消息结束。\n\n' + message_text(artifact['body']))
 
 
 def _explanation(value, label):
@@ -260,7 +274,7 @@ def presentation_errors(artifact, receipt, mode='EDIT_ONCE'):
         require(review['bindings'] == [] and review['checks'] == {}, 'verbatim readback uses no second content review')
         require(isinstance(review['unresolved_issues'], list), 'presentation issues must be recorded')
         errors = [str(issue) for issue in review['unresolved_issues']]
-        if body != source['body']:
+        if not same_display_text(source['body'], body):
             errors.append('VERBATIM_SOURCE_CHANGED')
         if receipt['assistant']['tool_calls'] != []:
             errors.append('CLOUD_USED_TOOLS')
@@ -579,9 +593,9 @@ def _validate_request_binding(artifact, status, receipt):
     text(receipt['request_ref'], 'actual sent message reference')
     require(isinstance(receipt['record_refs'], list) and receipt['request_ref'] in receipt['record_refs'], 'actual sent request record required')
     require(receipt['anchor_ref'] == attempt['anchor_ref'] and receipt['request_ref'] != receipt['anchor_ref'], 'request is not after the saved send boundary')
-    require(isinstance(receipt['request_body'], str) and artifact['body'] in receipt['request_body'], 'actual sent request does not contain the frozen source')
+    require(isinstance(receipt['request_body'], str) and _request_contains_source(artifact, receipt['request_body']), 'actual sent request does not contain the frozen source')
     if verbatim(artifact):
-        require(receipt['request_body'] == request_body(artifact), 'authored source requires the frozen verbatim send instruction')
+        require(same_display_text(receipt['request_body'], request_body(artifact)), 'authored source requires the frozen verbatim send instruction')
     require(instant(receipt['request_started_at']) >= instant(attempt['started_at']), 'cloud request predates this send attempt')
 
 
@@ -625,7 +639,13 @@ def _edited_transition(root, outbox, artifact, status, action, receipt):
         if state == 'DELIVERED':
             require(read(outbox / status['request_binding']) == receipt, 'delivered request binding is immutable')
             return
-        require(state in ('SENDING', 'UNKNOWN'), 'no send attempt to bind')
+        require(state in ('SENDING', 'UNKNOWN', 'CORRECTION_REQUIRED'), 'no send attempt to bind')
+        if state == 'CORRECTION_REQUIRED':
+            previous = read(outbox / status['request_binding'])
+            require(verbatim(artifact) and same_display_text(previous['request_body'], receipt['request_body'])
+                    and all(previous[key] == receipt[key] for key in ('attempt_id', 'destination', 'request_ref', 'anchor_ref'))
+                    and instant(previous['request_started_at']) == instant(receipt['request_started_at']),
+                    'readback repair may only correct the same request terminal LF')
         _validate_request_binding(artifact, status, receipt)
         require(status['attempt'].get('request_ref') in (None, receipt['request_ref']), 'cannot replace a bound cloud request')
         status['attempt']['request_ref'] = receipt['request_ref']
@@ -671,8 +691,16 @@ def _edited_transition(root, outbox, artifact, status, action, receipt):
         _receipt_link(artifact, status, receipt, absence=True)
         status.update(state='NOT_SENT_CONFIRMED', receipt=_save(outbox, 'receipt', receipt))
     elif action == 'CONFIRM':
-        require(state in ('SENDING', 'UNKNOWN', 'DELIVERED'), 'receipt cannot skip send/readback')
+        require(state in ('SENDING', 'UNKNOWN', 'DELIVERED', 'CORRECTION_REQUIRED'), 'receipt cannot skip send/readback')
         _receipt_link(artifact, status, receipt)
+        if state == 'CORRECTION_REQUIRED':
+            previous = read(outbox / status['receipt'])['assistant']
+            actual = receipt['assistant']
+            require(verbatim(artifact) and same_display_text(artifact['body'], actual['body'])
+                    and {k:v for k,v in previous.items() if k != 'completed_at'} ==
+                        {k:v for k,v in actual.items() if k != 'completed_at'}
+                    and previous.get('completed_at') == actual.get('completed_at'),
+                    'readback repair must preserve the same actual assistant body and identity')
         binding = read(outbox / status['request_binding'])
         if 'request_started_at' in binding:
             require(instant(binding['request_started_at']) <= instant(receipt['assistant'].get('completed_at', receipt['checked_at'])), 'reply predates its cloud request')
@@ -685,6 +713,9 @@ def _edited_transition(root, outbox, artifact, status, action, receipt):
         presentation = {'source_hash': artifact['body_hash'], 'display_hash': digest(receipt['assistant']['body'].encode()),
                         'assistant': receipt['assistant'], 'request_ref': receipt['request_ref'], 'attempt_id': receipt['attempt_id'],
                         'review': receipt['review'], 'errors': errors}
+        if verbatim(artifact):
+            presentation['text_match'] = ('EXACT' if artifact['body'] == receipt['assistant']['body']
+                                          else 'TERMINAL_LF_ONLY' if not errors else 'MISMATCH')
         status.update(presentation=_save(outbox, 'presentation', presentation), receipt=_save(outbox, 'receipt', receipt),
                       state='CORRECTION_REQUIRED' if errors else 'DELIVERED')
         if errors:
@@ -731,7 +762,7 @@ def validate_delivered(root, identity):
         validate_source(artifact['source'], _decision(root, artifact['decision_id']), verify_render=False)
         binding = read(outbox / status['request_binding'])
         require(binding['request_ref'] == status['attempt']['request_ref'] and binding['attempt_id'] == status['attempt']['attempt_id']
-                and binding['anchor_ref'] == status['attempt']['anchor_ref'] and artifact['body'] in binding['request_body'], 'sent request journal differs from confirmed source')
+                and binding['anchor_ref'] == status['attempt']['anchor_ref'] and _request_contains_source(artifact, binding['request_body']), 'sent request journal differs from confirmed source')
         _receipt_link(artifact, status, receipt)
         if 'request_started_at' in binding:
             _validate_request_binding(artifact, status, binding)
@@ -739,6 +770,9 @@ def validate_delivered(root, identity):
         require(not presentation_errors(artifact, receipt, status['attempt']['mode']), 'display review no longer validates')
         saved = read(outbox / status['presentation'])
         require(saved['assistant'] == receipt['assistant'] and saved['review'] == receipt['review'] and saved['source_hash'] == artifact['body_hash'] and saved['display_hash'] == digest(receipt['assistant']['body'].encode()) and saved['errors'] == [], 'presentation journal differs from confirmed receipt')
+        if 'text_match' in saved:
+            require(saved['text_match'] == ('EXACT' if artifact['body'] == receipt['assistant']['body'] else 'TERMINAL_LF_ONLY'),
+                    'presentation text comparison differs from actual source and reply')
     else:
         require(receipt['schema'] == 'BTC_CLOUD_READBACK_V4' and receipt['destination'] == artifact['destination'] and receipt['visible_report_text'] == artifact['body'] and receipt['assistant_responses'] == ['已收录'] and receipt['record_refs'] and receipt['absence_confirmed'] is False, 'legacy report readback mismatch')
     return artifact, status, receipt

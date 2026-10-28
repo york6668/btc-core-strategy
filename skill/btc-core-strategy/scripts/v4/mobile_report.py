@@ -38,7 +38,8 @@ def displayed_evaluation_time(source, receipt):
         return None
     if source.get('layout', {}).get('format') == 'AUTHORED_REPORT_V1':
         body = receipt.get('assistant', {}).get('body', '')
-        return line if body == source['body'] and body.startswith(line+'\n\n') else None
+        from .delivery import same_display_text
+        return line if same_display_text(source['body'], body) and body.startswith(line+'\n\n') else None
     assertion=next((c for c in source.get('constraints', []) if c['source_text']==line), None)
     if not assertion:
         return None
