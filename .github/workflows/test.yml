@@ -14,6 +14,8 @@ jobs:
           python-version: '3.11'
       - name: Verify pinned test dependency and export boundary
         run: python3 -B -m unittest discover -s tests -p test_ci_reader.py -v
+      - name: Install declared reader test dependencies
+        run: python3 -m pip install -r test_support/ci_reader/requirements.txt
       - name: Verify current source full offline regression
         run: python3 -B scripts/run_tests.py --reader test_support/ci_reader/telegram_reader
       - name: Verify Docker admission and failure diagnostics without starting a stack
