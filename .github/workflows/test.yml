@@ -31,3 +31,13 @@ jobs:
           docker image inspect "$python_image" --format '{{index .RepoDigests 0}}'
       - name: Verify current MySQL, actual CLI and MCP, recovery and business replay
         run: python3 -B scripts/ci_reader.py run
+      - name: Read isolated container contract results
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import tempfile
+          for log in sorted(Path(tempfile.gettempdir()).glob('btc-check-evidence-*/*.log')):
+              print(f'=== {log.name} ===')
+              print(log.read_text(errors='replace')[-131072:])
+          PY
