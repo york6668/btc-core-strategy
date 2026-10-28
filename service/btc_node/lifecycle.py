@@ -246,11 +246,15 @@ def _maintain(db, *, apply, now):
             # A cited unchanged re-fetch is a source bridge even without its
             # own observation row. Retain its small provenance mapping with
             # the analytical dependency, rather than losing it after 30 days.
+            # Keep the two reference routes separate so both use the target
+            # index. Combining them with a correlated OR scans dependencies
+            # for every expired retrieval at real catalog scale.
             db.execute('DELETE r FROM series_retrievals r WHERE r.known_ms<%s '
                 'AND NOT EXISTS(SELECT 1 FROM dependencies d '
-                "WHERE d.target_type='BLOB' AND (d.target_key=r.source_digest OR "
-                'EXISTS(SELECT 1 FROM series_originals o WHERE o.source_digest=r.source_digest '
-                'AND o.original_digest=d.target_key)))', (now_ms-30*DAY,))
+                "WHERE d.target_type='BLOB' AND d.target_key=r.source_digest) "
+                'AND NOT EXISTS(SELECT 1 FROM series_originals o JOIN dependencies d '
+                "ON d.target_key=o.original_digest AND d.target_type='BLOB' "
+                'WHERE o.source_digest=r.source_digest)', (now_ms-30*DAY,))
         # A measurement referenced by an analytical object remains queryable,
         # including its revisions. Age alone cannot retire that object.
         candidates = db.rows('SELECT observation_key,product,series,item_key FROM observations '

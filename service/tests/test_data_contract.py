@@ -602,6 +602,27 @@ class NodeContract(unittest.TestCase):
                 self.assertEqual(projected['digest'],prior['digest'])
                 self.assertEqual(len(self.objects.history(kind,value['object_id'])['versions']),2)
 
+    def test_retrieval_retention_keeps_direct_citations_and_recent_uncited_sources(self):
+        # The original-digest route is covered by the unchanged-value test
+        # below. Direct citations also work without a series_originals row.
+        digests = {}
+        for name, hours in [('direct', 40*24), ('uncited', 40*24),
+                            ('other_type', 40*24), ('recent', 24)]:
+            digest = self.db.put_blob(encode({'generated': self.id, 'case': name}))
+            digests[name] = digest
+            self.db.execute('INSERT INTO series_retrievals VALUES(%s,%s,%s,%s,%s)',
+                (fingerprint(encode([self.id, name])), self.id, 'generated',
+                 millis(self.at(hours)), digest))
+        self.objects.put(self.spec('DECISION', dependencies=[
+            {'type': 'BLOB', 'digest': digests['direct']}]), expected_version=0)
+        self.db.execute('INSERT INTO dependencies VALUES(%s,%s,%s,%s,%s)',
+            (fingerprint(encode(self.id)), 1, digests['other_type'], 'ENTITY', 'generated'))
+        self.db.connection.commit()
+        maintain(self.db, apply=True, now=self.at(), measure_files=False)
+        remaining = {row['source_digest'] for row in self.db.rows(
+            'SELECT source_digest FROM series_retrievals WHERE product=%s', (self.id,))}
+        self.assertEqual({digests['direct'], digests['recent']}, remaining)
+
     def test_same_value_retrieval_remains_a_cited_revision_bridge_after_retention(self):
         product = self.id + '-reverified'
         self.prices.instrument(product, {'market': 'SYNTHETIC', 'symbol': 'TEST',
