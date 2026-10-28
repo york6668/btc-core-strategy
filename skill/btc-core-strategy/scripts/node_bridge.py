@@ -128,6 +128,9 @@ def subcommand(argv):
 
 
 def forward_if_enabled(argv, *, requested_release=None):
+    if '--help' in argv or '-h' in argv:
+        # argparse help is local; it must not synchronize facts or open a writer.
+        return
     if os.environ.get('BTC_IN_CONTAINER') == '1':
         return
     if subcommand(argv) == 'run-read':

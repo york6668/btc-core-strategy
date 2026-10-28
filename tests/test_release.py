@@ -20,6 +20,19 @@ spec.loader.exec_module(release)
 
 
 class ExportManifestTests(unittest.TestCase):
+    def test_strategy_help_does_not_load_node_configuration_or_forward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, BTC_NODE_CONFIG=str(Path(directory) / 'absent-node.json'))
+            environment.pop('BTC_IN_CONTAINER', None)
+            for arguments in (['--help'], ['--project', directory, '--root', directory,
+                                          'report-care', '--help']):
+                result = subprocess.run([sys.executable, '-B',
+                    str(ROOT / 'skill/btc-core-strategy/scripts/strategy_v4.py'), *arguments],
+                    env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('usage:', result.stdout)
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_exported_validation_entrypoint_imports_without_repository_fallback(self):
         files = json.loads((ROOT / 'export-manifest.json').read_text())['files']
         with tempfile.TemporaryDirectory() as directory:
@@ -114,7 +127,12 @@ class ReleaseTests(unittest.TestCase):
         (self.source / 'scripts/run_tests.py').write_text(
             'import sys\nfrom pathlib import Path\n'
             'assert sys.argv[1] == "--reader" and (Path(sys.argv[2]) / "reader.py").is_file()\n')
-        (self.source / 'export-manifest.json').write_text(json.dumps({'files': ['scripts/run_tests.py']}))
+        entries = ['scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
+                   'project-methods/AGENTS.md', 'project-methods/价值因子.md']
+        for name in entries:
+            path = self.source / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# Synthetic release entry\n', encoding='utf-8')
+        (self.source / 'export-manifest.json').write_text(json.dumps({'files': ['scripts/run_tests.py', *entries]}))
         self.first = self.commit('first')
         release.install(self.config, self.source)
 
@@ -124,6 +142,54 @@ class ReleaseTests(unittest.TestCase):
     def commit(self, message):
         self.git('add', '.'); self.git('commit', '-qm', message)
         return self.git('rev-parse', 'HEAD')
+
+    def test_missing_method_stops_entry_without_creating_an_active_run(self):
+        root = Path(self.config['release_root'])
+        installed = release.version_dir(root, self.first)
+        for name in ('skill/btc-core-strategy/SKILL.md', 'project-methods/价值因子.md'):
+            with self.subTest(name=name):
+                path = installed / name; content = path.read_bytes(); path.unlink()
+                try:
+                    with self.assertRaisesRegex(ValueError, 'release source'):
+                        release.enter(self.config, 'missing-method')
+                    self.assertFalse(release.record_path(root, 'runs', 'missing-method').exists())
+                    with self.assertRaisesRegex(ValueError, 'release source'):
+                        release.activate(self.config, self.first)
+                finally:
+                    path.write_bytes(content)
+        self.assertEqual(release.enter(self.config, 'restored-method')['commit'], self.first)
+        self.assertEqual(self.state.read_bytes(), self.before)
+
+    def test_repeat_activation_preserves_rollback_and_pending_upgrade(self):
+        root = Path(self.config['release_root'])
+        (self.source / 'change.txt').write_text('second')
+        second = self.commit('second'); release.install(self.config, self.source)
+        before = (root / 'activation.json').read_bytes()
+        release.enter(self.config, 'running-second')
+        (self.source / 'change.txt').write_text('third')
+        third = self.commit('third'); release.install(self.config, self.source)
+        pending = (root / 'pending.json').read_bytes()
+        result = release.activate(self.config, second)
+        self.assertEqual(result['status'], 'ACTIVE')
+        self.assertEqual(result['previous'], self.first)
+        self.assertEqual((root / 'activation.json').read_bytes(), before)
+        self.assertEqual((root / 'pending.json').read_bytes(), pending)
+        release.finish(self.config, 'running-second')
+        release.activate(self.config, third)
+        self.assertEqual(release.read(root / 'activation.json')['previous'], second)
+
+    def test_complete_release_can_replace_damaged_current_without_repairing_history(self):
+        root = Path(self.config['release_root'])
+        (self.source / 'change.txt').write_text('replacement')
+        replacement = self.commit('replacement')
+        release.install(self.config, self.source, activate_after=False)
+        missing = release.version_dir(root, self.first) / 'project-methods/价值因子.md'
+        missing.unlink()
+        result = release.activate(self.config, replacement)
+        self.assertEqual(result['previous'], self.first)
+        self.assertEqual(release.enter(self.config, 'replacement')['commit'], replacement)
+        self.assertFalse(missing.exists())
+        self.assertEqual(self.state.read_bytes(), self.before)
 
     def test_update_waits_for_run_gap_and_resumes_unknown_on_original_version(self):
         original = release.enter(self.config, 'run-a')
@@ -175,7 +241,8 @@ class ReleaseTests(unittest.TestCase):
         release.enter(self.config,'origin'); release.bind(self.config,'origin',context)
         release.finish(self.config,'origin')
         release.enter(self.config,'old-recovery',context)
-        manifest={'files':['scripts/run_tests.py'],'content_contract':{'read_revisions':[1,2,3,4,5,6]}}
+        manifest = release.read(self.source / 'export-manifest.json')
+        manifest['content_contract'] = {'read_revisions':[1,2,3,4,5,6]}
         (self.source/'export-manifest.json').write_text(json.dumps(manifest))
         target=self.commit('compatible repair');release.install(self.config,self.source,activate_after=False)
         with self.assertRaisesRegex(ValueError,'active recovery'):

@@ -68,17 +68,42 @@ def version_dir(root, revision):
     return root / 'releases' / revision
 
 
+def check_sources(path):
+    """Use the same source contract during installation and later entry."""
+    root = path.resolve()
+    required = read(path / 'export-manifest.json')
+    files = required['files']
+    entries = {'scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
+               'project-methods/AGENTS.md'}
+    if not isinstance(files, list) or not all(isinstance(name, str) for name in files) or not entries.issubset(files):
+        raise ValueError('release source manifest is missing its runtime or method entries')
+    for name in files:
+        relative = Path(name)
+        source = path / relative
+        if (relative.is_absolute() or '..' in relative.parts or not source.is_file()
+                or source.is_symlink() or root not in source.resolve().parents):
+            raise ValueError('missing or unsafe release source: ' + name)
+    return required
+
+
 def check_release(path):
     metadata = read(path / 'RELEASE.json')
     if metadata['commit'] != path.name or metadata['data_schema'] != 'BTC_V4_UNCHANGED':
         raise ValueError('release identity or data compatibility mismatch')
+    check_sources(path)
     return metadata
 
 
-def current(root):
+def selected(root):
     target = (root / 'current').resolve(strict=True)
     if target.parent != (root / 'releases').resolve():
         raise ValueError('current must point to an installed release')
+    version_dir(root, target.name)
+    return target
+
+
+def current(root):
+    target = selected(root)
     check_release(target)
     return target
 
@@ -93,11 +118,15 @@ def activate(config, revision):
             readable = metadata.get('content_contract', {}).get('read_revisions', [1, 2, 3, 4, 5])
             if content_revision not in readable:
                 raise ValueError('target code cannot read current assessment revision; preserve code and data')
+        previous = selected(root).name if (root / 'current').exists() else None
+        if previous == revision:
+            activation = read(root / 'activation.json') if (root / 'activation.json').exists() else {}
+            return {'status': 'ACTIVE', 'commit': revision, 'release': str(target),
+                    'previous': activation.get('previous') if activation.get('commit') == revision else None}
         active = [read(p) for p in (root / 'runs').glob('*.json') if read(p).get('status') == 'ACTIVE']
         if active:
             write(root / 'pending.json', {'commit': revision, 'status': 'WAITING_FOR_RUN_GAP'})
             return {'status': 'WAITING_FOR_RUN_GAP', 'commit': revision, 'active_runs': len(active)}
-        previous = current(root).name if (root / 'current').exists() else None
         link = root / ('.current-' + revision)
         if link.is_symlink():
             link.unlink()
@@ -131,11 +160,7 @@ def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None
                             raise ValueError('release archive must contain only relative regular sources')
                     package.extractall(stage)
                 archive.unlink()
-                required = read(stage / 'export-manifest.json')
-                for filename in required['files']:
-                    path = stage / filename
-                    if not path.is_file() or path.is_symlink() or stage not in path.resolve().parents:
-                        raise ValueError('missing or unsafe release source: ' + filename)
+                required = check_sources(stage)
                 reader = Path(test_reader or config['reader_code_dir']).expanduser().resolve()
                 if not (reader / 'reader.py').is_file():
                     raise ValueError('configured reader_code_dir must contain the installed reader')

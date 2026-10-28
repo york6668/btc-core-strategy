@@ -14,9 +14,6 @@ if __name__ == '__main__':
         print(json.dumps({'error': 'Invalid', 'message': str(exc)}), file=sys.stderr)
         raise SystemExit(2)
 
-from v4 import assessment, delivery, domain, draft, evidence, hourly, migration, storage, sensing, main_flow, research, reporting
-from v4.common import Invalid, create, digest, facts, read, locked
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -172,6 +169,9 @@ def main(argv=None):
     p = sub.add_parser('strategy-backtest'); p.add_argument('--input', required=True); p.add_argument('--evidence', required=True)
     p = sub.add_parser('judgement-evaluate'); p.add_argument('--input', required=True); p.add_argument('--evidence', required=True)
     args = parser.parse_args(argv)
+    # Help must be available before importing business modules that load node configuration.
+    from v4 import assessment, delivery, domain, draft, evidence, hourly, migration, storage, sensing, main_flow, research, reporting
+    from v4.common import Invalid, create, digest, facts, read, locked
     try:
         import runtime_schedule
         import node_bridge
