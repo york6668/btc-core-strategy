@@ -64,13 +64,27 @@ class PreflightTests(unittest.TestCase):
             source = root/'reader-source'
             source.mkdir()
             (source/'reader.py').write_text('pass\n')
+            (source/'reader.py').chmod(0o600)
+            (source/'tests').mkdir()
+            (source/'tests/test_reader.py').write_text('pass\n')
             (source/'data').mkdir()
             (source/'data/state.sqlite').write_bytes(b'private state')
-            staged = check.stage_reader_source_mount(source, root/'reader-export')
+            original_umask = os.umask(0o077)
+            try:
+                staged = check.stage_reader_source_mount(source, root/'reader-export')
+            finally:
+                os.umask(original_umask)
             self.assertEqual((staged/'reader.py').read_text(), 'pass\n')
             self.assertTrue((staged/'data').is_dir())
             self.assertEqual(list((staged/'data').iterdir()), [])
             self.assertFalse((staged/'data/state.sqlite').exists())
+            # Docker cp may assign every copied path to root. A different
+            # runtime UID must still traverse directories and read code.
+            for path in (staged, *staged.rglob('*')):
+                required = 0o005 if path.is_dir() else 0o004
+                self.assertEqual(path.stat().st_mode & required, required)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((source/'reader.py').stat().st_mode & 0o777, 0o600)
 
     def test_missing_input_never_claims_the_disposable_stack(self):
         with tempfile.TemporaryDirectory() as tmp:

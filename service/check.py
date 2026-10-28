@@ -160,10 +160,17 @@ def export_reader_sources(reader, destination):
 
 
 def stage_reader_source_mount(reader, destination):
-    """Provide an empty target for the nested writable data bind, without state."""
+    """Stage state-free source readable by the unprivileged container user."""
     export_reader_sources(reader, destination)
     destination = Path(destination)
     (destination / 'data').mkdir(mode=0o755)
+    # Docker cp creates root-owned paths while retaining their modes. The
+    # private 0700 export directory would hide these sources from the test
+    # service's non-root user. Normalize only this disposable source copy;
+    # its private parent, original sources, state and secrets are untouched.
+    destination.chmod(0o755)
+    for path in destination.rglob('*'):
+        path.chmod(0o755 if path.is_dir() else 0o644)
     return destination
 
 

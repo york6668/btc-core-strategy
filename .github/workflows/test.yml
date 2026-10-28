@@ -3,7 +3,7 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  data-service:
+  offline-regression:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,15 @@ jobs:
         run: python3 -B -m unittest discover -s service -p 'test_*offline.py' -v
       - name: Verify current data service offline regressions
         run: PYTHONPATH=service python3 -B -m unittest discover -s service/tests -p 'test_*offline.py' -v
+  data-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Prepare the pinned Python Docker image
         run: |
           python_image="$(python3 -B service/python_image.py)"
