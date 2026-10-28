@@ -523,8 +523,11 @@ class ReferenceGraphRetentionTests(unittest.TestCase):
         import ast
         from bisect import bisect_left
         import re
+        from btc_node import lifecycle
         source = getattr(cls, 'source_override', None)
-        cls.graph_path = Path(source) if source else Path(__file__).resolve().parents[1] / 'btc_node/lifecycle.py'
+        # The suite is staged separately in Docker. Resolve the implementation
+        # actually imported by this process, not a sibling of the test file.
+        cls.graph_path = Path(source) if source else Path(lifecycle.__file__)
         cls.tree = ast.parse(cls.graph_path.read_bytes())
         node = next(n for n in cls.tree.body if isinstance(n, ast.FunctionDef) and n.name == 'protected_documents')
         env = dict(Path=Path, os=os, re=re, bisect_left=bisect_left)
