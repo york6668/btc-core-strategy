@@ -291,6 +291,31 @@ def adopted(root, assessment):
     return max(found, key=lambda pair: (instant(pair[0]['market_cutoff']), instant(pair[0]['completed_at']))) if found else (None, None)
 
 
+def approved_frozen_public(root, draft):
+    """Recognize an exact approved mapping, not a newly authored expectation.
+
+    MAIN's ASSESSED timestamp describes its mapping review. It must not
+    redate the already frozen author's claim or pretend to be ancestor reuse.
+    """
+    if not draft.get('research_absorptions'):
+        return None
+    saved, disclosed = adopted(root, draft)
+    if saved is None:
+        return None
+    candidate = disclosed['candidate']['assessment']
+    if (content(draft) != content(dict(candidate, revision=market_state.revision(candidate)))
+            or draft.get('fact_version') != saved['fact_version']
+            or draft.get('temporal_scope') != candidate.get('temporal_scope')
+            or draft.get('evidence_id') != saved['evidence_id']):
+        return None
+    from . import research
+    phase = research._load(root, 'independent', saved['independent_id'])
+    research._verify_market_amendment(phase, root)
+    market_state.ensure_research_mapping(phase, {'assessment':draft},
+        _companion_report=lambda: research._candidate_companion_report(root, phase))
+    return phase
+
+
 def pending_reassessment(root, saved):
     """Carry actual open work until adoption, without another current-state file."""
     from . import research, sensing

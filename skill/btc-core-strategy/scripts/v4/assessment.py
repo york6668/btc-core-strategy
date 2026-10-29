@@ -126,9 +126,13 @@ def validate_analysis_sections(draft, revision, resolve, lifecycle_root=None, fr
     if lifecycle_root is not None and public_revision >= 9 and origin.get('mode') != 'REUSED':
         from . import market_state
         prior_market = market_state.effective(lifecycle_root).get('market_assessment')
-    historical_read = public_revision >= 9 and (frozen_public or origin.get('mode') == 'REUSED')
+    approved_origin = None
+    if lifecycle_root is not None and public_revision >= 9 and not frozen_public and origin.get('mode') != 'REUSED':
+        from .cycle import approved_frozen_public
+        approved_origin = approved_frozen_public(lifecycle_root, draft)
+    historical_read = public_revision >= 9 and (frozen_public or origin.get('mode') == 'REUSED' or approved_origin is not None)
     if historical_read:
-        if not frozen_public:
+        if not frozen_public and origin.get('mode') == 'REUSED':
             # Reuse is only a read of the exact original ancestor and its
             # original time/evidence identity, never an input-authored bypass.
             require(lifecycle_root is not None, 'reused public result needs its original owner')

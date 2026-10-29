@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 import test_forward_lifecycle as lifecycle_fixture
 from test_forward_lifecycle import proposition, forward, register_public, T0, T2, BASE
-from v4 import assessment, closed_loop, evidence, market_state, research, storage, sensing, cycle
+from v4 import assessment, closed_loop, evidence, market_state, research, storage, sensing, cycle, main_flow
 from v4.common import Invalid, create, digest
 
 
@@ -38,6 +38,69 @@ class EntryTests(unittest.TestCase):
         target=self.root/'valid-package';evidence.freeze(spec,files,target)
         from v4.common import read
         return target,read(target/'evidence.json')
+
+    def approved_public_mapping(self):
+        # Reuse the existing generated complete-section constructor. It is not
+        # an actual model approval; that gate has its own transport regressions.
+        import test_cycle_workflow as complete_fixture
+        f=complete_fixture.CycleWorkflowTests()
+        with mock.patch('v4.storage.NEW_WRITE_REVISION',1): f.setUp()
+        self.addCleanup(f.doCleanups)
+        public=self.result();directory,package=self.package()
+        storage.archive_evidence(self.root,directory)
+        create(self.root/'approved-public-input.json',{'historical_hypotheses':{}})
+        with mock.patch('v4.forward_lifecycle.now',return_value=T2):
+            valid=research._public_result(self.root,{'workflow_revision':9,'evidence_id':package['evidence_id'],
+                'independent_input_path':'approved-public-input.json'},json.dumps(public),directory)
+            phase=research._save(self.root,'independent','independent_id',valid)
+        draft=deepcopy(f.f.draft);draft.update(revision=9,evidence_id=package['evidence_id'],fact_version={},
+            research_absorptions=[{'decision':'ADOPT','result_id':digest('generated approval')}])
+        draft['outlook']=deepcopy(public['outlook']);draft['factor_assessment']=deepcopy(public['factor_assessment'])
+        draft['conclusion']['narrative']=public['market_report'];draft['robustness']['refs']=[]
+        draft['temporal_scope'].update(market_cutoff=T2,knowledge_cutoff='2024-01-04T00:00:00Z')
+        draft['section_provenance']['outlook'].update(mode='ASSESSED',decision_id=None,
+            assessed_at=draft['temporal_scope']['knowledge_cutoff'],evidence_id=package['evidence_id'])
+        saved={'fact_version':{},'evidence_id':package['evidence_id'],'independent_id':phase['independent_id']}
+        disclosed={'candidate':{'assessment':deepcopy(draft)}}
+        return draft,phase,saved,disclosed
+
+    def test_exact_approved_public_mapping_retains_claim_clock_in_main_analysis(self):
+        draft,phase,saved,disclosed=self.approved_public_mapping()
+        before=list((self.root/'market-lifecycle/claims').glob('*.json'))
+        with mock.patch.object(cycle,'adopted',return_value=(None,None)),self.assertRaisesRegex(Invalid,'own current frozen inputs'):
+            assessment.validate_analysis_sections(draft,9,self.resolve,self.root)
+        with mock.patch.object(cycle,'adopted',return_value=(saved,disclosed)):
+            self.assertEqual(phase,cycle.approved_frozen_public(self.root,draft))
+            assessment.validate_analysis_sections(draft,9,self.resolve,self.root)
+        self.assertEqual(before,list((self.root/'market-lifecycle/claims').glob('*.json')))
+
+    def test_approved_public_origin_rejects_changed_candidate_facts_clocks_or_evidence(self):
+        draft,phase,saved,disclosed=self.approved_public_mapping()
+        with mock.patch.object(cycle,'adopted',return_value=(saved,disclosed)):
+            for change in ('body','facts','clock','evidence','public'):
+                changed=deepcopy(draft)
+                if change=='body':changed['conclusion']['narrative']+=' changed'
+                elif change=='facts':changed['fact_version']={'changed':digest('facts')}
+                elif change=='clock':changed['temporal_scope']['knowledge_cutoff']='2024-01-05T00:00:00Z'
+                elif change=='evidence':changed['evidence_id']=digest('different bundle')
+                else:changed['outlook']['narrative']+=' changed'
+                with self.subTest(change=change):self.assertIsNone(cycle.approved_frozen_public(self.root,changed))
+
+    def test_main_publication_uses_the_same_verified_public_origin(self):
+        draft,phase,saved,disclosed=self.approved_public_mapping()
+        # Isolate only unrelated later publication gates; the real market
+        # validator and the trusted frozen-owner check execute normally.
+        with mock.patch.object(cycle,'adopted',return_value=(saved,disclosed)), \
+             mock.patch.object(main_flow,'validate_reuse'), \
+             mock.patch('v4.market_state.effective',return_value={'dispute_zones':[]}), \
+             mock.patch('v4.investment.decision',return_value={'issues':[]}), \
+             mock.patch('v4.investment.validate_issue_review'), \
+             mock.patch('v4.research.validate_absorptions'), \
+             mock.patch('v4.cycle.validate_publication'):
+            main_flow.validate_publication(self.root,{'decision_id':'generated','assessment':{}},draft)
+            changed=deepcopy(draft);changed['conclusion']['narrative']+=' changed'
+            with self.assertRaisesRegex(Invalid,'own current frozen inputs'):
+                main_flow.validate_publication(self.root,{'decision_id':'generated','assessment':{}},changed)
 
     def test_actual_public_result_consumer_passes_resolver_owner_and_registration(self):
         directory,package=self.package();create(self.root/'packet.json',{'historical_hypotheses':{}})

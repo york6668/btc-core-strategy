@@ -89,8 +89,10 @@ def validate_publication(root, prior, draft):
     if draft.get('revision', 1) >= 5:
         from . import market_state
         previous_zones = market_state.effective(root, prior['assessment'], prior['decision_id'])['dispute_zones']
+        from .cycle import approved_frozen_public
+        approved_origin = approved_frozen_public(root, draft) if draft['revision'] >= 9 else None
         # Identical carried market sections retain their original validation.
-        if draft['section_provenance']['outlook']['mode'] != 'REUSED':
+        if draft['section_provenance']['outlook']['mode'] != 'REUSED' and approved_origin is None:
             market_state.validate_zones(draft['outlook']['dispute_zones'], lambda ref: None, prior=previous_zones, revision=draft['revision'])
             if draft['revision'] >= 9:
                 from . import evidence
