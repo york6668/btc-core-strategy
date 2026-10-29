@@ -106,6 +106,33 @@ def consensus_prices(root, artifact):
     return result
 
 
+def _market_only(layout):
+    return (layout.get('format') == AUTHORED_FORMAT and bool(layout.get('bindings'))
+            and all(isinstance(b, dict) and b.get('scope') in ('market', 'clock') for b in layout['bindings']))
+
+
+def _disclosed_fact_version(source, display):
+    from .delivery import message_text
+    review = source.get('report_review', {})
+    ctx = review.get('context', {})
+    version = ctx.get('identity', {}).get('fact_version')
+    if source.get('layout', {}).get('format') != AUTHORED_FORMAT or not isinstance(version, dict) or not version:
+        return None
+    notice = review.get('information', {}).get('fact_limitations')
+    if (isinstance(notice, str) and notice.strip()
+            and (notice in display or
+                 (source.get('body', '').endswith(notice)
+                  and message_text(notice) in message_text(display)))):
+        return deepcopy(version)
+    # Carry only a previously proven disclosure of these same facts through
+    # later market-only displays. Internal analysis or a queued source is not
+    # an acknowledgement, and changing facts invalidates the old disclosure.
+    if (_market_only(source.get('layout', {}))
+            and ctx.get('reported', {}).get('disclosed_fact_version') == version):
+        return deepcopy(version)
+    return None
+
+
 def reported(root):
     from . import delivery
     root = Path(root)
@@ -135,6 +162,7 @@ def reported(root):
             'identity':digest(baseline), 'delivery_id':baseline['delivery_id'], 'display':display,
             'display_delivery_id':display_identity, 'display_matches_baseline':display_identity==baseline['delivery_id'],
             'display_format':price_artifact.get('source',{}).get('layout',{}).get('format'),
+            'disclosed_fact_version':_disclosed_fact_version(price_artifact.get('source', {}), display),
             'display_evaluation_time':displayed_evaluation_time(price_artifact.get('source',{}), actual_receipt),
             'coverage':coverage, 'confirmed_at':receipt.get('checked_at', status['updated_at']),
             # A review can contain maintenance facts omitted from its summary.
@@ -332,7 +360,10 @@ def record(root, spec, *, prepared_context=None):
         for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')
         pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
         facts_match = facts(Path(root).parent.parent) == storage.current(root)['assessment']['fact_version']
-        if not facts_match and ctx.get('market_revision', 0) >= 5 and spec['action'] == 'REPORT':
+        disclosed = ctx.get('identity', {}).get('fact_version')
+        needs_notice = (not _market_only(spec.get('layout') or {}) or not disclosed
+                        or ctx['reported'].get('disclosed_fact_version') != disclosed)
+        if not facts_match and ctx.get('market_revision', 0) >= 5 and spec['action'] == 'REPORT' and needs_notice:
             text(spec['information'].get('fact_limitations'), 'personal response must explain changed facts without limiting market eligibility')
         if not facts_match and ctx.get('market_revision', 0) < 5:
             require(pending_cycle, 'facts changed; portfolio impact awaits cycle review')

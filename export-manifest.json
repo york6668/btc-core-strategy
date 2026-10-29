@@ -172,6 +172,7 @@
     "skill/btc-core-strategy/tests/test_production_strategy.py",
     "skill/btc-core-strategy/tests/test_recommendation_maintenance.py",
     "skill/btc-core-strategy/tests/test_report_care.py",
+    "skill/btc-core-strategy/tests/test_report_fact_notice.py",
     "skill/btc-core-strategy/tests/test_revision2_report_bridge.py",
     "skill/btc-core-strategy/tests/test_run_flow.py",
     "skill/btc-core-strategy/tests/test_run_usage.py",
