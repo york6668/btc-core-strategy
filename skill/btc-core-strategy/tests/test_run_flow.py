@@ -121,6 +121,74 @@ class RunFlowTests(unittest.TestCase):
         self.assertEqual((Path(result['run']).parent/'collector.json').read_bytes(), original)
         self.assertEqual((self.d/'collector.json').read_bytes(),original)
 
+    def _partial_prepare_after_reference_index(self):
+        from v4 import collector
+        raw = deepcopy(self.f.raw)
+        for name in ('datasets', 'windows'):
+            raw[name] = {key: raw[name][key] for key in sorted(raw[name], reverse=True)}
+        snapshot = {'schema': collector.SCHEMA, 'role': 'auxiliary_observation',
+                    'captured_at': '2030-03-01T13:00:00Z', 'independent_verified_sources': 0,
+                    'requires_independent_verification': True, 'requires_current_source_check': True,
+                    'assets': {asset: {'status': 'UNAVAILABLE', 'reasons': ['SYNTHETIC']}
+                               for asset in collector.ASSETS}}
+        original_save = run_flow.save
+        def fail_after_index(path, value):
+            if Path(path).name == 'recovery.json':
+                raise Invalid('interrupted after reference index')
+            return original_save(path, value)
+        with mock.patch('market_observation.collect', return_value=raw), \
+             mock.patch('v4.collector.capture', return_value=snapshot), \
+             mock.patch('v4.run_flow.save', side_effect=fail_after_index):
+            with self.assertRaisesRegex(Invalid, 'interrupted after reference index'):
+                run_flow.prepare(self.f.store, self.f.project, 'SYNTHETIC_RUN', self.d,
+                                 agent_id='SYNTHETIC_MAIN')
+        self.assertFalse((self.d/'run.json').exists())
+        return self.d/'reference-index.json'
+
+    def test_late_partial_prepare_resumes_after_json_key_order_changes(self):
+        index_path = self._partial_prepare_after_reference_index()
+        frozen = {name: (self.d/name).read_bytes() for name in
+                  ('market.json', 'collector.json', 'reference-index.json', 'sensing-context.json')}
+        before = run_flow.anchors(self.f.store, self.f.project)
+        with mock.patch('market_observation.collect', side_effect=AssertionError('no recollection')), \
+             mock.patch('v4.collector.capture', side_effect=AssertionError('no recapture')):
+            result = run_flow.prepare(self.f.store, self.f.project, 'SYNTHETIC_RUN', self.d,
+                                      agent_id='SYNTHETIC_MAIN', resume_preparation=True)
+        self.assertTrue(Path(result['run']).is_file())
+        self.assertEqual(frozen, {name: (self.d/name).read_bytes() for name in frozen})
+        self.assertEqual(before, run_flow.anchors(self.f.store, self.f.project))
+        self.assertEqual(str(index_path.resolve()), result['reference_index'])
+
+    def test_legacy_reference_order_is_reused_but_changed_content_is_rejected(self):
+        index_path = self._partial_prepare_after_reference_index()
+        legacy = read(index_path)
+        for source in legacy:
+            source['refs'].reverse()
+        index_path.write_text(json.dumps(legacy), encoding='utf-8')
+        original = index_path.read_bytes()
+        with mock.patch('market_observation.collect', side_effect=AssertionError('no recollection')), \
+             mock.patch('v4.collector.capture', side_effect=AssertionError('no recapture')):
+            result = run_flow.prepare(self.f.store, self.f.project, 'SYNTHETIC_RUN', self.d,
+                                      agent_id='SYNTHETIC_MAIN', resume_preparation=True)
+        self.assertTrue(Path(result['run']).is_file())
+        self.assertEqual(original, index_path.read_bytes())
+        expected = run_flow.ref_index(read(self.d/'evidence/evidence.json'),
+                                      (self.d/'evidence').resolve(), read(self.d/'market.json'))
+        run_flow.save_ref_index(index_path, expected)
+        self.assertEqual(original, index_path.read_bytes())
+        for change in ('value_hash', 'origin'):
+            with self.subTest(changed=change):
+                corrupted = deepcopy(legacy)
+                if change == 'value_hash':
+                    next(source for source in corrupted if source['refs'])['refs'][0]['value_hash'] = digest('changed value')
+                else:
+                    corrupted[0]['origin'] = 'changed source metadata'
+                index_path.write_text(json.dumps(corrupted), encoding='utf-8')
+                rejected = index_path.read_bytes()
+                with self.assertRaisesRegex(Invalid, 'reference-index.json'):
+                    run_flow.save_ref_index(index_path, expected)
+                self.assertEqual(rejected, index_path.read_bytes())
+
     def setUp(self):
         self.f = base.MainTests('test_sol_publishes_complete_strategy_without_astra_or_report')
         self.f.setUp(); self.addCleanup(self.f.doCleanups)

@@ -68,10 +68,24 @@ def ref_index(package, directory, raw):
                 paths += [base + '/sources/' + key for key in row.get('sources', {})]
         elif isinstance(value, dict):
             paths = ['/' + key.replace('~', '~0').replace('/', '~1') for key in value]
-        for ptr in paths:
+        for ptr in sorted(paths):
             item['refs'].append({'source_id': source['id'], 'pointer': ptr, 'value_hash': digest(pointer(value, ptr))})
         result.append(item)
     return result
+
+
+def save_ref_index(path, index):
+    """Reuse legacy lookup order without rewriting any frozen artifact."""
+    path = Path(path)
+    if path.exists():
+        try:
+            actual = [dict(source, refs=sorted(source['refs'], key=lambda ref: ref['pointer']))
+                      for source in read(path)]
+        except (KeyError, TypeError, ValueError):
+            actual = None
+        require(actual == index, 'run artifact already exists with different contents: ' + path.name)
+        return str(path)
+    return save(path, index)
 
 
 def market_brief(raw):
@@ -388,7 +402,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         require(before == anchors(root, project), 'state changed during preparation; use a new run directory')
         save(directory / 'sensing-context.json', ctx)
         index = ref_index(package, evidence_dir, raw)
-        save(directory / 'reference-index.json', index)
+        save_ref_index(directory / 'reference-index.json', index)
         save(directory / 'observation-template.json', observation_template(ctx, raw))
         save(directory / 'vocabulary.json', {'pattern_stages': sorted(market.STAGES),
             'confidence': sorted(market.CONFIDENCES), 'market_refs': sorted(market.reference_ids(raw)),
