@@ -693,6 +693,10 @@ class ReportStageTests(RunFlowTests):
             before = run_flow.anchors(self.f.store,self.f.project)
             def preflight():
                 return run_flow.advance(self.d/'run.json','report',self.file(value),check_only=True)
+            del value['information']
+            with self.assertRaisesRegex(Invalid, 'reviewed information must be a mapping'):
+                preflight()
+            value['information'] = {'market':quote}
             with self.assertRaisesRegex(Invalid, 'personal response must explain'):
                 preflight()
             self.assertEqual(list(self.d.glob('report-review-*.json')), [])

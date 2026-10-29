@@ -169,15 +169,21 @@ def candidate_hash(value):
 
 
 def preview(value, decision):
-    """Check bound inputs and rendered indexes, without accepting semantic review."""
+    """Preview a body, or also its supplied REPORT index; never accept semantics."""
     body, _ = render(value, decision, require_review=False)
-    from .reporting import validate_information
-    assessment_facts = decision['assessment']['fact_version']
-    # Historical contexts may lack a bound fact generation. Their literal
-    # indexes are still checked; only record can check their live fact drift.
-    validate_information(value, value['context'], assessment_facts,
-                         value['context'].get('identity', {}).get('fact_version', assessment_facts), body=body)
-    return {'valid': True, 'scope': 'structure_bindings_and_information_only',
+    scope = 'structure_and_bindings_only'
+    # Independent research also previews a bound body without report-submission
+    # metadata. A declared report must not silently fall back to that narrower check.
+    if 'action' in value or 'information' in value:
+        require(value.get('action') == 'REPORT', 'report information preflight requires REPORT action')
+        from .reporting import validate_information
+        assessment_facts = decision['assessment']['fact_version']
+        # Historical contexts may lack a bound fact generation. Their literal
+        # indexes are still checked; only record can check their live fact drift.
+        validate_information(value, value['context'], assessment_facts,
+                             value['context'].get('identity', {}).get('fact_version', assessment_facts), body=body)
+        scope = 'structure_bindings_and_information_only'
+    return {'valid': True, 'scope': scope,
             'semantic_review': 'PENDING_ACTUAL_FULL_BODY_REVIEW',
             'reviewed_candidate_hash': candidate_hash(value), 'body_hash': digest(body.encode())}
 

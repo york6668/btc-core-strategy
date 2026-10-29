@@ -319,7 +319,8 @@ def validate_information(spec, ctx, assessment_fact_version, current_fact_versio
     Preview supplies its bound fact generation. Record supplies freshly read facts;
     neither the index nor this check certifies the report's business meaning.
     """
-    require(isinstance(spec['information'],dict),'reviewed information must be a mapping')
+    require(isinstance(spec.get('information'),dict),'reviewed information must be a mapping')
+    require(isinstance(ctx.get('reported'),dict),'information validation requires a bound report context')
     for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')
     pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
     facts_match = current_fact_version == assessment_fact_version

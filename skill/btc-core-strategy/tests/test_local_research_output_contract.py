@@ -185,9 +185,27 @@ class LocalResearchOutputTests(unittest.TestCase):
         value,decision=self.report()
         preview=authored_report.preview(value,decision)
         self.assertEqual(preview['semantic_review'],'PENDING_ACTUAL_FULL_BODY_REVIEW')
+        self.assertEqual(preview['scope'],'structure_and_bindings_only')
+        self.assertNotIn('action',value)
+        self.assertNotIn('information',value)
         body,_=authored_report.render(value,decision)
         self.assertEqual(body,self.public['market_report'])
         self.assertEqual(value['result_binding'],closed_loop.report_inputs(value['context'])['result_binding'])
+
+    def test_O07_report_metadata_cannot_fall_back_to_body_only_preview(self):
+        value,decision=self.report()
+        value['action']='REPORT'
+        with self.assertRaisesRegex(Invalid,'reviewed information must be a mapping'):
+            authored_report.preview(value,decision)
+        value['information']={'market':value['layout']['body']}
+        with self.assertRaisesRegex(Invalid,'bound report context'):
+            authored_report.preview(value,decision)
+        value['context']['reported']={'status':'UNKNOWN'}
+        self.assertEqual(authored_report.preview(value,decision)['scope'],
+                         'structure_bindings_and_information_only')
+        del value['action']
+        with self.assertRaisesRegex(Invalid,'requires REPORT action'):
+            authored_report.preview(value,decision)
 
     def test_O07_missing_review_changed_body_and_personal_source_rejected(self):
         value,decision=self.report()
