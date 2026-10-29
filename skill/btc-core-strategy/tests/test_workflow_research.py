@@ -438,6 +438,48 @@ class ResearchWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'invalid fields'):
             research.orchestrated_result(self.store, dict(spec, analysis='Handwritten replacement is forbidden.'))
 
+    def _result_after_verified_public_successor(self, source_phase):
+        req=self.request();path=self.orchestration_trace()
+        original=research.orchestrated_independent(self.store,req['request_id'],path,'SPAWN','FINAL1',
+            self.main_input_review(req,req['independent_input_id'],'SPAWN'))
+        continuation={k:deepcopy(v) for k,v in original.items() if k!='independent_id'}
+        continuation.update(verification_scope=research.PUBLIC_ARTIFACT_SCOPES[source_phase],
+            parent_independent_id=original['independent_id'],market_amendment={'source_phase':source_phase})
+        phase=research._save(self.store,'independent','independent_id',continuation)
+        # The manifest verifier is exercised with full generated author proofs
+        # in test_system_amendment_clock. This boundary must always invoke it,
+        # then retain the original spawn and actual candidate follow-up checks.
+        with mock.patch.object(research,'_verify_market_amendment') as verified:
+            with mock.patch('v4.research.now',return_value='2030-03-01T13:03:05Z'):
+                candidate=research.reveal(self.store,req['request_id'],phase['independent_id'],{'hypothesis':'Exact disclosed input.'})
+            self.orchestration_trace('followup_task','FOLLOWUP','FINAL2','2030-03-01T13:03:06Z','2030-03-01T13:03:09Z')
+            spec={'request_id':req['request_id'],'candidate_id':candidate['candidate_id'],'rollout_path':str(path),
+                  'dispatch_call_id':'FOLLOWUP','return_message_id':'FINAL2',
+                  'input_review':self.main_input_review(req,candidate['candidate_id'],'FOLLOWUP'),
+                  'coverage':['Actual disclosed input'],'counterevidence':[],'unresolved':[],
+                  'reopen_conditions':self.spec['reopen_conditions']}
+            with mock.patch('v4.research.now',return_value='2030-03-01T13:03:10Z'):
+                result=research.orchestrated_result(self.store,spec)
+            verified.assert_called_once_with(phase,self.store)
+            self.assertEqual('Actual orchestration analysis FINAL2',result['analysis'])
+            self.assertEqual(phase['independent_id'],result['independent_id'])
+            self.assertFalse(result['inner_tool_trace_verified']);self.assertFalse(result['os_input_isolation_verified'])
+            for invalid in ({'market_amendment':None},{'market_amendment':{'source_phase':'PUBLIC_CORRECTION'}},
+                            {'verification_scope':'NATIVE_RUNTIME_PHASE_INPUT_READ'}):
+                changed=dict(continuation,**invalid);bad=research._save(self.store,'independent','independent_id',changed)
+                disclosed=dict(candidate,independent_id=bad['independent_id']);disclosed.pop('candidate_id')
+                bad_candidate=research._save(self.store,'candidates','candidate_id',disclosed)
+                rejected=dict(spec,candidate_id=bad_candidate['candidate_id'],
+                    input_review=self.main_input_review(req,bad_candidate['candidate_id'],'FOLLOWUP'))
+                with self.subTest(invalid=invalid),self.assertRaisesRegex(Invalid,'native research'):
+                    research.orchestrated_result(self.store,rejected)
+
+    def test_orchestrated_result_after_verified_portfolio_public_successor(self):
+        self._result_after_verified_public_successor('PORTFOLIO')
+
+    def test_orchestrated_result_after_verified_rejected_review_public_successor(self):
+        self._result_after_verified_public_successor('APPROVAL')
+
     def test_orchestration_requires_fork_none_and_bound_main_input_review(self):
         req = self.request()
         path = self.orchestration_trace(fork='all')

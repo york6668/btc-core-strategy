@@ -130,7 +130,7 @@ def main(argv=None):
         p.add_argument('--'+flag)
     p.add_argument('--additional')
     p.add_argument('--guard-attempt')
-    p.add_argument('--source-phase', choices=('PUBLIC_CORRECTION','PORTFOLIO'), default='PUBLIC_CORRECTION')
+    p.add_argument('--source-phase', choices=('PUBLIC_CORRECTION','PORTFOLIO','APPROVAL'), default='PUBLIC_CORRECTION')
     p = sub.add_parser('research-read')
     p.add_argument('--request', required=True)
     p.add_argument('--phase', choices=('independent','portfolio','candidate'), required=True)

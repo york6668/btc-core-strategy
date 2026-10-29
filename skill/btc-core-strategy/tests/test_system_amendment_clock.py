@@ -10,7 +10,7 @@ from unittest import mock
 
 import test_system_research_transport as transport_fixture
 from test_forward_lifecycle import T2
-from v4 import forward_lifecycle as life, research
+from v4 import forward_lifecycle as life, research, closed_loop
 from v4.common import Invalid, digest, instant, read
 
 
@@ -195,7 +195,7 @@ class PortfolioPublicManifestTests(unittest.TestCase):
         base=['--project',str(self.root.parent.parent),'--root',str(self.root),
               'research-market-amendment','--independent',self.phase['independent_id'],
               '--rollout',str(self.trace),'--dispatch','generated-followup','--returned','generated-final']
-        for extra,expected in (([],'PUBLIC_CORRECTION'),(['--source-phase','PORTFOLIO'],'PORTFOLIO')):
+        for extra,expected in (([],'PUBLIC_CORRECTION'),(['--source-phase','PORTFOLIO'],'PORTFOLIO'),(['--source-phase','APPROVAL'],'APPROVAL')):
             with mock.patch('runtime_schedule.bind'),mock.patch('v4.research.amend_market',return_value={}) as amend,redirect_stdout(io.StringIO()):
                 self.assertEqual(strategy_v4.main(base+extra),0)
             self.assertEqual(amend.call_args.kwargs['source_phase'],expected)
@@ -409,6 +409,97 @@ class PortfolioPublicManifestTests(unittest.TestCase):
         claim['scale']['process'] += ' Changed after original public registration.'
         self.public_path.write_text(json.dumps(self.public));self.seal()
         with self.assertRaisesRegex(Invalid,'immutable|fields|must be'): self.amend()
+
+
+class RejectedReviewPublicManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.f=PortfolioPublicManifestTests();self.f.setUp();self.addCleanup(self.f.doCleanups)
+        f=self.f;f.mapping_request()
+        self.root=f.root
+        self.body='Reorganized generated public explanation.\nGENERATED_PRIVATE_REVISION\n'
+        self.full=f.folder/'full-report.revised.zh.md';self.full.write_text(self.body)
+        candidate={'assessment':{'outlook':deepcopy(f.phase['market_result']['outlook']),
+            'factor_assessment':deepcopy(f.phase['market_result']['factor_assessment']),
+            'conclusion':{'narrative':'Original reviewed full report.'}}}
+        self.disclosed=research.reveal(f.root,f.phase['request_id'],f.phase['independent_id'],
+            {'assessment':dict(candidate['assessment'],conclusion={'narrative':f.phase['market_result']['market_report']})})
+        from test_market_observation import evidence
+        raw=evidence(int((f.later-timedelta(hours=2)).timestamp())//3600*3600)
+        self.raw_path=f.folder/'generated-public-market.json';self.raw_path.write_text(json.dumps(raw))
+        self.public_path=f.folder/'public-update-proposal.json';self.public_path.write_text(json.dumps(f.public))
+        self.review={'formed_at':(f.later+timedelta(seconds=1)).isoformat(),
+            'original_candidate_unchanged':self.disclosed['candidate_hash'],'exact_candidate_approved':False,
+            'current_public_update_required':True,'historical_public_correction_required':False,
+            'public_proposal_content_hash':closed_loop.public_hash(f.public),
+            'sources':[{'path':str(self.raw_path),'bytes_sha256':digest(self.raw_path.read_bytes())[7:],
+                'evidence_id':raw['evidence_id'],'cutoff':raw['cutoff'],
+                'last_retrieved_at':max(x['retrieved_at'] for x in raw['retrievals'].values()),
+                'actual_read_at':f.later.isoformat()}]}
+        self.manifest={'status':'APPROVAL_COMPLETE_REJECTED_WITH_EXACT_NONFORMAL_REVISION',
+            'created_at':(f.later+timedelta(seconds=5)).isoformat(),'approved':False,
+            'request_id':f.phase['request_id'],'candidate_id':self.disclosed['candidate_id'],
+            'candidate_hash':self.disclosed['candidate_hash'],
+            'original_report_hash':digest(self.disclosed['candidate']['assessment']['conclusion']['narrative']),
+            'later_public_update_required':True,'historical_public_correction_required':False,
+            'actual_21z_read_at':f.later.isoformat(),'public_update_content_hash':closed_loop.public_hash(f.public),
+            'proposed_report_bytes_sha256':digest(self.full.read_bytes())[7:]}
+        self.seal()
+
+    def seal(self):
+        f=self.f;f.review_path.write_text(json.dumps(self.review))
+        self.manifest['artifacts']={p.name:dict(path=str(p),sha256=digest(p.read_bytes())[7:],bytes=p.stat().st_size)
+            for p in (self.public_path,f.review_path,self.full)}
+        f.manifest_path.write_text(json.dumps(self.manifest))
+        f.final={'approved':False,'candidate_hash':self.disclosed['candidate_hash'],
+            'report_hash':self.manifest['original_report_hash'],
+            'unresolved':[str(f.manifest_path)+'（'+digest(f.manifest_path.read_bytes())+'）']}
+        f.write_trace()
+
+    def amend(self):
+        f=self.f
+        with mock.patch('v4.research._guard_completed') as guard, \
+             mock.patch('v4.forward_lifecycle.now',return_value=f.base.freeze_at):
+            result=research.amend_market(f.root,f.phase['independent_id'],f.trace,
+                'generated-followup','generated-final',guard_attempt='generated-rejected-review',source_phase='APPROVAL')
+        guard.assert_called_once_with(f.root,f.fixture.req,'APPROVAL','generated-rejected-review',f.trace)
+        return result
+
+    def test_rejected_revision_survives_retention_and_reveal_still_requires_real_review(self):
+        owner=self.amend()
+        self.f.base.freeze_at=(self.f.later+timedelta(hours=1)).isoformat()
+        self.assertEqual(owner,self.amend())
+        self.assertEqual('DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_APPROVAL',owner['independence_status'])
+        self.assertNotIn('cycle_review',owner)
+        candidate={'assessment':{'outlook':deepcopy(self.f.public['outlook']),
+            'factor_assessment':deepcopy(self.f.public['factor_assessment']),'conclusion':{'narrative':self.body}}}
+        for p in (self.full,self.public_path,self.raw_path,self.f.review_path,self.f.manifest_path):p.unlink()
+        research._verify_market_amendment(owner,self.root)
+        for p in (self.root/'research/author_outputs').glob('*.json'):
+            self.assertNotIn(b'GENERATED_PRIVATE_REVISION',p.read_bytes())
+        result=research.reveal(self.root,self.f.fixture.req['request_id'],owner['independent_id'],candidate,check_only=True)
+        self.assertTrue(result['valid']);self.assertNotIn('cycle_review',result)
+        candidate['assessment']['conclusion']['narrative']+='changed'
+        with self.assertRaisesRegex(Invalid,'full report changed'):
+            research.reveal(self.root,self.f.fixture.req['request_id'],owner['independent_id'],candidate,check_only=True)
+
+    def test_wrong_candidate_raw_clock_and_unbound_manifest_cannot_authorize(self):
+        original_manifest,original_review=deepcopy(self.manifest),deepcopy(self.review)
+        for change in ('candidate','raw','clock','final','manifest','semantic_hash','shape'):
+            with self.subTest(change=change):
+                self.manifest,self.review=deepcopy(original_manifest),deepcopy(original_review)
+                if change=='candidate':self.manifest['candidate_hash']=digest('other')
+                elif change=='raw':self.review['sources'][0]['bytes_sha256']=digest('other')[7:]
+                elif change=='clock':self.manifest['actual_21z_read_at']=(self.f.later+timedelta(hours=1)).isoformat()
+                elif change=='semantic_hash':
+                    self.manifest['public_update_content_hash']=digest(self.f.public)
+                    self.review['public_proposal_content_hash']=digest(self.f.public)
+                self.seal()
+                if change=='final':self.f.final['approved']=True;self.f.write_trace()
+                elif change=='manifest':self.f.manifest_path.write_text('{}')
+                elif change=='shape':
+                    self.manifest['artifacts']=None;self.f.manifest_path.write_text(json.dumps(self.manifest))
+                    self.f.final['unresolved']=[str(self.f.manifest_path)+'（'+digest(self.f.manifest_path.read_bytes())+'）'];self.f.write_trace()
+                with self.assertRaises(Invalid):self.amend()
 
 
 if __name__ == '__main__':
