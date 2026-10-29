@@ -1,4 +1,4 @@
-"""Isolated daily admission using one shared simulated node authority."""
+"""Isolated identity-bound admission using one shared simulated node authority."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -62,9 +62,10 @@ class DeepGateTests(unittest.TestCase):
             self.call('tomorrow-claim')
         settled=self.settle('original-claim','COMPLETE',result_ref='actual-original-report')
         self.assertEqual('2026-10-12',settled['claim']['day'])
-        self.assertEqual('CLAIMED_NEW',self.call('tomorrow-claim')['action'])
+        self.assertEqual('REUSE',self.call('tomorrow-claim')['action'])
+        self.assertEqual('CLAIMED_NEW',self.call('approval-claim',phase='APPROVAL')['action'])
 
-    def test_same_day_tasks_models_and_node_clients_share_one_slot(self):
+    def test_concurrent_node_clients_share_one_inflight_call(self):
         def try_claim(index):
             try:return self.call('claim-id-'+str(index),'split-task-'+str(index),
                                  'gpt-6-astra' if index%2 else 'gpt-6-other-high')
@@ -78,10 +79,9 @@ class DeepGateTests(unittest.TestCase):
                         'gpt-6-astra' if int(original.split('-')[-1])%2 else 'gpt-6-other-high')
         self.assertEqual('REUSE',after['action'])
         self.assertEqual(original,after['claim']['claim_id'])
-        with self.assertRaisesRegex(Conflict,'another issue or input'):
-            self.call('another-task','renamed-task','gpt-6-other-high')
+        self.assertEqual('CLAIMED_NEW', self.call('another-task','renamed-task','gpt-6-other-high')['action'])
 
-    def test_failed_capacity_call_spends_day_and_requires_recovery(self):
+    def test_failed_capacity_call_requires_recovery_not_a_new_calendar_day(self):
         self.call()
         ended=self.settle('original-claim','FAILED',failure_kind='CAPACITY',failure_ref='actual-error-log')
         self.assertEqual('FAILED',ended['claim']['state'])
@@ -93,12 +93,9 @@ class DeepGateTests(unittest.TestCase):
                 repair_digest=digest('service-alive'),verification_ref='provider-health',verification_status='PASS')
         deep_gate.resolve_fault(self.node.client(),fault_id=fault['fault_id'],
             repair_digest=digest('service-alive'),verification_ref='provider-health',verification_status='RECOVERED')
-        with self.assertRaisesRegex(Conflict,'today'):
-            self.call('retry-same-day')
-        self.clock=at('2026-10-12T15:00:00Z')
-        self.assertEqual('CLAIMED_NEW',self.call('next-natural-day')['action'])
+        self.assertEqual('CLAIMED_NEW',self.call('recovered-same-day')['action'])
 
-    def test_unknown_and_cancellation_do_not_refill_or_move_original_day(self):
+    def test_unknown_requires_original_reconciliation_across_days(self):
         self.call()
         self.clock=at('2026-10-12T15:00:00Z')
         self.settle('original-claim','UNKNOWN',failure_kind='NETWORK',failure_ref='transport-lost')
@@ -112,7 +109,7 @@ class DeepGateTests(unittest.TestCase):
                 repair_digest=digest('actual-transport-recovered'),
                 verification_ref='service-recovery-proof',verification_status='RECOVERED')
         self.assertEqual('CLAIMED_NEW',self.call('next-natural-day')['action'])
-        with self.assertRaisesRegex(Conflict,'today'):
+        with self.assertRaisesRegex(Conflict,'in-flight'):
             self.call('new-day-again')
 
     def test_completed_non_digest_reference_can_be_explicitly_corrected_without_new_call(self):
@@ -136,10 +133,10 @@ class DeepGateTests(unittest.TestCase):
         self.assertEqual([{'previous_result_ref': before['result_ref'],
                            'result_ref': params['result_ref'], 'evidence_ref': params['evidence_ref'],
                            'corrected_at_ms': self.clock}], record['result_ref_corrections'])
-        self.assertEqual(1, len(self.node.data[deep_gate.STATE_NAME]['days']))
+        self.assertEqual(1, len(deep_gate.status(self.node.client())['claims']))
         self.assertEqual('REUSE', self.call()['action'])
         self.clock += 1000
-        self.assertEqual('CLAIMED_NEW', self.call('next-natural-day')['action'])
+        self.assertEqual('REUSE', self.call('next-natural-day')['action'])
 
     def test_completion_reference_correction_rejects_unrelated_or_valid_bindings(self):
         self.call()
@@ -154,7 +151,7 @@ class DeepGateTests(unittest.TestCase):
                 with self.assertRaises((Conflict, ValueError)):
                     invoke(self.node.client(), 'model.deep.reconcile', dict(params, **change))
                 self.assertEqual(before, self.node.data)
-        self.node.data[deep_gate.STATE_NAME]['days'][deep_gate.tokyo_day(self.clock)]['result_ref'] = digest('already-bound')
+        self.node.data[deep_gate.STATE_NAME]['claims']['original-claim']['result_ref'] = digest('already-bound')
         before = deepcopy(self.node.data)
         with self.assertRaisesRegex(Conflict, 'digest'):
             invoke(self.node.client(), 'model.deep.reconcile',
@@ -170,6 +167,56 @@ class DeepGateTests(unittest.TestCase):
                     'expected_result_ref': 'completion-metadata.json',
                     'result_ref': digest('claimed proof'), 'evidence_ref': 'not-completed'})
         self.assertEqual(before, self.node.data)
+
+    def test_same_day_portfolio_then_approval_keeps_distinct_proofs_and_legacy_bytes(self):
+        first = self.call(phase='PORTFOLIO')['claim']
+        self.settle(first['claim_id'], 'COMPLETE', result_ref=digest('portfolio proof'))
+        # Model an existing deployed V1 day record, without adding new fields.
+        state = self.node.data[deep_gate.STATE_NAME]
+        state['days'][first['day']] = state.pop('claims')[first['claim_id']]
+        state['schema'] = deep_gate.LEGACY_SCHEMA
+        old_days = deepcopy(state['days'])
+        before = deepcopy(state)
+        self.assertEqual(deep_gate.LEGACY_SCHEMA, deep_gate.status(self.node.client())['schema'])
+        self.assertEqual(before, self.node.data[deep_gate.STATE_NAME])
+        approved = self.call('approval-original', phase='APPROVAL')['claim']
+        self.assertEqual(first['day'], approved['day'])
+        self.assertEqual(deep_gate.SCHEMA, deep_gate.status(self.node.client())['schema'])
+        self.settle(approved['claim_id'], 'COMPLETE', result_ref=digest('approval proof'))
+        current = deep_gate.status(self.node.client())
+        self.assertEqual(old_days, current['days'])
+        self.assertEqual('PORTFOLIO', current['claims'][first['claim_id']]['phase'])
+        self.assertEqual('APPROVAL', current['claims'][approved['claim_id']]['phase'])
+        self.clock += 86400000
+        self.assertEqual('REUSE', self.call('another-id', phase='PORTFOLIO')['action'])
+        self.assertEqual('REUSE', self.call('yet-another-id', phase='APPROVAL')['action'])
+        self.assertEqual(old_days, self.node.data[deep_gate.STATE_NAME]['days'])
+
+    def test_original_claim_identity_cannot_be_relabelled_or_relaunched(self):
+        self.call()
+        before = deepcopy(self.node.data)
+        for changes in ({}, {'phase':'APPROVAL'}, {'issue':'another-issue'},
+                        {'model':'another-high-model'}, {'scope':'btc/another'}):
+            with self.subTest(changes=changes), self.assertRaises(Conflict):
+                self.call(**changes)
+            self.assertEqual(before, self.node.data)
+        self.settle('original-claim', 'COMPLETE', result_ref=digest('original proof'))
+        self.assertEqual('REUSE', self.call()['action'])
+        with self.assertRaisesRegex(Conflict, 'another call identity'):
+            self.call(phase='APPROVAL')
+
+    def test_unknown_blocks_new_phase_even_after_fault_recovery_until_original_is_reconciled(self):
+        self.call(phase='PORTFOLIO')
+        self.settle('original-claim', 'UNKNOWN', failure_kind='NETWORK', failure_ref='response lost')
+        fault = next(iter(self.node.data[deep_gate.STATE_NAME]['faults'].values()))
+        deep_gate.resolve_fault(self.node.client(), fault_id=fault['fault_id'],
+            repair_digest=digest('network recovered'), verification_ref='recovery proof',
+            verification_status='RECOVERED')
+        with self.assertRaisesRegex(Conflict, 'unknown'):
+            self.call('new-approval', phase='APPROVAL')
+        deep_gate.reconcile_unknown(self.node.client(), claim_id='original-claim',
+            outcome='COMPLETE', result_ref=digest('found original proof'), evidence_ref='original completion')
+        self.assertEqual('CLAIMED_NEW', self.call('new-approval', phase='APPROVAL')['action'])
 
     def test_known_defect_requires_changed_repair_and_keeps_unrelated_scope(self):
         fault=deep_gate.open_fault(self.node.client(),scope='btc/report',kind='DETERMINISTIC',

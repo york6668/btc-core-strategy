@@ -1,4 +1,4 @@
-"""Daily node admission client tests; no model or production node is called."""
+"""Identity-bound node admission client tests; no model or production node is called."""
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -43,6 +43,57 @@ class DailyClientTests(unittest.TestCase):
             with self.assertRaisesRegex(model_daily.Blocked, 'do not launch'):
                 model_daily.claim('another-task', 'btc/research', 'PUBLIC', 'sha256:' + 'b'*64,
                                   claim_id='btc-deep-another')
+
+    def test_normal_client_never_relaunches_a_committed_operation_receipt(self):
+        from btc_node import api
+        from test_operation_recovery_offline import Journal
+        for response_lost in (False, True):
+            with self.subTest(response_lost=response_lost), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); prompt=root/'prompt.txt'; binary=root/'codex'
+                prompt.write_text('synthetic original input'); binary.write_text('synthetic native binary')
+                journal=Journal(); calls=[]; returned=[]
+                def adapter(method, params=None, operation_id=None):
+                    result=api.dispatch({}, {'method':method, 'params':params or {}, 'operation_id':operation_id})
+                    returned.append(result)
+                    if response_lost and len(returned)==1:
+                        raise model_daily.Blocked('original claim response lost; inspect original operation')
+                    return result
+                def runner(command, **kwargs):
+                    calls.append(command);kwargs['stdout'].write(b'{"type":"turn.completed"}\n')
+                    Path(command[command.index('-o')+1]).write_text('synthetic completed response')
+                    return Mock(returncode=0)
+                with patch.object(api,'Database',return_value=journal), \
+                     patch.object(model_daily,'request',side_effect=adapter), \
+                     patch.object(model_daily.uuid,'uuid4',return_value=Mock(hex='fixed-original-identity')):
+                    if response_lost:
+                        with self.assertRaisesRegex(model_daily.Blocked,'response lost'):
+                            model_daily.launch_native('issue','btc/research','PORTFOLIO','sha256:'+'a'*64,
+                                prompt,binary,root/'first.txt',runner=runner)
+                    else:
+                        model_daily.launch_native('issue','btc/research','PORTFOLIO','sha256:'+'a'*64,
+                            prompt,binary,root/'first.txt',runner=runner)
+                    with self.assertRaisesRegex(model_daily.Blocked,'do not launch'):
+                        model_daily.launch_native('issue','btc/research','PORTFOLIO','sha256:'+'a'*64,
+                            prompt,binary,root/'second.txt',runner=runner)
+                self.assertEqual('CLAIMED_NEW', returned[0]['action'])
+                self.assertEqual('RECONCILE_EXISTING_NO_LAUNCH',returned[-1]['action'])
+                self.assertEqual(0 if response_lost else 1,len(calls))
+                stored=journal.value(journal.operations['deep-claim-btc-deep-fixed-original-identity']['result_digest'])
+                self.assertEqual('CLAIMED_NEW',stored['action'])
+
+    def test_registration_reads_new_claims_and_preserves_phase_and_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proof=Path(directory)/'approval.jsonl';proof.write_text('synthetic actual approval proof')
+            record={'claim_id':'original-approval','issue_id':'issue','scope':'btc/research',
+                    'phase':'APPROVAL','model':'gpt-6-astra','state':'COMPLETE','result_ref':model_daily.sha256(proof)}
+            current={'days':{},'claims':{'original-approval':record},'faults':{}}
+            with patch.object(model_daily,'status',return_value=current):
+                self.assertEqual(record,model_daily.require_success('issue','btc/research','APPROVAL','original-approval',proof))
+                with self.assertRaisesRegex(model_daily.Blocked,'completed original'):
+                    model_daily.require_success('issue','btc/research','PORTFOLIO','original-approval',proof)
+                proof.write_text('changed bytes')
+                with self.assertRaisesRegex(model_daily.Blocked,'completed original'):
+                    model_daily.require_success('issue','btc/research','APPROVAL','original-approval',proof)
 
     def test_registration_requires_same_completed_issue_and_phase(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -38,14 +38,14 @@ def validate_deep_result_admission(db, argv, release):
     if index >= len(argv) or argv[index] not in RESEARCH_REGISTRATION_COMMANDS:
         return
     if not (Path(release) / 'skill/btc-core-strategy/scripts/model_daily.py').is_file():
-        raise Conflict('pinned release lacks daily deep-result admission; repair the original context first')
+        raise Conflict('pinned release lacks deep-result admission; repair the original context first')
     args = argv[index + 1:]
     if args.count('--guard-attempt') != 1 or args.index('--guard-attempt') + 1 >= len(args):
-        raise Conflict('original completed daily deep claim required for research registration')
+        raise Conflict('original completed deep claim required for research registration')
     claim_id = args[args.index('--guard-attempt') + 1]
     from . import deep_gate
     state = deep_gate._state(db)
-    claim = next((v for v in state['days'].values() if v['claim_id'] == claim_id), None)
+    claim = deep_gate.records(state).get(claim_id)
     if not claim or claim['state'] != 'COMPLETE' or claim['model'] != 'gpt-6-astra':
         raise Conflict('original completed Astra claim required for research registration')
     if any(v['state'] == 'OPEN' and deep_gate._affected(v['scope'], 'btc/research')

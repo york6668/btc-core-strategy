@@ -46,7 +46,7 @@ def same_execution_lane_running(rows, kind):
     """Serialize ordinary work with ordinary work, and deep with deep.
 
     Independent Astra research may overlap an hourly Sol obligation. The
-    shared deep day gate separately limits new high-grade starts.
+    shared deep call gate separately prevents duplicate or unresolved high-grade starts.
     """
     deep = kind == 'DEEP'
     return any(row['state'] == 'RUNNING' and (row['kind'] == 'DEEP') == deep
@@ -189,9 +189,8 @@ def assess(db, *, task_id, dependency_ready, dependency_ref):
         blocker = 'OPEN_DEFECT'
     elif task['kind'] == 'DEEP':
         budget = deep_gate.status(db)
-        if budget['days'].get(budget['today']) or any(
-                row['state'] in {'CLAIMED','UNKNOWN'} for row in budget['days'].values()):
-            blocker = 'DEEP_BUDGET_UNAVAILABLE'
+        if any(row['state'] in {'CLAIMED','UNKNOWN'} for row in budget['claims'].values()):
+            blocker = 'DEEP_CALL_UNRESOLVED'
     task['state'] = 'BLOCKED' if blocker else 'READY'
     task['blocker'] = blocker
     task['dependency_ref'] = dependency_ref
@@ -362,7 +361,7 @@ def repair(db, *, task_id, input_digest, release_id, evidence_ref,
            verification_ref, reason):
     """Explicitly rebase a stopped task after a verified repair or release change.
 
-    This does not erase the failed attempt or reclaim a spent daily deep slot.
+    This does not erase the failed attempt or reuse a failed deep call identity.
     Unknown external effects must first be reconciled against their originals.
     """
     for name, value in (('task_id', task_id), ('release_id', release_id),

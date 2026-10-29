@@ -57,7 +57,7 @@ class NodeContract(unittest.TestCase):
     def at(self, hours=0):
         return (self.now - timedelta(hours=hours)).isoformat()
 
-    def test_daily_deep_claim_uses_existing_mysql_writer_across_clients(self):
+    def test_deep_claim_uses_existing_mysql_writer_across_clients(self):
         day_ms = int(datetime(2030, 3, 2, 12, tzinfo=timezone.utc).timestamp() * 1000)
         def attempt(index):
             claim_id = self.id + '-' + str(index)
@@ -81,12 +81,16 @@ class NodeContract(unittest.TestCase):
                 'params':{'claim_id':result['claim']['claim_id'],'outcome':'COMPLETE',
                           'result_ref':'sha256:'+'b'*64}})
             self.assertEqual('COMPLETE',settlement['claim']['state'])
-            with self.assertRaisesRegex(Conflict, 'not reusable'):
-                dispatch(self.settings,{
-                    'method':'model.deep.claim','operation_id':'new-op-' + self.id,
-                    'params':{'claim_id':self.id+'-later','issue_id':self.id+'-different',
-                              'scope':'btc/research','phase':'PUBLIC','input_digest':'sha256:'+'c'*64,
-                              'model':'gpt-6-astra'}})
+            next_phase = dispatch(self.settings, {
+                'method':'model.deep.claim', 'operation_id':'new-op-' + self.id,
+                'params':{'claim_id':self.id+'-later', 'issue_id':self.id,
+                          'scope':'btc/research', 'phase':'APPROVAL',
+                          'input_digest':'sha256:'+'c'*64, 'model':'gpt-6-astra'}})
+            self.assertEqual('CLAIMED_NEW', next_phase['action'])
+            dispatch(self.settings, {'method':'model.deep.finish',
+                'operation_id':'finish-later-' + self.id,
+                'params':{'claim_id':next_phase['claim']['claim_id'], 'outcome':'COMPLETE',
+                          'result_ref':'sha256:'+'d'*64}})
 
     def test_task_start_replayed_operation_never_authorizes_second_launch(self):
         from btc_node import tasks

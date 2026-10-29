@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BTC-wide Tokyo-day deep-model admission through the existing node authority."""
+"""BTC-wide identity-bound deep-model admission through the existing node authority."""
 from __future__ import annotations
 
 import argparse
@@ -79,7 +79,7 @@ def claim(issue_id, scope, phase, input_digest, model='gpt-6-astra', claim_id=No
                      scope=scope, phase=phase, input_digest=input_digest, model=model),
                      'deep-claim-' + claim_id)
     if result['action'] != 'CLAIMED_NEW':
-        raise Blocked('daily slot reused or claim response replayed; do not launch')
+        raise Blocked('completed result reused or claim response replayed; do not launch')
     return result
 
 
@@ -93,12 +93,12 @@ def finish(claim_id, outcome, result_ref=None, failure_kind=None, failure_ref=No
 
 def require_success(issue_id, scope, phase, claim_id, rollout_path):
     if not claim_id:
-        raise Blocked('completed original daily deep claim required')
+        raise Blocked('completed original deep claim required')
     current = status()
     if any(v['state'] == 'OPEN' and (v['scope'] == scope or scope.startswith(v['scope'] + '/'))
            for v in current['faults'].values()):
         raise Blocked('open defect blocks affected research registration')
-    record = next((v for v in current['days'].values() if v['claim_id'] == claim_id), None)
+    record = current.get('claims', {v['claim_id']: v for v in current['days'].values()}).get(claim_id)
     if (not record or record['state'] != 'COMPLETE' or not record.get('result_ref')
             or record['issue_id'] != issue_id or record['scope'] != scope
             or record['phase'] != phase or record['model'] != 'gpt-6-astra'

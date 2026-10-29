@@ -1,7 +1,7 @@
-"""One BTC deep-research admission per Tokyo day, in the existing node state.
+"""Identity-bound BTC deep-research admission in the existing node state.
 
 The service writer serializes callers from every task and node.  This module
-does not launch a model; a successful claim is consumed even if the caller
+does not launch a model; a successful claim remains reserved even if the caller
 loses its response or crashes before launch.
 """
 from __future__ import annotations
@@ -16,7 +16,8 @@ from .codec import Conflict, millis
 
 STATE_NAME = 'model.deep.BTC'
 TIMEZONE = 'Asia/Tokyo'
-SCHEMA = 'BTC_DEEP_DAILY_GATE_V1'
+LEGACY_SCHEMA = 'BTC_DEEP_DAILY_GATE_V1'
+SCHEMA = 'BTC_DEEP_CALL_GATE_V2'
 FAULT_CLASSES = {'DETERMINISTIC', 'SEMANTIC', 'CAPACITY', 'NETWORK', 'PERMISSION', 'UNKNOWN'}
 
 
@@ -51,7 +52,7 @@ def _state(db):
     state = db.metadata(STATE_NAME)
     if state is None:
         return {'schema': SCHEMA, 'timezone': TIMEZONE, 'days': {}, 'faults': {}}
-    if state.get('schema') != SCHEMA or state.get('timezone') != TIMEZONE:
+    if state.get('schema') not in (LEGACY_SCHEMA, SCHEMA) or state.get('timezone') != TIMEZONE:
         raise Conflict('deep research gate state is incompatible')
     return deepcopy(state)
 
@@ -60,10 +61,21 @@ def _save(db, state):
     db.metadata(STATE_NAME, state, write=True)
 
 
+def records(state):
+    """Read legacy day records and new identity records without migrating either."""
+    claims = dict(state.get('claims', {}))
+    for record in state['days'].values():
+        identity = record['claim_id']
+        if identity in claims and claims[identity] != record:
+            raise Conflict('conflicting original deep claim identity')
+        claims[identity] = record
+    return claims
+
+
 def status(db):
     state = _state(db)
-    return {'schema': SCHEMA, 'timezone': TIMEZONE, 'today': tokyo_day(millis()),
-            'days': state['days'], 'faults': state['faults']}
+    return {'schema': state['schema'], 'timezone': TIMEZONE, 'today': tokyo_day(millis()),
+            'days': state['days'], 'claims': records(state), 'faults': state['faults']}
 
 
 def check_scope(db, *, scope):
@@ -87,7 +99,7 @@ def check_scope(db, *, scope):
 
 
 def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
-    """Reserve the whole trading system's daily deep slot, not a task's slot."""
+    """Reserve one actual call identity; calendar dates are historical metadata."""
     if not isinstance(claim_id, str) or not 8 <= len(claim_id) <= 191:
         raise ValueError('stable claim_id required')
     if not isinstance(issue_id, str) or not issue_id:
@@ -103,16 +115,21 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     if any(item['state'] == 'OPEN' and _affected(item['scope'], scope)
            for item in state['faults'].values()):
         raise Conflict('known defect blocks affected deep-research scope')
-    old = state['days'].get(day)
+    existing = records(state)
+    identity = dict(issue_id=issue_id, scope=scope, phase=phase,
+                    input_digest=input_digest, model=model)
+    old = existing.get(claim_id)
+    if old and any(old[key] != value for key, value in identity.items()):
+        raise Conflict('claim_id already belongs to another call identity')
     if old:
         if old['state'] == 'COMPLETE' and old.get('result_ref'):
-            if (old['issue_id'] == issue_id and old['scope'] == scope
-                    and old['phase'] == phase and old['input_digest'] == input_digest
-                    and old['model'] == model):
-                return {'action':'REUSE', 'day':day, 'claim':old}
-            raise Conflict('today deep-research slot belongs to another issue or input; it is not reusable')
-        raise Conflict('today deep-research slot already consumed; inspect original claim')
-    if any(item['state'] in ('CLAIMED','UNKNOWN') for item in state['days'].values()):
+            return {'action': 'REUSE', 'day': old['day'], 'claim': old}
+        raise Conflict('original claim already reserved or settled; inspect original call')
+    for record in existing.values():
+        if (record['state'] == 'COMPLETE' and record.get('result_ref')
+                and all(record[key] == value for key, value in identity.items())):
+            return {'action': 'REUSE', 'day': record['day'], 'claim': record}
+    if any(item['state'] in ('CLAIMED', 'UNKNOWN') for item in existing.values()):
         raise Conflict('earlier in-flight or unknown deep call needs reconciliation')
     # Only a new high-grade launch needs the execution interlock. Exact
     # completed-result REUSE above is read-only; ordinary Sol work may proceed
@@ -124,7 +141,9 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
               'issue_id':issue_id, 'scope':scope, 'phase':phase, 'input_digest':input_digest,
               'model':model, 'state':'CLAIMED', 'claimed_at_ms':now_ms,
               'finished_at_ms':None, 'result_ref':None, 'failure_kind':None}
-    state['days'][day] = record
+    # An older writer must fail closed instead of ignoring new in-flight calls.
+    state['schema'] = SCHEMA
+    state.setdefault('claims', {})[claim_id] = record
     _save(db,state)
     return {'action':'CLAIMED_NEW', 'day':day, 'claim':record}
 
@@ -164,11 +183,11 @@ def open_fault(db, *, scope, kind, signature, fault_digest, evidence_ref,
 
 
 def finish(db, *, claim_id, outcome, result_ref=None, failure_kind=None, failure_ref=None):
-    """Settle a claim; failure/unknown remains spent and opens a fault."""
+    """Settle the original call; failure/unknown opens a fault without new launch."""
     if outcome not in ('COMPLETE','FAILED','UNKNOWN','CANCELED'):
         raise ValueError('invalid deep claim outcome')
     state = _state(db)
-    slot = next((v for v in state['days'].values() if v['claim_id'] == claim_id),None)
+    slot = records(state).get(claim_id)
     if not slot:
         raise ValueError('unknown original deep claim')
     if slot['state'] != 'CLAIMED':
@@ -229,11 +248,11 @@ def resolve_fault(db, *, fault_id, repair_digest, verification_ref, verification
 
 def reconcile_unknown(db, *, claim_id, outcome, evidence_ref, result_ref=None,
                       expected_result_ref=None):
-    """Reconcile an original call without reopening its already spent day."""
+    """Reconcile an original call without launching a replacement."""
     if outcome not in ('COMPLETE','CANCELED','FAILED') or not evidence_ref:
         raise ValueError('verified original-call outcome and evidence required')
     state = _state(db)
-    slot = next((v for v in state['days'].values() if v['claim_id'] == claim_id),None)
+    slot = records(state).get(claim_id)
     if slot and slot['state'] == 'COMPLETE' and expected_result_ref is not None:
         if outcome != 'COMPLETE' or not isinstance(evidence_ref, str):
             raise Conflict('completion reference correction cannot change outcome')

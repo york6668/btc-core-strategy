@@ -1,4 +1,4 @@
-"""Research registration reads the node-owned daily slot; no model is launched."""
+"""Research registration reads the node-owned original claim; no model is launched."""
 import unittest
 from unittest.mock import patch
 from pathlib import Path

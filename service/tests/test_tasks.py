@@ -91,7 +91,20 @@ class TaskTests(unittest.TestCase):
         with self.assertRaisesRegex(Conflict, 'retest cannot'):
             self.submit(kind='REPORT', namespace='retest')
 
-    def test_deep_claim_is_one_day_and_failure_blocks(self):
+    def test_completed_portfolio_does_not_calendar_block_approval_task(self):
+        original=deep_gate.claim(self.db,claim_id='prior-portfolio',issue_id='BTC_CYCLE',
+            scope='btc/research',phase='PORTFOLIO',input_digest=digest('portfolio input'),model='gpt-6-astra')
+        deep_gate.finish(self.db,claim_id='prior-portfolio',outcome='COMPLETE',result_ref=digest('portfolio proof'))
+        task=self.submit(kind='DEEP',phase='APPROVAL',reason_kind='MATERIAL_COUNTEREVIDENCE',
+            scope='btc/research',task_id='btc-cycle/approval')['task']
+        ready=tasks.assess(self.db,task_id=task['task_id'],dependency_ready=True,dependency_ref='actual candidate')
+        self.assertEqual('READY',ready['action'])
+        started=tasks.start(self.db,task_id=task['task_id'],attempt_id='approval-attempt',
+            release_id='a1577cc6',claim_id='approval-call',model='gpt-6-astra')
+        self.assertEqual('LAUNCH_ONCE',started['action'])
+        self.assertEqual(original['claim']['day'],deep_gate.status(self.db)['claims']['approval-call']['day'])
+
+    def test_deep_claim_identity_and_failure_blocks(self):
         row = self.submit(kind='DEEP', reason_kind='MATERIAL_COUNTEREVIDENCE',
                           scope='btc/research', task_id='btc-cycle/deep')['task']
         tasks.assess(self.db, task_id=row['task_id'], dependency_ready=True,
@@ -105,7 +118,7 @@ class TaskTests(unittest.TestCase):
         tasks.finish(self.db, task_id=row['task_id'], attempt_id='deep-attempt',
                      outcome='FAILED', completion_ref='failed-original-call',
                      failure_kind='DETERMINISTIC', failure_ref='original-error')
-        self.assertEqual('FAILED', deep_gate.status(self.db)['days'][deep_gate.tokyo_day(self.clock)]['state'])
+        self.assertEqual('FAILED', deep_gate.status(self.db)['claims']['deep-claim-1']['state'])
         self.assertEqual('ATTEMPTS_EXHAUSTED', tasks.status(self.db, task_id=row['task_id'])['blocker'])
         self.assertEqual('RECONCILIATION_REQUIRED', tasks.assess(self.db, task_id=row['task_id'],
                          dependency_ready=True, dependency_ref='same-failure')['action'])

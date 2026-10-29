@@ -173,9 +173,9 @@ class AdmissionBoundaryTests(unittest.TestCase):
                     self.assertEqual('LAUNCH_ONCE', start_deep()['action'])
                 self.assertEqual({'DEEP', 'SIGNAL'}, {
                     row['kind'] for row in tasks.status(db)['tasks'] if row['state'] == 'RUNNING'})
-                self.assertEqual(1, len(deep_gate.status(db)['days']))
+                self.assertEqual(1, len(deep_gate.status(db)['claims']))
 
-    def test_deep_request_progress_change_cannot_consume_day_slot(self):
+    def test_deep_request_progress_change_cannot_reserve_a_call(self):
         db = fixture.Node(self.root, 'ACTIVE')
         db.settings['scheduler_deep_enabled'] = True
         scheduler.tick(db)

@@ -6,9 +6,9 @@
 
 `btc_node.api` 是 CLI/MCP 的同一服务层。entities 管理对象版本、引用及复核；series 保存产品身份和双时间序列；projection/history 读取已验证的既有契约；fact_views 绑定文件版本及逐行来源；catalog 保留旧 ID、原字节、SQLite 行及游标；execution 对实际旧 CLI 做持久准入、唯一写入及中断恢复。报告与研究仍使用原状态机，触价不会推导确认或成交。完整业务使用见 [持续分析契约](../skill/btc-core-strategy/references/continuous-analysis.md)。
 
-`model.deep.status/claim/finish/reconcile` 将整个 BTC 系统的高等级深评按东京自然日限制为一次，复用本服务的 MySQL 写入锁和 `node_metadata`，不另建本地任务预算。丢失 claim 响应的同 operation 重放只返回核查提示，不授权再次启动；跨午夜在途和 UNKNOWN 阻断次日名额直至原调用核清。`model.defect.open/resolve` 保留受影响范围的故障与实际修复证据。研究登记还须绑定同一已完成票据与真实模型轨迹；旧固定发布若无票据入口，服务拒绝其新结果登记并保留原研究供兼容修复。平台代理工具的启动不经过本服务，调用者须先在本节点取得 claim；服务本身不能拦截未经它发起的外部模型调用。
+`model.deep.status/claim/finish/reconcile` 复用 MySQL 写入锁和 `node_metadata`，按原 issue/scope/phase/input/model 和稳定 claim_id 原子防重复调用，项目不设东京自然日次数上限。旧 `model.deep.BTC.days` 及全部旧票据保留原样；新调用写同一状态的 `claims[claim_id]`，status.claims 合并两者，V1 可直接读取，旧 timezone/日期仅为历史兼容；首个新调用把顶层 schema 标为 V2，使旧服务写入器明确拒绝而非忽略新在途记录。只有 CLAIMED_NEW 可启动，精确完成结果跨日 REUSE；原 claim_id 不能换身份，在途和 UNKNOWN 先核清，丢失同 operation 响应只返回核查提示。新阶段可在同日合法预留，但不得冒用旧阶段证明或绕过真实故障、平台容量/用量/安全限制；本规则不宣称任何官方额度。客户端、tasks 和登记消费者须组合采用新 claims 视图；V2 状态不降级或丢弃；旧服务回退将明确拒绝，需保留支持 V2 的 gate/证明消费者或恢复已验证的新版本，不能让旧写入器忽略新记录，旧版固定研究仍可验证旧 days 票据。`model.defect.open/resolve` 保留受影响范围的故障及修复证据。平台代理启动不经过本服务，调用者仍须预留，服务不能技术拦截外部未经它发起的调用。
 
-研究登记的完成凭据使用不可变实际模型轨迹的 SHA256，不以完成说明文件路径代替。已完成票据若误存了非摘要引用，可在同一 `model.deep.reconcile` 中明确提供原 `claim_id`、`outcome=COMPLETE`、`expected_result_ref`、经核实的摘要 `result_ref` 和实际纠错 `evidence_ref`。它只纠正该非摘要引用并追加原值及证据；结果、原完成时间、issue/phase/input 与当天名额均不变，已有摘要绑定不能替换。登记仍须核验原模型、阶段及真实轨迹，引用纠正不授予后继阶段批准。
+研究登记的完成凭据使用不可变实际模型轨迹的 SHA256，不以完成说明文件路径代替。已完成票据若误存了非摘要引用，可在同一 `model.deep.reconcile` 中明确提供原 `claim_id`、`outcome=COMPLETE`、`expected_result_ref`、经核实的摘要 `result_ref` 和实际纠错 `evidence_ref`。它只纠正该非摘要引用并追加原值及证据；结果、原完成时间、issue/phase/input 与历史日记录均不变，已有摘要绑定不能替换。登记仍须核验原模型、阶段及真实轨迹，引用纠正不授予后继阶段批准。
 
 ## 准备与迁移
 
