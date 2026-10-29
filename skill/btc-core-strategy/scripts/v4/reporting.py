@@ -313,6 +313,39 @@ def required_events(root, basis):
         {'id':event_id, 'kind':'DEEP_REVIEW', 'phase':'COMPLETED', 'impact':None}]
 
 
+def validate_information(spec, ctx, assessment_fact_version, current_fact_version, *, body=None):
+    """Deterministic index/disclosure checks; callers own fact freshness and rendering.
+
+    Preview supplies its bound fact generation. Record supplies freshly read facts;
+    neither the index nor this check certifies the report's business meaning.
+    """
+    require(isinstance(spec['information'],dict),'reviewed information must be a mapping')
+    for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')
+    pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
+    facts_match = current_fact_version == assessment_fact_version
+    disclosed = ctx.get('identity', {}).get('fact_version')
+    needs_notice = (not _market_only(spec.get('layout') or {}) or not disclosed
+                    or ctx['reported'].get('disclosed_fact_version') != disclosed)
+    if not facts_match and ctx.get('market_revision', 0) >= 5 and spec['action'] == 'REPORT' and needs_notice:
+        text(spec['information'].get('fact_limitations'), 'personal response must explain changed facts without limiting market eligibility')
+    if not facts_match and ctx.get('market_revision', 0) < 5:
+        require(pending_cycle, 'facts changed; portfolio impact awaits cycle review')
+        if spec['action'] == 'REPORT':
+            require(spec['layout'] and (spec['layout'].get('format') in DISPLAY_FORMATS or not spec['layout']['include_recommendations']),
+                    'facts changed; report limitations while portfolio impact awaits cycle review')
+            text(spec['information'].get('fact_limitations'), 'report must explain changed facts and unreviewed portfolio impact')
+        else:
+            # A file fingerprint also changes for definition-only edits.
+            # Keep the pending review and its limitations recordable; this
+            # does not publish advice, certify facts, or count as delivery.
+            require(spec['action'] == 'EVIDENCE_LIMITED',
+                    'facts changed; record limitations rather than confirmed market silence')
+    if body is not None and spec['action'] == 'REPORT':
+        layout = spec['layout']
+        if layout.get('format') == AUTHORED_FORMAT or (layout.get('format') == 'MARKET_MOBILE_V2' and layout['blocks']):
+            require(all(item in body for item in spec['information'].values()), 'display information must quote actual rendered content; keep internal analysis in maintenance')
+
+
 def record(root, spec, *, prepared_context=None):
     from . import storage
     from .common import replace
@@ -356,27 +389,10 @@ def record(root, spec, *, prepared_context=None):
         p=spec['provenance']; exact(p,'role model effort agent_id run_ref','report provenance')
         require(p['role']=='MAIN' and p['model']==market.CURRENT_HOURLY_MODEL['name'] and p['effort']=='high','report judgement belongs to Sol/high MAIN')
         text(p['agent_id'],'actual main agent');text(p['run_ref'],'actual main run')
-        require(isinstance(spec['information'],dict),'reviewed information must be a mapping')
-        for key,val in spec['information'].items():text(key,'information topic');text(val,'reviewed business meaning')
         pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
-        facts_match = facts(Path(root).parent.parent) == storage.current(root)['assessment']['fact_version']
-        disclosed = ctx.get('identity', {}).get('fact_version')
-        needs_notice = (not _market_only(spec.get('layout') or {}) or not disclosed
-                        or ctx['reported'].get('disclosed_fact_version') != disclosed)
-        if not facts_match and ctx.get('market_revision', 0) >= 5 and spec['action'] == 'REPORT' and needs_notice:
-            text(spec['information'].get('fact_limitations'), 'personal response must explain changed facts without limiting market eligibility')
-        if not facts_match and ctx.get('market_revision', 0) < 5:
-            require(pending_cycle, 'facts changed; portfolio impact awaits cycle review')
-            if spec['action'] == 'REPORT':
-                require(spec['layout'] and (spec['layout'].get('format') in DISPLAY_FORMATS or not spec['layout']['include_recommendations']),
-                        'facts changed; report limitations while portfolio impact awaits cycle review')
-                text(spec['information'].get('fact_limitations'), 'report must explain changed facts and unreviewed portfolio impact')
-            else:
-                # A file fingerprint also changes for definition-only edits.
-                # Keep the pending review and its limitations recordable; this
-                # does not publish advice, certify facts, or count as delivery.
-                require(spec['action'] == 'EVIDENCE_LIMITED',
-                        'facts changed; record limitations rather than confirmed market silence')
+        current_fact_version = facts(Path(root).parent.parent)
+        assessment_fact_version = storage.current(root)['assessment']['fact_version']
+        validate_information(spec, ctx, assessment_fact_version, current_fact_version)
         if ctx['reported']['status'] in ('VERIFIED_DISPLAY','VERIFIED_LEGACY_BODY_AND_ACK'):
             from .main_flow import report_comparison
             current_decision=storage.current(root)
@@ -428,8 +444,7 @@ def record(root, spec, *, prepared_context=None):
         if spec['action']=='REPORT':
             body=render(frozen,storage.current(root))
             require(all(event['impact'] in body for event in events), 'important event impact must appear in the completed report')
-            if spec['layout'].get('format') == AUTHORED_FORMAT or (spec['layout'].get('format') == 'MARKET_MOBILE_V2' and spec['layout']['blocks']):
-                require(all(item in body for item in spec['information'].values()), 'display information must quote actual rendered content; keep internal analysis in maintenance')
+            validate_information(spec, ctx, assessment_fact_version, current_fact_version, body=body)
             require(not duplicate_mobile_body(root,frozen,ctx,body), 'same mobile meaning already displayed; choose SILENT')
         path=Path(root)/'report-reviews'/(frozen['review_id'][7:]+'.json')
         if not path.exists():create(path,frozen)

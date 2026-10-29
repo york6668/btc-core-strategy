@@ -169,9 +169,15 @@ def candidate_hash(value):
 
 
 def preview(value, decision):
-    """Preflight the whole candidate without accepting its semantic review."""
+    """Check bound inputs and rendered indexes, without accepting semantic review."""
     body, _ = render(value, decision, require_review=False)
-    return {'valid': True, 'scope': 'structure_and_bindings_only',
+    from .reporting import validate_information
+    assessment_facts = decision['assessment']['fact_version']
+    # Historical contexts may lack a bound fact generation. Their literal
+    # indexes are still checked; only record can check their live fact drift.
+    validate_information(value, value['context'], assessment_facts,
+                         value['context'].get('identity', {}).get('fact_version', assessment_facts), body=body)
+    return {'valid': True, 'scope': 'structure_bindings_and_information_only',
             'semantic_review': 'PENDING_ACTUAL_FULL_BODY_REVIEW',
             'reviewed_candidate_hash': candidate_hash(value), 'body_hash': digest(body.encode())}
 

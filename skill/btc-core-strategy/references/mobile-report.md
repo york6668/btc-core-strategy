@@ -85,7 +85,7 @@ reasoning 对照机制的应有响应、实际响应及反证裁决，核对方�
 
 新契约7在新稿的每条市场绑定上核对直接带币安场所的 QQQ／VOO 产品称谓：`report_subjects` 必须有公开核验的产品身份，且该句必须绑定对应产品身份标量；仅有 SPX/NDX 底层引用不能支撑产品标签。未核验身份时可以继续报告底层盈利和方向，但须明确底层对象及对待核产品的有限含义。该结构校验只挡可判定的身份越界；同句因果、估值、推断强弱及全文上下文仍由模型实际审阅。历史冻结合同与已送达正文不重写。
 
-新契约5在layout中加入reviewed_candidate_hash，绑定实际body、bindings、price_status以及稳定context_id和result_binding，不绑定滚动的执行时钟或审阅解释。先用run-advance --stage report --check-only输出完整候选及review_read，完整读取实际候选和来源后作上述语义审阅，再填写具体quality_review及返回的候选哈希并记录同稿；预检只证明结构和绑定。任何缩写、重组、末尾或引用归属改变均使旧绑定失效，需要重新核验实际新全文，旧审阅不能沿用。程序不证明审阅意见正确，已知反例仍须由实际全文审阅识别。
+新契约5在layout中加入reviewed_candidate_hash，绑定实际body、bindings、price_status以及稳定context_id和result_binding，不绑定滚动的执行时钟或审阅解释。先用run-advance --stage report --check-only输出完整候选及review_read，完整读取实际候选和来源后作上述语义审阅，再填写具体quality_review及返回的候选哈希并记录同稿；预检共用正式记录的确定性披露及 information 字面正文规则，按绑定 context 的事实代次和实际渲染正文提前检查；不证明全文语义通过，正式记录仍读取最新真实事实重新核验。正文、context、bindings、price_status、result_binding 与候选哈希均未变时，只纠正 information 索引可复用原实际全文审阅；正文或绑定变化仍须完整重审。任何缩写、重组、末尾或引用归属改变均使旧绑定失效，需要重新核验实际新全文，旧审阅不能沿用。程序不证明审阅意见正确，已知反例仍须由实际全文审阅识别。
 
 兼容旧冻结契约3/4、已入队和UNKNOWN原稿，沿其原接口恢复，不补新字段、不重渲染历史。项目控制的定稿到交付路径保护逐字一致；外部聊天改写形成另一份文本，项目程序无法控制，不能借原稿的通过记录宣布该改写通过。
 

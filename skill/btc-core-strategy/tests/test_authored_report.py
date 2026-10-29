@@ -362,7 +362,7 @@ class AuthoredReportTests(unittest.TestCase):
         layout['reviewed_candidate_hash'] = None
         checked = authored.preview(value, self.f.f.decision)
         self.assertEqual(checked['semantic_review'], 'PENDING_ACTUAL_FULL_BODY_REVIEW')
-        self.assertEqual(checked['scope'], 'structure_and_bindings_only')
+        self.assertEqual(checked['scope'], 'structure_bindings_and_information_only')
         layout['quality_review'] = {key: 'Synthetic review explanation for the actual bound candidate, not semantic evidence.'
                                   for key in authored.quality_keys(context)}
         with self.assertRaisesRegex(Invalid, 'has not been reviewed'):
@@ -417,6 +417,7 @@ class AuthoredReportTests(unittest.TestCase):
         # Underlying analysis remains reportable while product identity is open.
         underlying = 'VOO／QQQ 对应的 SPX／NDX 底层盈利周期仍部分偏多；币安对应产品身份未核验。'
         layout['body'] = underlying
+        value['information'] = {'market': underlying}
         layout['bindings'][0]['text'] = underlying
         layout['bindings'][0]['refs'] += ['/report_subjects/VOO/identity_status',
                                           '/report_subjects/QQQ/identity_status']
@@ -424,6 +425,7 @@ class AuthoredReportTests(unittest.TestCase):
 
         # A verified context alone is insufficient when the sentence only binds indices.
         layout['body'] = claim
+        value['information'] = {'market': claim}
         layout['bindings'][0]['text'] = claim
         for symbol in ('QQQ', 'VOO'):
             ctx['report_subjects'][symbol].update(

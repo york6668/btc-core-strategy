@@ -670,6 +670,44 @@ class ReportStageTests(RunFlowTests):
         with self.assertRaisesRegex(Invalid, 'stage context changed|stale report maintenance review'):
             run_flow.advance(self.d / 'run.json', 'report', template_path=out['report_template'], answers_path=self.file(authored))
 
+    def test_report_preflight_checks_bound_disclosure_and_rendered_index_before_export(self):
+        from v4 import authored_report
+        self.observe()
+        ctx = reporting.context(self.f.store)
+        ctx.update(market_revision=5, report_contract_revision=5)
+        ctx['identity']['fact_version'] = dict(ctx['identity']['fact_version'])
+        key = next(iter(ctx['identity']['fact_version']))
+        ctx['identity']['fact_version'][key] = digest(b'synthetic new generation')
+        ctx['context_id'] = digest(ctx['identity'])
+        with mock.patch('v4.reporting.context', return_value=ctx):
+            out = run_flow.phase_material(read(self.d/'run.json'), 'disclosure-review', 'report-body')
+            value = self.report_input(out, 'REPORT')
+            quote = '当前公开小时材料提供有限反馈，保留未完成的个人适用性。'
+            notice = '个人事实已改变，旧个人建议未完成适配，不作可执行安排。'
+            value['layout'].update(body=quote+'\n\n'+notice,
+                bindings=[{'text':quote+'\n\n'+notice,'scope':'market',
+                           'refs':['/observation/review/factor_checks/summary']}],
+                price_status=dict(lower_spot='REVIEW_REQUIRED', upper_short='REVIEW_REQUIRED'),
+                quality_review={key:None for key in authored_report.quality_keys(ctx)}, reviewed_candidate_hash=None)
+            value['information'] = {'market':quote}
+            before = run_flow.anchors(self.f.store,self.f.project)
+            def preflight():
+                return run_flow.advance(self.d/'run.json','report',self.file(value),check_only=True)
+            with self.assertRaisesRegex(Invalid, 'personal response must explain'):
+                preflight()
+            self.assertEqual(list(self.d.glob('report-review-*.json')), [])
+            value['information']['fact_limitations'] = 'Not present in the completed body.'
+            with self.assertRaisesRegex(Invalid, 'quote actual rendered content'):
+                preflight()
+            self.assertEqual(list(self.d.glob('report-review-*.json')), [])
+            value['information']['fact_limitations'] = notice
+            checked = preflight()
+            self.assertEqual(read(checked['review_material'])['candidate']['layout']['body'], value['layout']['body'])
+            self.assertEqual(checked['semantic_review'], 'PENDING_ACTUAL_FULL_BODY_REVIEW')
+            self.assertEqual(before, run_flow.anchors(self.f.store,self.f.project))
+            self.assertFalse((self.f.store/'report-review-current.json').exists())
+            self.assertFalse((self.f.store/'outbox').exists())
+
     def test_report_preflight_binds_full_text_without_recording_or_sending(self):
         from v4 import authored_report
         self.observe()

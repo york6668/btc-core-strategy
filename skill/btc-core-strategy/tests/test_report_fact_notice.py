@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 import test_authored_report as fixture
-from v4 import delivery, reporting
+from v4 import authored_report, delivery, reporting
 from v4.common import Invalid, digest, read, replace
 
 
@@ -47,6 +47,61 @@ class FactNoticeTests(unittest.TestCase):
                                                'refs': ['/assessment/fact_version/' + self.key]})
             value['information']['fact_limitations'] = line
         return value
+
+    def preview(self, value):
+        return authored_report.preview(dict(value, context=self.a.f.context(self.root)), self.a.f.f.decision)
+
+    def test_preflight_rejects_missing_notice_and_non_body_indexes(self):
+        with self.assertRaisesRegex(Invalid, 'personal response must explain'):
+            self.preview(self.spec())
+        value = self.spec(notice=True)
+        value['information']['fact_limitations'] = 'This internal explanation does not occur in the final body.'
+        with self.assertRaisesRegex(Invalid, 'quote actual rendered content'):
+            self.preview(value)
+        with self.assertRaisesRegex(Invalid, 'quote actual rendered content'):
+            self.a.source(value)
+        value = self.spec(notice=True)
+        value['information']['market'] = 'Another internal meaning, not rendered content.'
+        with self.assertRaisesRegex(Invalid, 'quote actual rendered content'):
+            self.preview(value)
+        value = self.spec(notice=True)
+        self.assertTrue(self.preview(value)['valid'])
+        self.a.source(value)
+
+    def test_only_information_correction_keeps_the_review_target(self):
+        value = self.spec(notice=True)
+        # The actual body/refs and its review stay untouched; the index changes.
+        value['information']['fact_limitations'] = value['layout']['body'].split('\n\n')[-1]
+        checked = self.preview(value)
+        original = deepcopy(value)
+        value['information']['market'] = value['layout']['body'].split('\n\n')[1]
+        corrected = self.preview(value)
+        self.assertEqual(checked['reviewed_candidate_hash'], corrected['reviewed_candidate_hash'])
+        self.assertEqual(checked['body_hash'], corrected['body_hash'])
+        self.assertEqual(value['layout'], original['layout'])
+
+    def test_preflight_allows_delivered_market_only_but_not_personal_omission(self):
+        self.confirm(self.spec(notice=True))
+        value = self.spec('后续市场正文不重复已真实显示的限制。')
+        self.assertTrue(self.preview(value)['valid'])
+        self.a.source(value)
+        value['layout']['bindings'][-1]['scope'] = 'personal'
+        value['layout']['bindings'][-1]['refs'] = ['/assessment/fact_version/' + self.key]
+        with self.assertRaisesRegex(Invalid, 'personal response must explain'):
+            self.preview(value)
+
+    def test_record_rechecks_live_facts_after_successful_bound_preflight(self):
+        self.version = deepcopy(self.a.f.f.decision['assessment']['fact_version'])
+        value = self.spec()
+        bound = self.a.f.context(self.root)
+        bound['evaluated_at'] = '2030-03-01T13:00:00Z'
+        self.assertTrue(authored_report.preview(dict(value, context=bound), self.a.f.f.decision)['valid'])
+        self.version[self.key] = digest(b'changed after the bound preview')
+        # Even when a caller retains the old context, record reads live facts.
+        with mock.patch('v4.reporting.context', return_value=bound):
+            with self.assertRaisesRegex(Invalid, 'personal response must explain'):
+                reporting.record(self.root, value, prepared_context=bound)
+        self.assertFalse((self.root / 'report-review-current.json').exists())
 
     def confirm(self, value):
         identity, source = self.a.queue(value)
