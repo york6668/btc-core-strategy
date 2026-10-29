@@ -95,6 +95,55 @@ class MainTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'changed reviewed content'):
             domain.validate_normalization(self.draft, tampered)
 
+    def test_model_cycle_review_preserves_expired_event_as_exact_history(self):
+        from datetime import datetime, timedelta
+        import test_production_strategy as production
+        from v4 import domain
+        current = self.commit()
+        prior = storage.domain_baseline(self.store, current)['canonical_domain']
+        submitted = domain.synthetic(prior)
+        submitted['runtime']['trigger_type'] = 'SCHEDULED_STRATEGY_BOUNDARY'
+        original_submission = deepcopy(submitted)
+        original_event = deepcopy(prior['event'])
+        due = datetime.fromisoformat(original_event['cycle']['events'][-1]['due_at'].replace('Z', '+00:00'))
+        clock = due + timedelta(hours=1)
+        review_at = (clock + timedelta(hours=1)).isoformat()
+        with production.frozen_clock(clock.isoformat()):
+            accepted = domain.validate(submitted, prior, self.project,
+                                       cycle_recheck_at=review_at, model_market=True)
+            self.assertEqual(accepted['event'], original_event)
+            self.assertFalse(accepted['event']['final_event_reached'])
+            self.assertIsNone(accepted['event']['trigger']['completed_previous_event'])
+            # The model-market adapter requires its existing cycle-review
+            # context. Ordinary callers still have to consume the due event.
+            for options in ({'model_market': True}, {'cycle_recheck_at': review_at}):
+                with self.subTest(options=options), self.assertRaisesRegex(Invalid, 'final trigger'):
+                    domain.validate(submitted, prior, self.project, **options)
+        self.assertEqual(submitted, original_submission)
+        self.assertEqual(storage.current(self.store), current)
+
+    def test_expired_history_adapter_cannot_change_events_or_omit_valid_review_time(self):
+        from datetime import datetime, timedelta
+        import test_production_strategy as production
+        from v4 import domain
+        prior = storage.domain_baseline(self.store, self.commit())['canonical_domain']
+        due = datetime.fromisoformat(prior['event']['cycle']['events'][-1]['due_at'].replace('Z', '+00:00'))
+        with production.frozen_clock((due + timedelta(hours=1)).isoformat()):
+            submitted = domain.synthetic(prior)
+            submitted['runtime']['trigger_type'] = 'SCHEDULED_STRATEGY_BOUNDARY'
+            with self.assertRaisesRegex(Invalid, 'approved cycle review deadline'):
+                domain.validate(submitted, prior, self.project,
+                                cycle_recheck_at='invalid', model_market=True)
+            for field in ('due_at', 'opened_at'):
+                changed = deepcopy(submitted)
+                if field == 'due_at':
+                    changed['event']['cycle']['events'][-1][field] = (due + timedelta(minutes=1)).isoformat()
+                else:
+                    changed['event']['cycle'][field] = (due - timedelta(hours=1)).isoformat()
+                with self.subTest(field=field), self.assertRaises(Invalid):
+                    domain.validate(changed, prior, self.project,
+                                    cycle_recheck_at=(due + timedelta(hours=2)).isoformat(), model_market=True)
+
     def test_old_gpt6_1_cannot_publish_a_new_main_assessment(self):
         before = storage.current(self.store)
         self.draft['provenance']['model'] = 'gpt-5.6-sol'

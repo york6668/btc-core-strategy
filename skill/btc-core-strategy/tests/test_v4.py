@@ -257,6 +257,120 @@ class V4Tests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'unrelated raw source'):
             self.commit()
 
+    def aggregate_sources(self):
+        import market_observation as market
+        from test_market_observation import PublicFixtureClient
+        from v4.common import instant
+        prices = self.draft['domain']['observation']['raw_prices']
+        cutoff = int(instant(self.draft['domain']['observation']['observed_at']).timestamp()) // 3600 * 3600 - 3600
+
+        class Client(PublicFixtureClient):
+            def get(inner, endpoint, params):
+                raw = super().get(endpoint, params)
+                venue = 'coinbase' if 'coinbase' in endpoint else 'kraken' if 'kraken' in endpoint else 'binance'
+                price = prices[venue]
+                if venue == 'kraken':
+                    for row in raw['result']['XXBTZUSD']: row[1:5] = [price] * 4
+                elif venue == 'coinbase':
+                    for row in raw: row[1:5] = [price] * 4
+                elif 'klines' in endpoint or 'Klines' in endpoint:
+                    for row in raw: row[1:5] = [price] * 4
+                return raw
+
+        clock = mock.patch.object(market.time, 'time', return_value=cutoff + 60)
+        clock.start()
+        self.addCleanup(clock.stop)
+        payload = market.collect(market.iso(cutoff), client=Client(cutoff))
+        market.validate_evidence(payload)
+        path = self.base / 'aggregate.json'
+        create(path, payload)
+        raw = {'id': 'aggregate_market', 'origin': 'BINANCE',
+               'url': 'https://data-api.binance.vision/api/v3/klines', 'trust': 'PUBLIC_RAW',
+               'published_at': None, 'retrieved_at': market.iso(cutoff + 60),
+               'start': market.iso(cutoff - 240 * 3600), 'end': market.iso(cutoff),
+               'raw_hash': digest(path.read_bytes())}
+        spec = {k: deepcopy(v) for k, v in self.evidence.items() if k not in ('schema', 'evidence_id')}
+        spec['sources'] = [raw]
+        self.evidence_dir = self.base / 'aggregate-evidence'
+        self.evidence = evidence.freeze(spec, {raw['id']: str(path)}, self.evidence_dir)
+        self.draft['evidence_id'] = self.evidence['evidence_id']
+        for i, source in enumerate(self.draft['domain']['evidence_matrix']['price_quotes']['sources']):
+            dataset_id = source['venue'] + '_spot_1h'
+            receipt = payload['retrievals'][dataset_id]
+            previous_id = source['source_id']
+            for hypothesis in self.draft['domain']['causal_attribution']['hypotheses']:
+                for event in hypothesis['causal_timeline']:
+                    if event['evidence_ref'] == previous_id:
+                        event['evidence_ref'] = dataset_id
+                        event['occurred_at'] = market.iso(cutoff)
+            source.update(source_id=dataset_id, payload_kind='BTC_SPOT_CANDLE_CLOSE',
+                          endpoint_url=receipt['endpoint'] + '?' + urlencode(receipt['parameters']),
+                          as_of=market.iso(cutoff), retrieved_at=receipt['retrieved_at'])
+            ref = {'source_id': raw['id'], 'pointer': '/datasets/' + dataset_id + '/rows/239/close',
+                   'value_hash': digest(payload['datasets'][dataset_id]['rows'][239]['close'])}
+            self.draft['evidence_bindings']['/evidence_matrix/price_quotes/sources/' + str(i)] = [ref]
+            self.draft['evidence_bindings']['/observation/raw_prices/' + source['venue']] = [ref]
+        self.draft['temporal_scope'].update(market_cutoff=market.iso(cutoff), domain_market_cutoff=market.iso(cutoff),
+                                          current_market_refs=[ref])
+        return raw, payload
+
+    def test_aggregate_producer_quotes_bind_logical_sources_through_assessment(self):
+        raw, _ = self.aggregate_sources()
+        published = self.commit()
+        sources = published['assessment']['domain']['evidence_matrix']['price_quotes']['sources']
+        self.assertEqual({s['source_id'] for s in sources}, {'binance_spot_1h', 'coinbase_spot_1h', 'kraken_spot_1h'})
+        self.assertEqual(len(self.evidence['sources']), 1)
+        self.assertEqual(raw['origin'], 'BINANCE')  # The actual container was not relabelled.
+
+    def test_aggregate_quote_rejects_unrelated_field_even_when_number_matches(self):
+        raw, _ = self.aggregate_sources()
+        source = self.draft['domain']['evidence_matrix']['price_quotes']['sources'][0]
+        original = self.draft['evidence_bindings']['/observation/raw_prices/' + source['venue']][0]
+        for path in (original['pointer'].replace('/close', '/open'),
+                     original['pointer'].replace(source['source_id'], 'binance_futures_1h'),
+                     '/datasets', original['pointer'].replace('/239/', '/999/'), None):
+            with self.subTest(pointer=path):
+                ref = dict(original, pointer=path)
+                self.assertFalse(assessment._source_matches_raw(source, raw, self.evidence_dir, ref))
+        for field, value in (('source_id', 'unrelated_container'), ('value_hash', digest('different'))):
+            self.assertFalse(assessment._source_matches_raw(source, raw, self.evidence_dir, dict(original, **{field:value})))
+        # Exercise the real assessment price consumer, beyond the helper.
+        self.draft['evidence_bindings']['/observation/raw_prices/' + source['venue']] = [dict(original, pointer=original['pointer'].replace('/close', '/open'))]
+        with self.assertRaisesRegex(Invalid, 'wrong venue'):
+            self.commit()
+
+    def test_aggregate_quote_rejects_forged_identity_request_and_clocks(self):
+        raw, _ = self.aggregate_sources()
+        source = self.draft['domain']['evidence_matrix']['price_quotes']['sources'][0]
+        ref = self.draft['evidence_bindings']['/observation/raw_prices/' + source['venue']][0]
+        for field, value in (('source_id', 'invented_independent_source'), ('canonical_origin', 'COINBASE'),
+                             ('venue', 'coinbase'), ('payload_kind', 'BTC_SPOT_TICKER'),
+                             ('as_of', '2030-03-01T00:00:00Z'), ('retrieved_at', '2030-03-01T00:00:00Z'),
+                             ('endpoint_url', source['endpoint_url'].replace('BTCUSDT','ETHUSDT')),
+                             ('endpoint_url', source['endpoint_url'] + '&interval=1h'),
+                             ('endpoint_url', source['endpoint_url'].replace('limit=240','limit=239'))):
+            with self.subTest(field=field, value=value):
+                self.assertFalse(assessment._source_matches_raw(dict(source, **{field:value}), raw, self.evidence_dir, ref))
+
+    def test_aggregate_quote_rejects_corrupt_dataset_identity_or_failed_receipt(self):
+        raw, original = self.aggregate_sources()
+        source = self.draft['domain']['evidence_matrix']['price_quotes']['sources'][0]
+        ref = self.draft['evidence_bindings']['/observation/raw_prices/' + source['venue']][0]
+        path = self.evidence_dir / 'raw' / (raw['raw_hash'][7:] + '.json')
+        import market_observation as market
+        for field, value in (('source','coinbase_spot'), ('group','COINBASE'), ('market','PERPETUAL'),
+                             ('instrument','ETHUSDT'), ('quote_unit','USD'), ('kind','MARK')):
+            payload = deepcopy(original)
+            payload['datasets'][source['source_id']][field] = value
+            path.write_text(json.dumps(payload))
+            with self.subTest(field=field):
+                self.assertFalse(assessment._source_matches_raw(source, raw, self.evidence_dir, ref))
+        payload = deepcopy(original)
+        payload['retrievals'][source['source_id']]['status'] = 'HTTP_500'
+        payload['retrieval_id'] = market.digest({'evidence_id':payload['evidence_id'], 'retrievals':payload['retrievals']})
+        path.write_text(json.dumps(payload))
+        self.assertFalse(assessment._source_matches_raw(source, raw, self.evidence_dir, ref))
+
     def test_same_origin_not_independent(self):
         package = deepcopy(self.evidence)
         refs = [refs[0] for refs in self.draft['evidence_bindings'].values()]

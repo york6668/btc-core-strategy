@@ -9,9 +9,57 @@ from . import domain, evidence, report
 from .common import atoms, digest, exact, facts, instant, numbered, pointer, read, require, text
 
 
-def _source_matches_raw(source, raw, directory):
-    """Bind a quote to its frozen request, including separately stored params."""
+def _matches_candle_request(url, retrieval):
+    if not isinstance(retrieval, dict):
+        return False
+    parsed = urlsplit(url)
+    if parsed._replace(query='').geturl() != retrieval.get('endpoint'):
+        return False
+    params = retrieval.get('parameters')
+    if not isinstance(params, dict) or any(type(k) is not str or type(v) not in (str, int) for k, v in params.items()):
+        return False
+    # The registry rejects duplicate/unknown query keys. Compare every bound.
+    return dict(parse_qsl(parsed.query, keep_blank_values=True)) == {k: str(v) for k, v in params.items()}
+
+
+def _aggregate_candle_matches(source, raw, payload, ref):
+    """A logical dataset source and an exact close ref share one frozen container."""
+    import market_observation as observation
+    if source.get('payload_kind') != 'BTC_SPOT_CANDLE_CLOSE' or not isinstance(ref, dict):
+        return False
+    path = ref.get('pointer')
+    match = re.fullmatch(r'/datasets/([^/]+)/rows/(0|[1-9][0-9]*)/close', path) if isinstance(path, str) else None
+    if not match or ref.get('source_id') != raw['id'] or source.get('source_id') != match[1]:
+        return False
+    try:
+        # Reuse the producer's registry, request, clock and fingerprint checks;
+        # a self-declared group/market/unit cannot establish quote provenance.
+        observation.validate_evidence(payload)
+        ds = payload['datasets'][match[1]]
+        retrieval = payload['retrievals'][match[1]]
+        row = ds['rows'][int(match[2])]
+        return (ds['kind'] == 'CANDLES' and ds['market'] == 'SPOT'
+                and source.get('canonical_origin') == ds['group']
+                and source.get('venue') == ds['source'].removesuffix('_spot')
+                and retrieval['status'] == 'RECEIVED'
+                and _matches_candle_request(source['endpoint_url'], retrieval)
+                and instant(source['retrieved_at']) == instant(retrieval['retrieved_at'])
+                and instant(source['as_of']) == instant(row['end'])
+                and ref.get('value_hash') == digest(row['close']))
+    except (observation.ObservationError, KeyError, IndexError, TypeError, ValueError):
+        return False
+
+
+def _source_matches_raw(source, raw, directory, ref=None):
+    """Bind logical quote identity, request and exact field to frozen raw bytes."""
     url = source.get('endpoint_url')
+    payload = read(Path(directory) / 'raw' / (raw['raw_hash'][7:] + '.json'))
+    if isinstance(payload, dict) and payload.get('schema') == 'BTC_MARKET_EVIDENCE_V1':
+        from event_contract import public_candle_provenance
+        registered = public_candle_provenance(url)
+        return (registered is not None
+                and registered[:2] == (source.get('canonical_origin'), source.get('venue'))
+                and _aggregate_candle_matches(source, raw, payload, ref))
     if url == raw['url']:
         return True
     if source.get('payload_kind') != 'BTC_SPOT_CANDLE_CLOSE':
@@ -20,19 +68,9 @@ def _source_matches_raw(source, raw, directory):
     registered = public_candle_provenance(url)
     if not registered or registered[:2] != (source.get('canonical_origin'), source.get('venue')):
         return False
-    payload = read(Path(directory) / 'raw' / (raw['raw_hash'][7:] + '.json'))
     retrieval = payload.get('retrieval', {}) if isinstance(payload, dict) else {}
-    if not isinstance(retrieval, dict) or retrieval.get('endpoint') != raw['url']:
-        return False
-    parsed = urlsplit(url)
-    if parsed._replace(query='').geturl() != raw['url']:
-        return False
-    params = retrieval.get('parameters')
-    if not isinstance(params, dict) or any(type(k) is not str or type(v) not in (str, int) for k, v in params.items()):
-        return False
-    # The registry rejects duplicate/unknown query keys. Ordering and URL
-    # escaping can differ; asset, interval and every request bound must match.
-    return dict(parse_qsl(parsed.query, keep_blank_values=True)) == {k: str(v) for k, v in params.items()}
+    return (isinstance(retrieval, dict) and retrieval.get('endpoint') == raw['url']
+            and _matches_candle_request(url, retrieval))
 
 
 def scenario(value):
@@ -205,7 +243,7 @@ def validate(draft, evidence_dir, prior, project, review):
             for ref in refs:
                 require(ref['source_id'] in source_by_id, 'verified source missing frozen public raw')
                 raw = source_by_id[ref['source_id']]
-                require(_source_matches_raw(source, raw, evidence_dir), 'domain source points at unrelated raw source')
+                require(_source_matches_raw(source, raw, evidence_dir, ref), 'domain source points at unrelated raw source')
                 require(instant(source['as_of']) <= instant(raw['end']), 'domain source exceeds raw time coverage')
                 evidence.resolve(package, evidence_dir, ref, verified=True)
     require(instant(draft['domain']['observation']['observed_at']) <= instant(package['cutoff']), 'decision exceeds evidence cutoff')
@@ -222,7 +260,7 @@ def validate(draft, evidence_dir, prior, project, review):
         require(raw_value == numbered(price), 'quoted price differs from frozen raw value')
         sources = draft['domain']['evidence_matrix']['price_quotes']['sources']
         matched = next((s for s in sources if s['venue'] == venue), None)
-        require(matched and _source_matches_raw(matched, source_by_id[refs[0]['source_id']], evidence_dir), 'quoted price bound to wrong venue')
+        require(matched and _source_matches_raw(matched, source_by_id[refs[0]['source_id']], evidence_dir, refs[0]), 'quoted price bound to wrong venue')
     validated = deepcopy(draft)
     historical_clock = prior.get('_verified_domain_replay_clock') if revision >= 3 else None
     validated['domain'] = domain.validate(draft['domain'], prior['canonical_domain'], project, historical_clock,

@@ -6668,15 +6668,29 @@ def _validate_bundle_internal(
                 ]["event"]
             except (GuardError, KeyError, TypeError) as exc:
                 errors.append(f"cannot bind previous event chain: {exc}")
+        event_clock = _event_replay_clock or datetime.now(timezone.utc)
+        historical_event = False
+        if (_model_market_assessment and _cycle_recheck_at is not None
+                and baseline_event == event):
+            _parse_iso8601(_cycle_recheck_at, "approved cycle review deadline", errors)
+            cycle = event.get("cycle")
+            chain = cycle.get("events") if isinstance(cycle, Mapping) else None
+            if isinstance(chain, list) and chain and isinstance(chain[-1], Mapping):
+                old_due = _parse_iso8601(chain[-1].get("due_at"), "historical event final due_at", errors)
+                historical_event = old_due is not None and old_due <= event_clock
+        # An unchanged expired carrier is history under the existing v4 cycle
+        # review owner. Validate its complete structure and sources, without
+        # claiming a missed review ran or inventing a replacement event chain.
+        # Changed events and legacy callers retain the actual deadline gate.
         errors.extend(validate_event_contract(
             event,
             pricing_as_of=runtime.get("pricing_as_of") if isinstance(runtime, Mapping) else None,
             observed_at=observation.get("observed_at") if isinstance(observation, Mapping) else None,
-            now=_event_replay_clock or datetime.now(timezone.utc),
+            now=event_clock,
             hypothesis_ids=hypothesis_ids,
-            baseline_event=baseline_event,
+            baseline_event=None if historical_event else baseline_event,
             migration=trigger_transition == "MIGRATION",
-            baseline_mode=_baseline_semantics_mode,
+            baseline_mode=_baseline_semantics_mode or historical_event,
             reassessment_deadline=_cycle_recheck_at,
         ))
         if isinstance(event.get("cycle"), Mapping) and isinstance(runtime, Mapping):
