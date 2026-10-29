@@ -136,11 +136,13 @@ class PortfolioPublicManifestTests(unittest.TestCase):
 
     def seal(self):
         self.review_path.write_text(json.dumps(self.review))
-        self.manifest['artifacts'] = [dict(self.reference(p),name=p.name,bytes=p.stat().st_size)
-                                      for p in (self.public_path,self.review_path)]
+        paths=[self.public_path,self.review_path]
+        if hasattr(self,'full_path'): paths.append(self.full_path)
+        self.manifest['artifacts'] = [dict(self.reference(p),name=p.name,bytes=p.stat().st_size) for p in paths]
         self.manifest_path.write_text(json.dumps(self.manifest))
         self.final.update(manifest=self.reference(self.manifest_path),
                           artifacts={'public_proposal':self.reference(self.public_path)})
+        if hasattr(self,'full_path'): self.final['artifacts']['full_report']=self.reference(self.full_path)
         self.write_trace()
 
     def write_trace(self,author=None):
@@ -197,6 +199,78 @@ class PortfolioPublicManifestTests(unittest.TestCase):
             with mock.patch('runtime_schedule.bind'),mock.patch('v4.research.amend_market',return_value={}) as amend,redirect_stdout(io.StringIO()):
                 self.assertEqual(strategy_v4.main(base+extra),0)
             self.assertEqual(amend.call_args.kwargs['source_phase'],expected)
+
+    def mapping_request(self):
+        # This small generated request exercises the actual reveal mapping
+        # boundary. Whole-cycle finance/domain checks have separate regressions.
+        request={k:v for k,v in self.fixture.req.items() if k!='request_id'}
+        request['issue_key']='GENERATED_COMPANION_MAPPING'
+        self.fixture.req=research._save(self.root,'requests','request_id',request)
+        phase={k:v for k,v in self.phase.items() if k!='independent_id'}
+        phase['request_id']=self.fixture.req['request_id']
+        self.phase=research._save(self.root,'independent','independent_id',phase)
+        self.review['original'].update(request_id=self.phase['request_id'],independent_id=self.phase['independent_id'])
+
+    def companion_case(self):
+        self.mapping_request()
+        self.full_body='Reorganized authored public explanation.\nGENERATED_PRIVATE_SECTION_SHOULD_NOT_BE_PUBLIC\n'
+        self.full_path=self.folder/'full-report.zh.md';self.full_path.write_text(self.full_body)
+        self.manifest['active_full_report']=self.full_path.name;self.seal()
+        saved=self.amend()
+        candidate={'assessment':{'outlook':deepcopy(self.public['outlook']),
+                    'factor_assessment':deepcopy(self.public['factor_assessment']),
+                    'conclusion':{'narrative':self.full_body}}}
+        return saved,candidate
+
+    def test_manifest_companion_allows_exact_nonprefix_only_in_candidate_stage(self):
+        saved,candidate=self.companion_case()
+        original=saved['independent_id'];owner_path=self.root/'research/independent'/(original[7:]+'.json')
+        before=owner_path.read_bytes()
+        for path in (self.root/'research/author_outputs').glob('*.json'):
+            self.assertNotIn(b'GENERATED_PRIVATE_SECTION_SHOULD_NOT_BE_PUBLIC',path.read_bytes())
+        self.full_path.unlink()  # Candidate verification must not read the private original.
+        preview=research.reveal(self.root,self.phase['request_id'],original,candidate,check_only=True)
+        self.assertTrue(preview['valid'])
+        disclosed=research.reveal(self.root,self.phase['request_id'],original,candidate)
+        self.assertEqual(disclosed['candidate'],candidate)
+        self.assertNotIn('cycle_review',saved)
+        self.assertEqual(owner_path.read_bytes(),before)
+        self.base.assert_old_registrations_unchanged()
+
+    def test_companion_body_mutation_or_main_supplied_hash_cannot_authorize(self):
+        saved,candidate=self.companion_case()
+        for changed in (self.full_body+'x',self.full_body[:-1],' '+self.full_body):
+            wrong=deepcopy(candidate);wrong['assessment']['conclusion']['narrative']=changed
+            wrong['authored_report_hash']=digest(changed.encode())
+            with self.subTest(body_change=changed[-2:]),self.assertRaisesRegex(Invalid,'full report changed'):
+                research.reveal(self.root,self.phase['request_id'],saved['independent_id'],wrong,check_only=True)
+
+    def test_companion_keeps_market_semantics_and_actual_author_phase_manifest_guards(self):
+        saved,candidate=self.companion_case()
+        for key in ('outlook','factor_assessment'):
+            wrong=deepcopy(candidate);wrong['assessment'][key]['narrative' if key=='outlook' else 'summary']='MAIN changed public meaning'
+            with mock.patch('v4.research._candidate_companion_report') as companion,self.assertRaisesRegex(Invalid,'changed the independent public'):
+                research.reveal(self.root,self.phase['request_id'],saved['independent_id'],wrong,check_only=True)
+            companion.assert_not_called()
+        for change in ('author','phase','manifest'):
+            altered={k:deepcopy(v) for k,v in saved.items() if k not in ('independent_id','lifecycle_frozen_at')}
+            if change=='author': altered['agent_id']='/root/not_the_original_author'
+            elif change=='phase': altered['market_amendment']['source_phase']='PUBLIC_CORRECTION'
+            else: altered['market_amendment']['portfolio_public']['immutable_refs']['manifest']['content_hash']=digest('different manifest')
+            damaged=research._save(self.root,'independent','independent_id',altered)
+            with self.subTest(change=change),self.assertRaises(Invalid):
+                research.reveal(self.root,self.phase['request_id'],damaged['independent_id'],candidate,check_only=True)
+
+    def test_default_prefix_without_companion_is_unchanged(self):
+        self.mapping_request();self.seal()
+        saved=self.amend()
+        candidate={'assessment':{'outlook':deepcopy(self.public['outlook']),
+                   'factor_assessment':deepcopy(self.public['factor_assessment']),
+                   'conclusion':{'narrative':self.public['market_report']+'\nPrivate generated append.'}}}
+        self.assertTrue(research.reveal(self.root,self.phase['request_id'],saved['independent_id'],candidate,check_only=True)['valid'])
+        candidate['assessment']['conclusion']['narrative']='No actual bound full report.'
+        with self.assertRaisesRegex(Invalid,'full report changed'):
+            research.reveal(self.root,self.phase['request_id'],saved['independent_id'],candidate,check_only=True)
 
     def test_guard_rejection_does_not_fallback_or_archive(self):
         before = set((self.root/'research/author_outputs').glob('*'))

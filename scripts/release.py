@@ -144,35 +144,49 @@ def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', ref + '^{commit}'], text=True).strip()
     with locked(config) as root:
         destination = version_dir(root, revision)
-        if destination.exists():
+        installed = destination.exists()
+        if installed:
             check_release(destination)
-        else:
-            releases = root / 'releases'; releases.mkdir(exist_ok=True)
-            stage = Path(tempfile.mkdtemp(prefix='.install-', dir=releases)).resolve()
-            try:
-                archive = stage / 'source.tar'
-                with archive.open('wb') as output:
-                    subprocess.run(['git', '-C', str(source), 'archive', revision], stdout=output, check=True)
-                with tarfile.open(archive) as package:
-                    for member in package.getmembers():
-                        relative = Path(member.name)
-                        if relative.is_absolute() or '..' in relative.parts or member.issym() or member.islnk():
-                            raise ValueError('release archive must contain only relative regular sources')
-                    package.extractall(stage)
-                archive.unlink()
-                required = check_sources(stage)
-                reader = Path(test_reader or config['reader_code_dir']).expanduser().resolve()
-                if not (reader / 'reader.py').is_file():
-                    raise ValueError('configured reader_code_dir must contain the installed reader')
-                subprocess.run([config['python'], str(stage / 'scripts/run_tests.py'),
-                                '--reader', str(reader)], cwd=stage, check=True)
-                write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
-                      'content_contract': required.get('content_contract', {'read_revisions': [1, 2, 3, 4, 5], 'new_write_revision': 5}),
-                      'tested_python': config['python'], 'repository': 'york6668/btc-core-strategy'})
-                os.rename(str(stage), str(destination))
-            finally:
-                if stage.exists():
-                    shutil.rmtree(stage)
+    if not installed:
+        # Validation must not hold the lease lock used by ordinary enter/finish.
+        # Each installer owns its workspace; only a complete tested tree can be
+        # atomically published under the short shared lock below.
+        releases = root / 'releases'; releases.mkdir(exist_ok=True)
+        workspace = Path(tempfile.mkdtemp(prefix='.install-', dir=releases)).resolve()
+        stage = workspace / revision
+        stage.mkdir()
+        try:
+            archive = workspace / 'source.tar'
+            with archive.open('wb') as output:
+                subprocess.run(['git', '-C', str(source), 'archive', revision], stdout=output, check=True)
+            with tarfile.open(archive) as package:
+                for member in package.getmembers():
+                    relative = Path(member.name)
+                    if relative.is_absolute() or '..' in relative.parts or member.issym() or member.islnk():
+                        raise ValueError('release archive must contain only relative regular sources')
+                package.extractall(stage)
+            archive.unlink()
+            required = check_sources(stage)
+            reader = Path(test_reader or config['reader_code_dir']).expanduser().resolve()
+            if not (reader / 'reader.py').is_file():
+                raise ValueError('configured reader_code_dir must contain the installed reader')
+            subprocess.run([config['python'], str(stage / 'scripts/run_tests.py'),
+                            '--reader', str(reader)], cwd=stage, check=True)
+            write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
+                  'content_contract': required.get('content_contract', {'read_revisions': [1, 2, 3, 4, 5], 'new_write_revision': 5}),
+                  'tested_python': config['python'], 'repository': 'york6668/btc-core-strategy'})
+            with locked(config) as root:
+                check_release(stage)
+                destination = version_dir(root, revision)
+                if destination.exists():
+                    # Another installer may have published this exact commit.
+                    # Validate and reuse it; never replace its immutable tree.
+                    check_release(destination)
+                else:
+                    os.rename(str(stage), str(destination))
+        finally:
+            if workspace.exists():
+                shutil.rmtree(workspace)
     return activate(config, revision) if activate_after else {'status': 'STAGED', 'commit': revision}
 
 

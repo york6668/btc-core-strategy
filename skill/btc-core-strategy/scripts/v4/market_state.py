@@ -439,7 +439,7 @@ def parse_result(analysis, revision=5):
     return value
 
 
-def ensure_research_mapping(independent, candidate):
+def ensure_research_mapping(independent, candidate, *, _companion_report=None):
     result = independent.get('market_result')
     if result is None:
         require(revision(candidate['assessment']) < 5, 'revision 5 needs an independently frozen public market result')
@@ -447,7 +447,15 @@ def ensure_research_mapping(independent, candidate):
     mapped = candidate['assessment']
     require(mapped['outlook'] == result['outlook'] and mapped['factor_assessment'] == result['factor_assessment'],
             'portfolio mapping changed the independent public market result')
-    require(mapped['conclusion']['narrative'].startswith(result['market_report'].rstrip()),
+    narrative = mapped['conclusion']['narrative']
+    text(narrative, 'full report narrative')
+    if narrative.startswith(result['market_report'].rstrip()):
+        return
+    # Only the research consumer supplies this internal verifier, derived from
+    # the actual same-author FINAL/immutable manifest, never a MAIN input hash.
+    companion = _companion_report() if _companion_report is not None else None
+    body = narrative.encode('utf-8')
+    require(companion is not None and digest(body)==companion['sha256'] and len(body)==companion['bytes'],
             'full report changed the independent market report')
 
 

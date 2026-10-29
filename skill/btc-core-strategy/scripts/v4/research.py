@@ -677,7 +677,8 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
         require(phase['completed_at'] <= instant(now()).timestamp(), 'independent phase is not complete yet')
         require(isinstance(candidate, dict) and candidate, 'candidate disclosure must be explicit')
         if req.get('workflow_revision', 4) >= 5:
-            market_state.ensure_research_mapping(phase, candidate)
+            market_state.ensure_research_mapping(phase, candidate,
+                _companion_report=lambda: _candidate_companion_report(root, phase))
         from . import cycle
         if req['issue_key'] == cycle.ISSUE_KEY:
             cycle.validate_candidate(candidate)
@@ -1014,8 +1015,8 @@ def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
     return value
 
 
-def _author_artifact(root, reference, archived=None):
-    """Resolve an actual author reference inside this root, without symlink escape."""
+def _author_artifact_path(root, reference):
+    """Validate the supplied root spelling and children without reading a body."""
     root = Path(root)
     require(isinstance(reference, dict) and isinstance(reference.get('path'), str)
             and isinstance(reference.get('sha256'),str)
@@ -1036,6 +1037,12 @@ def _author_artifact(root, reference, archived=None):
     for part in path.relative_to(anchor).parts:
         cursor = cursor / part
         require(not cursor.is_symlink(), 'author artifact must not use child symlinks')
+    return path
+
+
+def _author_artifact(root, reference, archived=None):
+    root = Path(root)
+    path = _author_artifact_path(root, reference)
     if archived is not None:
         path = root / archived['path']
         require(archived == {'schema':PUBLIC_RESULT_REF_SCHEMA,
@@ -1189,7 +1196,7 @@ def _verify_market_amendment(phase, root=None):
                     'public evidence clocks or original bundle identities changed')
             require(market_state.parse_result(bodies['public_proposal'].decode('utf-8')) == phase['market_result'],
                     'archived PORTFOLIO public result changed')
-            return
+            return proof
         reference=_public_result_reference(analysis)
         if reference is None:
             require(market_state.parse_result(analysis)==phase['market_result'],'public amendment output changed')
@@ -1198,6 +1205,33 @@ def _verify_market_amendment(phase, root=None):
             # immutable Owner contains the complete result; later readback
             # binds its original final reference without reopening the file.
             require(reference==phase.get('public_result_reference'),'public amendment result reference changed')
+
+
+def _candidate_companion_report(root, phase):
+    """Derive an opaque full-report identity from the verified existing FINAL.
+
+    No private file is read or archived here. The candidate already holds its
+    private narrative; its exact bytes are compared only at candidate review.
+    """
+    amendment = phase.get('market_amendment') or {}
+    if amendment.get('source_phase') != 'PORTFOLIO':
+        return None
+    proof = _verify_market_amendment(phase, root)
+    from .cycle import parse_review
+    final = parse_review(proof['analysis'])
+    reference = final.get('artifacts', {}).get('full_report')
+    if reference is None:
+        return None
+    path = _author_artifact_path(root, reference)
+    manifest_ref = amendment['portfolio_public']['immutable_refs']['manifest']
+    manifest = _public_artifact_object(_referenced_public_result(root,manifest_ref).encode('utf-8'))
+    active = manifest.get('active_full_report')
+    entry = next((x for x in manifest['artifacts'] if x['name']==active),None)
+    require(entry is not None and isinstance(entry.get('path'),str) and Path(entry['path']).name==active
+            and entry.get('path')==reference['path'] and entry.get('sha256')==reference['sha256']
+            and path.name==active and type(entry.get('bytes')) is int and entry['bytes']>0,
+            'full report is not bound to the same actual FINAL and active manifest entry')
+    return {'sha256':reference['sha256'],'bytes':entry['bytes']}
 
 
 def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None, *, source_phase='PUBLIC_CORRECTION'):

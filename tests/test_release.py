@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import plistlib
 from types import SimpleNamespace
 import unittest
@@ -142,6 +143,91 @@ class ReleaseTests(unittest.TestCase):
     def commit(self, message):
         self.git('add', '.'); self.git('commit', '-qm', message)
         return self.git('rev-parse', 'HEAD')
+
+    def gated_source(self):
+        gate = self.base / 'test-gate'; gate.mkdir()
+        (self.source / 'scripts/run_tests.py').write_text(
+            'import os,sys,time\nfrom pathlib import Path\n'
+            'assert sys.argv[1] == "--reader" and (Path(sys.argv[2])/"reader.py").is_file()\n'
+            + 'gate=Path(' + repr(str(gate)) + ')\n'
+            + 'label=os.environ["BTC_TEST_INSTALL_LABEL"]\n'
+            '(gate/("ready-"+label)).touch()\n'
+            'deadline=time.monotonic()+15\n'
+            'while not (gate/("allow-"+label)).exists():\n'
+            '    if time.monotonic()>deadline: raise TimeoutError("generated test gate")\n'
+            '    time.sleep(.01)\n')
+        return gate, self.commit('generated gated tests')
+
+    def installer(self, gate, revision, label, *, stage_only=True):
+        release.write(self.config['_path'], self.config)
+        command = [sys.executable, '-B', str(ROOT/'scripts/release.py'),
+                   '--node-config', self.config['_path'], 'install', '--source', str(self.source), '--ref', revision]
+        if stage_only: command.append('--stage-only')
+        process = subprocess.Popen(command, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1',
+                                    BTC_TEST_INSTALL_LABEL=label), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def cleanup():
+            (gate/('allow-'+label)).touch()
+            try: process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill();process.communicate(timeout=5)
+        self.addCleanup(cleanup)
+        return process
+
+    def wait_for_file(self, path, process):
+        deadline=time.monotonic()+5
+        while not path.exists():
+            self.assertIsNone(process.poll(), 'installer exited before generated tests started')
+            if time.monotonic()>deadline: self.fail('generated test process did not reach its gate')
+            time.sleep(.01)
+
+    def business_cli(self, *arguments):
+        return subprocess.run([sys.executable, '-B', str(ROOT/'scripts/release.py'),
+                               '--node-config', self.config['_path'], *arguments],
+                              capture_output=True, text=True, timeout=2, check=True)
+
+    def test_install_long_tests_allow_real_finish_and_enter_with_run_gap_preserved(self):
+        root=Path(self.config['release_root'])
+        release.enter(self.config,'old-business')
+        gate,target=self.gated_source();process=self.installer(gate,target,'one',stage_only=False)
+        self.wait_for_file(gate/'ready-one',process)
+        try:
+            done=json.loads(self.business_cli('finish','--run-id','old-business').stdout)
+            self.assertEqual(done['status'],'FINISHED')
+            run_path=release.record_path(root,'runs','old-business');finished=run_path.read_bytes()
+            self.business_cli('finish','--run-id','old-business')
+            self.assertEqual(run_path.read_bytes(),finished)
+            started=json.loads(self.business_cli('enter','--run-id','new-business').stdout)
+            self.assertEqual(started['commit'],self.first)
+            self.assertIsNone(process.poll())
+            self.assertFalse(release.version_dir(root,target).exists())
+            self.assertEqual(release.current(root).name,self.first)
+        finally:
+            (gate/'allow-one').touch()
+        stdout,stderr=process.communicate(timeout=10)
+        self.assertEqual(process.returncode,0,stderr)
+        self.assertEqual(json.loads(stdout)['status'],'WAITING_FOR_RUN_GAP')
+        self.assertEqual(release.current(root).name,self.first)
+        release.check_release(release.version_dir(root,target))
+        self.business_cli('finish','--run-id','new-business')
+        self.assertEqual(release.activate(self.config,target)['status'],'ACTIVE')
+        self.assertEqual(self.state.read_bytes(),self.before)
+
+    def test_concurrent_same_commit_install_reuses_complete_publication(self):
+        root=Path(self.config['release_root']);gate,target=self.gated_source()
+        one=self.installer(gate,target,'one');two=self.installer(gate,target,'two')
+        self.wait_for_file(gate/'ready-one',one);self.wait_for_file(gate/'ready-two',two)
+        self.assertFalse(release.version_dir(root,target).exists())
+        (gate/'allow-one').touch();out,err=one.communicate(timeout=10)
+        self.assertEqual(one.returncode,0,err);self.assertEqual(json.loads(out)['status'],'STAGED')
+        destination=release.version_dir(root,target);metadata=(destination/'RELEASE.json').read_bytes();inode=destination.stat().st_ino
+        self.assertIsNone(two.poll())
+        (gate/'allow-two').touch();out,err=two.communicate(timeout=10)
+        self.assertEqual(two.returncode,0,err);self.assertEqual(json.loads(out)['status'],'STAGED')
+        self.assertEqual((destination/'RELEASE.json').read_bytes(),metadata)
+        self.assertEqual(destination.stat().st_ino,inode)
+        self.assertEqual(list((root/'releases').glob('.install-*')),[])
+        self.assertEqual(release.current(root).name,self.first)
+        self.assertEqual(self.state.read_bytes(),self.before)
 
     def test_missing_method_stops_entry_without_creating_an_active_run(self):
         root = Path(self.config['release_root'])
