@@ -697,7 +697,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             directory = Path(root) / 'evidence' / (supplement or req)['evidence_id'][7:]
             package = evidence.validate(read(directory / 'evidence.json'), directory)
             cycle.validate_candidate(candidate, evidence.forward_resolver(package, directory), root, Path(root).parent.parent,
-                                     frozen_public_cutoff=(phase.get('evidence_context') or req)['knowledge_cutoff'])
+                                     frozen_public_cutoff=(phase.get('public_evidence_inputs') or phase.get('evidence_context') or req)['knowledge_cutoff'])
             errors = []
             for ref in refs_in(candidate):
                 try:
@@ -745,7 +745,7 @@ def result(root, spec, guard_attempt=None):
         _guard_completed(root, req, 'APPROVAL', guard_attempt, spec['rollout_path'])
         disclosed = _load(root, 'candidates', spec['candidate_id'])
         phase = _load(root, 'independent', disclosed['independent_id'])
-        _verify_market_amendment(phase)
+        _verify_market_amendment(phase, root)
         require(phase.get('verification_scope', 'NATIVE_RUNTIME_PHASE_INPUT_READ') == 'NATIVE_RUNTIME_PHASE_INPUT_READ', 'orchestrated research needs its orchestration result adapter')
         require(disclosed['request_id'] == req['request_id'] == phase['request_id'], 'research phases bind different requests')
         require(spec['agent_id'] == disclosed['agent_id'] == phase['agent_id'], 'research phases must use the same agent')
@@ -897,7 +897,7 @@ def orchestrated_result(root, spec, guard_attempt=None):
         _guard_completed(root, req, 'APPROVAL', guard_attempt, spec['rollout_path'])
         disclosed = _load(root, 'candidates', spec['candidate_id'])
         phase = _load(root, 'independent', disclosed['independent_id'])
-        _verify_market_amendment(phase)
+        _verify_market_amendment(phase, root)
         require(phase.get('verification_scope') == ORCHESTRATED_SCOPE, 'native research must retain native input-read verification')
         require(req['request_id'] == disclosed['request_id'] == phase['request_id'], 'orchestrated phases bind different requests')
         # A later desktop segment must actually contain the original dispatch
@@ -983,7 +983,7 @@ def _referenced_public_result(root, reference):
         require(False,'public result reference must contain UTF-8 JSON')
 
 
-def _public_result(root, req, analysis, directory=None):
+def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
     if req.get('workflow_revision', 4) < 5:
         return {}
     from . import evidence, factors
@@ -998,9 +998,11 @@ def _public_result(root, req, analysis, directory=None):
     resolve = evidence.forward_resolver(package, directory)
     packet = read(Path(root) / req['independent_input_path'])
     historical = packet.get('historical_hypotheses', packet)
-    prior_market = ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment')
+    prior_result = (prior_phase or {}).get('market_result')
+    prior_market = (prior_result['outlook']['market_assessment'] if prior_result else
+                    ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment'))
     market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'], rev, prior_market, lifecycle_root=root)
-    previous = historical.get('historical_dispute_zones', [])
+    previous = prior_result['outlook']['dispute_zones'] if prior_result else historical.get('historical_dispute_zones', [])
     market_state.validate_zones(result['outlook']['dispute_zones'], resolve, prior=previous, cutoff=package['cutoff'], revision=rev)
     from .assessment import validate_outlook
     validate_outlook(result['outlook'], rev, resolve, package['cutoff'], prior_market, root)
@@ -1012,7 +1014,158 @@ def _public_result(root, req, analysis, directory=None):
     return value
 
 
-def _verify_market_amendment(phase):
+def _author_artifact(root, reference, archived=None):
+    """Resolve an actual author reference inside this root, without symlink escape."""
+    root = Path(root)
+    require(isinstance(reference, dict) and isinstance(reference.get('path'), str)
+            and isinstance(reference.get('sha256'),str)
+            and re.fullmatch(r'sha256:[0-9a-f]{64}', reference['sha256']),
+            'author artifact requires its actual path and byte hash')
+    path = Path(reference['path'])
+    if not path.is_absolute(): path = root / path
+    require('..' not in path.parts, 'author artifact must not traverse parent paths')
+    # Keep the actual spelling: a single external file symlink into this root
+    # is not a root alias. Logical project roots and physical roots both work.
+    try:
+        anchors = [p for p in path.parents if p.resolve() == root.resolve()]
+    except (OSError, RuntimeError):
+        require(False, 'author artifact path cannot resolve safely')
+    require(anchors, 'author artifact escapes research root')
+    anchor = anchors[-1]
+    cursor = anchor
+    for part in path.relative_to(anchor).parts:
+        cursor = cursor / part
+        require(not cursor.is_symlink(), 'author artifact must not use child symlinks')
+    if archived is not None:
+        path = root / archived['path']
+        require(archived == {'schema':PUBLIC_RESULT_REF_SCHEMA,
+                            'path':'research/author_outputs/' + reference['sha256'][7:] + '.json',
+                            'content_hash':reference['sha256']}, 'archived author artifact identity changed')
+        return _referenced_public_result(root, archived).encode('utf-8')
+    require(path.is_file() and 0 < path.stat().st_size <= 16*1024*1024, 'author artifact missing or too large')
+    body = path.read_bytes()
+    require(digest(body) == reference['sha256'], 'author artifact bytes changed')
+    return body
+
+
+def _public_artifact_object(body):
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError):
+        require(False, 'public artifact must contain UTF-8 JSON')
+    require(isinstance(value,dict), 'public artifact must contain a JSON object')
+    return value
+
+
+def _portfolio_public_files(root, phase, proof, archived=None):
+    """Extract only the explicitly signed public subproducts of a real FINAL."""
+    from .cycle import parse_review
+    final = parse_review(proof['analysis'])
+    require(final.get('status') == 'AUTHOR_WORK_COMPLETED_READY_FOR_SOL_MAPPING',
+            'PORTFOLIO public update needs the actual completed manifest FINAL, not approval')
+    correction = final.get('public_correction', {})
+    require(isinstance(correction,dict), 'actual FINAL public correction declaration required')
+    require(correction.get('needed') is True and correction.get('original_public_modified') is False
+            and correction.get('proposal_formally_registered') is False
+            and final.get('formal_writes_or_delivery') is False,
+            'actual FINAL must explicitly propose a later unregistered public update')
+    require(isinstance(final.get('manifest'),dict) and isinstance(final.get('artifacts'),dict)
+            and isinstance(final['artifacts'].get('public_proposal'),dict), 'actual FINAL public artifact references required')
+    references = {'manifest': {k:final.get('manifest', {}).get(k) for k in ('path','sha256')},
+                  'public_proposal': {k:final.get('artifacts', {}).get('public_proposal', {}).get(k) for k in ('path','sha256')}}
+    if archived is not None:
+        require(all(references[k] == archived['original_refs'][k] for k in references), 'actual manifest FINAL binding changed')
+    body = _author_artifact(root, references['manifest'], (archived or {}).get('immutable_refs', {}).get('manifest'))
+    manifest = _public_artifact_object(body)
+    require(manifest.get('schema') == 'BTC_AUTHOR_DELIVERABLE_MANIFEST_V1'
+            and manifest.get('status') == final['status'], 'author manifest contract invalid')
+    require(isinstance(manifest.get('completed_at'),str), 'author manifest completion clock required')
+    author_completed = instant(manifest['completed_at']).timestamp()
+    require(proof['started_at'] <= author_completed <= proof['completed_at'], 'author manifest completion exceeds actual turn')
+    entries = manifest.get('artifacts')
+    require(isinstance(entries,list) and all(isinstance(x,dict) and isinstance(x.get('name'),str) for x in entries), 'manifest artifact entries required')
+    require(len({x.get('name') for x in entries}) == len(entries), 'manifest artifact names must be unique')
+    active = manifest.get('active_public_proposal')
+    selected = next((x for x in entries if x.get('name') == active), None)
+    review = next((x for x in entries if x.get('name') == 'public-supplement-review.json'), None)
+    require(selected is not None and review is not None
+            and {k:selected.get(k) for k in ('path','sha256')} == references['public_proposal']
+            and Path(selected['path']).name == active, 'FINAL public artifact differs from active manifest entry')
+    references['public_input_review'] = {k:review.get(k) for k in ('path','sha256')}
+    bodies = {'manifest':body}
+    for key, entry in (('public_proposal',selected),('public_input_review',review)):
+        if archived is not None:
+            require(references[key] == archived['original_refs'][key], 'archived public artifact binding changed')
+        bodies[key] = _author_artifact(root, references[key], (archived or {}).get('immutable_refs', {}).get(key))
+        require(type(entry.get('bytes')) is int and len(bodies[key]) == entry['bytes'], 'manifest public artifact size changed')
+    public_input = _public_artifact_object(bodies['public_input_review'])
+    origin = public_input.get('original', {})
+    require(isinstance(origin,dict), 'public input review original owner required')
+    require(origin.get('request_id') == phase['request_id'] and origin.get('independent_id') == (phase['parent_independent_id'] if archived is not None else phase['independent_id']),
+            'public input review belongs to another request or original public owner')
+    scope = public_input.get('later_scope')
+    require(isinstance(scope,dict) and all(isinstance(scope.get(k),str) for k in ('knowledge_cutoff','source_manifest_frozen_at'))
+            and isinstance(public_input.get('formed_at'),str), 'public input review needs its actual clocks')
+    cutoff = scope['knowledge_cutoff']
+    require(instant(scope['source_manifest_frozen_at']) == instant(cutoff)
+            and instant(cutoff) <= instant(public_input['formed_at'])
+            and instant(public_input['formed_at']).timestamp() <= author_completed,
+            'public input clocks exceed the actual author work')
+    ids = scope.get('evidence_ids')
+    require(isinstance(ids,list) and ids
+            and all(isinstance(x,str) and re.fullmatch(r'sha256:[0-9a-f]{64}',x) for x in ids)
+            and len(ids)==len(set(ids)),
+            'public input review needs exact original archived bundle identities')
+    metadata = {'original_refs':references, 'author_completed_at':manifest['completed_at'],
+                'knowledge_cutoff':cutoff, 'evidence_ids':ids}
+    return metadata, bodies
+
+
+def _portfolio_public_view(root, req, metadata, directory):
+    """Ephemeral validation union; never backdate a newly frozen author input."""
+    from . import evidence
+    cutoff = metadata['knowledge_cutoff']
+    sources, files = {}, {}
+    for identity in dict.fromkeys([req['evidence_id'], *metadata['evidence_ids']]):
+        path = Path(root) / 'evidence' / identity[7:]
+        require((path/'evidence.json').is_file() and not path.is_symlink()
+                and path.resolve() == Path(root).resolve()/'evidence'/identity[7:],
+                'original archived public input bundle missing or escaped')
+        package = evidence.validate(read(path/'evidence.json'), path)
+        require(package['evidence_id'] == identity and instant(package['cutoff']) <= instant(cutoff),
+                'public source bundle was frozen after the author input cutoff')
+        for source in package['sources']:
+            require(instant(source['retrieved_at']) <= instant(cutoff), 'public source was obtained after the author input cutoff')
+            require(source['id'] not in sources or sources[source['id']] == source,
+                    'public input bundles rewrite an original source')
+            raw = path/'raw'/(source['raw_hash'][7:]+'.json')
+            _candidate_free(read(raw))
+            sources[source['id']] = source
+            files[source['id']] = str(raw)
+    spec = {'parent_id':None,'cutoff':cutoff,'sources':list(sources.values()),
+            'measurements':[],'verified_facts':[],'candidates':[],'gaps':[],
+            'handoff':{'previous_hour':None,'successful_deep':None,'changes_since_hour':[],
+                       'changes_since_deep':[],'active_hypotheses':[],'open_questions':[]}}
+    return evidence.freeze(spec, files, directory)
+
+
+def _archive_public_files(root, metadata, bodies):
+    root = Path(root).resolve()
+    directory = root/'research/author_outputs'
+    require(directory.resolve()==directory and not directory.is_symlink(), 'public artifact archive escapes research root')
+    immutable = {}
+    for key, body in bodies.items():
+        identity = digest(body)
+        ref = {'schema':PUBLIC_RESULT_REF_SCHEMA,'path':'research/author_outputs/'+identity[7:]+'.json','content_hash':identity}
+        path = Path(root)/ref['path']
+        require(not path.is_symlink(), 'archived public artifact must not be a symlink')
+        if path.exists(): require(path.read_bytes()==body, 'archived public artifact collision')
+        else: create(path,body)
+        immutable[key] = ref
+    return dict(metadata,immutable_refs=immutable)
+
+
+def _verify_market_amendment(phase, root=None):
     amendment = phase.get('market_amendment')
     if amendment:
         if amendment.get('turn_id'):
@@ -1025,6 +1178,18 @@ def _verify_market_amendment(phase):
             require(proof['dispatch_hash'] == amendment['dispatch_hash'] and proof['return_hash'] == amendment['return_hash'],
                     'public market amendment trace changed')
             analysis = proof['analysis']
+        if amendment.get('source_phase') == 'PORTFOLIO':
+            import model_daily
+            require(amendment.get('guard_attempt') and amendment.get('guard_proof_hash') == model_daily.sha256(amendment['rollout_path']),
+                    'PORTFOLIO original completion proof binding changed')
+            require(root is not None, 'PORTFOLIO amendment readback needs its original root')
+            metadata, bodies = _portfolio_public_files(root, phase, proof, amendment['portfolio_public'])
+            require(all(metadata[k] == amendment['portfolio_public'][k] for k in metadata), 'public input metadata changed')
+            require(phase.get('public_evidence_inputs') == {k:metadata[k] for k in ('knowledge_cutoff','evidence_ids')},
+                    'public evidence clocks or original bundle identities changed')
+            require(market_state.parse_result(bodies['public_proposal'].decode('utf-8')) == phase['market_result'],
+                    'archived PORTFOLIO public result changed')
+            return
         reference=_public_result_reference(analysis)
         if reference is None:
             require(market_state.parse_result(analysis)==phase['market_result'],'public amendment output changed')
@@ -1035,7 +1200,7 @@ def _verify_market_amendment(phase):
             require(reference==phase.get('public_result_reference'),'public amendment result reference changed')
 
 
-def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None):
+def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None, *, source_phase='PUBLIC_CORRECTION'):
     """Continue the same research with an actual public-evidence correction.
 
     Original independent provenance stays intact; this is explicitly a later
@@ -1044,8 +1209,13 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
     with locked(root):
         phase = _load(root, 'independent', independent_id)
         req = _load(root, 'requests', phase['request_id'])
-        _guard_completed(root, req, 'PUBLIC_CORRECTION', guard_attempt, rollout_path)
+        require(source_phase in ('PUBLIC_CORRECTION','PORTFOLIO'), 'unsupported public amendment source phase')
+        require(source_phase != 'PORTFOLIO' or (turn_id is None and additional is None),
+                'PORTFOLIO amendment requires actual orchestrated FINAL and its original input bundles')
+        _guard_completed(root, req, source_phase, guard_attempt, rollout_path)
         require(req.get('workflow_revision', 4) >= 5, 'public amendment requires revision 5')
+        require(source_phase != 'PORTFOLIO' or req.get('workflow_revision',4) >= 9,
+                'PORTFOLIO manifest public updates require revision 9')
         if turn_id:
             require(dispatch_call_id is None and return_message_id is None, 'choose native turn or orchestrated amendment')
             proof = _completed_turn(rollout_path, phase['agent_id'], turn_id)
@@ -1063,17 +1233,36 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
             require(instant(context['knowledge_cutoff']).timestamp() <= proof['completed_at'],
                     'public correction supplement is after the actual completed answer')
             supplement['evidence_context'] = context
-        result = _public_result(root, req, proof['analysis'], additional)
+        if source_phase == 'PORTFOLIO':
+            from tempfile import TemporaryDirectory
+            metadata, bodies = _portfolio_public_files(root, phase, proof)
+            with TemporaryDirectory(prefix='btc-public-validation-view-') as temp:
+                directory = Path(temp)/'view'
+                _portfolio_public_view(root, req, metadata, directory)
+                result = _public_result(root, req, bodies['public_proposal'].decode('utf-8'), directory, prior_phase=phase)
+            import model_daily
+            amendment.update(source_phase=source_phase, guard_attempt=guard_attempt,
+                             guard_proof_hash=model_daily.sha256(rollout_path))
+            supplement['public_evidence_inputs'] = {k:metadata[k] for k in ('knowledge_cutoff','evidence_ids')}
+            supplement.update(verification_scope='ORCHESTRATED_PORTFOLIO_PUBLIC_ARTIFACT_BINDING',
+                              inner_tool_trace_verified=False, os_input_isolation_verified=False)
+        else:
+            result = _public_result(root, req, proof['analysis'], additional, prior_phase=phase)
         market_state.validate_zones(result['market_result']['outlook']['dispute_zones'], lambda ref: None,
             phase['market_result']['outlook']['dispute_zones'], revision=req.get('workflow_revision', 5))
+        if source_phase == 'PORTFOLIO':
+            amendment['portfolio_public'] = _archive_public_files(root,metadata,bodies)
+            result['public_result_reference'] = amendment['portfolio_public']['immutable_refs']['public_proposal']
         updated = {k: v for k, v in phase.items() if k != 'independent_id'}
         updated.pop('public_result_reference',None)
+        updated.pop('public_evidence_inputs',None)
         # This later immutable public owner supplies the first real freeze for
         # new claims. Existing claim registrations keep their original owner
         # and clock; an amendment cannot backdate new standards to that clock.
         updated.pop('lifecycle_frozen_at', None)
         updated.update(result, **supplement, parent_independent_id=independent_id,
-            independence_status='CONTINUED_PUBLIC_CORRECTION',
+            independence_status=('DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_PORTFOLIO' if source_phase=='PORTFOLIO'
+                                 else 'CONTINUED_PUBLIC_CORRECTION'),
             initial_completed_at=phase.get('initial_completed_at', phase['completed_at']),
             completed_at=proof['completed_at'], market_amendment={
             'rollout_path': str(Path(rollout_path).resolve()), **amendment,

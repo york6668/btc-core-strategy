@@ -1281,6 +1281,28 @@ def _evidence_reference_descriptor(
     return None
 
 
+def _price_dimension_observation_window(matrix: Any) -> tuple[datetime, datetime] | None:
+    """An unassigned observation can name the verified quote set, not a cause."""
+    quotes = matrix.get("price_quotes") if isinstance(matrix, Mapping) else None
+    if not isinstance(quotes, Mapping) or quotes.get("status") != "VERIFIED":
+        return None
+    sources = quotes.get("sources")
+    if not isinstance(sources, list) or len(sources) < 2:
+        return None
+    provenance = [_registered_quote_provenance(source) for source in sources]
+    identities = [_source_identity(source) for source in sources]
+    if (any(item is None for item in provenance) or None in identities
+            or len(set(identities)) != len(identities)
+            or len({item[0] for item in provenance if item is not None}) < 2):
+        return None
+    time_errors: list[str] = []
+    points = [_parse_iso8601(source.get("as_of"), "quote observation time", time_errors)
+              for source in sources]
+    if time_errors or None in points or len(set(points)) != 1:
+        return None
+    return (points[0], points[0])
+
+
 def _validate_causal_timeline(
     value: Any,
     path: str,
@@ -1289,6 +1311,7 @@ def _validate_causal_timeline(
     errors: list[str],
     *,
     require_resolved_sequence: bool,
+    model_market: bool = False,
 ) -> None:
     if not isinstance(value, list) or not value:
         errors.append(f"{path} must be a non-empty array")
@@ -1309,13 +1332,17 @@ def _validate_causal_timeline(
         if dimension not in REQUIRED_EVIDENCE_DIMENSIONS:
             errors.append(f"{event_path}.evidence_dimension is invalid")
         reference = event.get("evidence_ref")
+        role = event.get("event_role")
+        dimension_window = (_price_dimension_observation_window(matrix)
+                            if model_market and dimension == "price_quotes"
+                            and reference == "price_quotes"
+                            and role == "UNRESOLVED_PRICE_OBSERVATION" else None)
         if not isinstance(reference, str) or not reference.strip():
             errors.append(f"{event_path}.evidence_ref must be a non-empty string")
-        elif isinstance(dimension, str) and reference.casefold() not in {
+        elif dimension_window is None and isinstance(dimension, str) and reference.casefold() not in {
             item.casefold() for item in _evidence_reference_ids(matrix, dimension)
         }:
             errors.append(f"{event_path}.evidence_ref is not bound to its evidence dimension")
-        role = event.get("event_role")
         if role not in CAUSAL_TIMELINE_EVENT_ROLES:
             errors.append(f"{event_path}.event_role is invalid")
         else:
@@ -1355,7 +1382,7 @@ def _validate_causal_timeline(
                     errors.append(
                         f"{event_path}.RETENTION_OBSERVED must reference a VERIFIED retention claim"
                     )
-                if role == "UNRESOLVED_PRICE_OBSERVATION" and (
+                if role == "UNRESOLVED_PRICE_OBSERVATION" and dimension_window is None and (
                     descriptor is None or descriptor[0] != "SOURCE"
                 ):
                     errors.append(
@@ -1371,7 +1398,7 @@ def _validate_causal_timeline(
                 errors.append(f"{path} must be chronologically ordered")
             previous_time = occurred
             if isinstance(dimension, str) and isinstance(reference, str):
-                window = _evidence_reference_window(matrix, dimension, reference)
+                window = dimension_window or _evidence_reference_window(matrix, dimension, reference)
                 if window is not None and not (window[0] <= occurred <= window[1]):
                     errors.append(
                         f"{event_path}.occurred_at must fall within its referenced evidence time"
@@ -5169,6 +5196,7 @@ def _validate_bundle_schema(bundle: Mapping[str, Any], errors: list[str], *, mod
                     _validate_causal_timeline(
                         hypothesis.get("causal_timeline"), f"{path}.causal_timeline",
                         matrix, observed_at, errors,
+                        model_market=model_market,
                         require_resolved_sequence=(
                             not model_market and hypothesis.get("hypothesis_id") == causal.get(
                                 "selected_hypothesis_id"

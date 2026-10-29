@@ -474,6 +474,10 @@ class PublicationTests(unittest.TestCase):
         req, saved, _ = self.c.study(authored=True, independent_output=json.dumps(self.public))
         original = research._load(self.f.store, 'independent', saved['independent_id'])
         amended = deepcopy(self.public)
+        for market in amended['outlook']['market_assessment']['markets']:
+            for horizon in market['horizons']:
+                horizon['forward']['prior_check'] = {'outcome':'EVIDENCE_LIMITED',
+                    'explanation':'Synthetic continuation checked against the actual prior public owner.','refs':[]}
         stamp = self.f.draft['temporal_scope']['knowledge_cutoff']
         zone = old.zone(stamp)
         zone['area'].update(lower=None, upper=None)
@@ -523,7 +527,9 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, 'price area evidence kind required'):
             market_state.validate_zones(invalid, lambda ref: None, revision=6)
         # Revision-aware validation still rejects disappearing active zones.
-        append_turn('DROPPED_ZONE', self.public, 40)
+        dropped = deepcopy(amended)
+        dropped['outlook']['dispute_zones'] = deepcopy(self.public['outlook']['dispute_zones'])
+        append_turn('DROPPED_ZONE', dropped, 40)
         with self.assertRaisesRegex(Invalid, 'disappeared without retirement'):
             research.amend_market(self.f.store, revised['independent_id'], path, turn_id='DROPPED_ZONE')
 

@@ -37,6 +37,8 @@
 
 若旧事件已到期，v4 模型评估中的 event 与真实 D/E 不变量祖先的载体逐值未变，且有完整周期 review 的复核上下文，兼容层仅核验该历史结构和来源；不从当前时钟补造旧复核完成或要求开启新链。正式消费仍须由真实完成并获批的完整周期 review 提供上下文，未批准候选的只读预检没有采纳效力。更改的事件及普通 legacy 入口继续执行原到期门。
 
+v4 模型评估中的 `UNRESOLVED_PRICE_OBSERVATION` 可用 `evidence_dimension=price_quotes`、`evidence_ref=price_quotes` 忠实表达未归因的完整价格观察，不任选某一 venue。此兼容仅适用于真实 VERIFIED 报价矩阵、唯一逻辑源 ID、已注册的至少两个独立来源、相同 as_of 与该精确观察时刻；正常 assessment 仍先核全部原始引用和数值。其余角色、已归因来源及普通 legacy 入口不放宽。
+
 Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立深评提出的必要复核时间>)` 预检上述兼容语义，及时发现引用和时间错误；此调用不登记批准、不写入状态。正式 validate/commit 的适配参数由已核验的真实研究批准派生，候选中的文本或预检通过不能取得发布权限。
 
 ## MAIN 当前原始输入绑定与维护形成时钟
@@ -286,3 +288,5 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 原节点传输同时核验客户端退出码和严格布尔响应；非零退出不能凭成功JSON认定完成。未知响应保留原operation、阶段、退出码或启动errno、输出长度与散列，不在错误中复制原始stderr、环境或凭据。客户端permission denied、程序拒绝、工具执行前审核拒绝和根因证明分别记录；诊断类别不证明任务策略来源，也不授权重试或改写入通道。原operation核清前不重发，恢复合法执行条件后仍由原报告链核新鲜输入、质量、记录和真实送达；源码或离线通过不证明运行已采用或报告已恢复。
 
 新完整链验收必须实际经过原 `research.request/read_input/_public_result` 的市场、前景和完整 `factor_assessment={items,summary}` 合同，冻结公开阶段后才读取个人事实并完成同一原研究的候选审阅、主Owner映射与报告消费。只把已有散文填成固定 semantic、旁路 factors 或造空 legacy Owner 的消费者回放，不能代替原链完成。事实、后续反馈和成稿须分别保留原身份及实际时钟；无新形成后市场事实时说明尚无自然后验。合成支持/部分/证伪/未知及范围测试单独标记，验收模型是否维持、降级、替代或撤回对应命题，不能只验反馈进入payload。独立语义审阅对照实际主因形成、一步前瞻、反证影响、原入口/消费者和正文；失败全文与实质正例均需判定，字段、关键词、测试通过不提供语义评分。
+
+同作者已完成的 PORTFOLIO 回合若在真实 FINAL 中明确声明后来公开更新、原公开未改且尚未登记，可沿既有 `research-market-amendment --source-phase PORTFOLIO` 消费该公开子产物。程序核同作者实际 followup/FINAL、原 COMPLETE/PORTFOLIO claim 与同一不可变 creator proof，核 FINAL 的 manifest/path/hash 与 active public 条目、root 内原件及不可变公开副本；不读取或登记个人提案为批准。公开 review 绑定的原 canonical EvidenceBundle 及原知识钟联合形成临时校验视图，视图创建不代表作者曾读取一个后来新包，不能传后造 Sol merge 倒填。后继公共验证以实际原公开 Owner 为 prior，保留既有 claim/data_cutoff/lifecycle；记录 `DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_PORTFOLIO`，不称新盲评。默认 PUBLIC_CORRECTION 及其原票据标准保留，没有相位 fallback；完整候选仍须真实 reveal 后由原作者实际审阅，PORTFOLIO 更新不等于 APPROVAL 或正式采纳。

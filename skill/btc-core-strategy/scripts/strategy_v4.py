@@ -130,6 +130,7 @@ def main(argv=None):
         p.add_argument('--'+flag)
     p.add_argument('--additional')
     p.add_argument('--guard-attempt')
+    p.add_argument('--source-phase', choices=('PUBLIC_CORRECTION','PORTFOLIO'), default='PUBLIC_CORRECTION')
     p = sub.add_parser('research-read')
     p.add_argument('--request', required=True)
     p.add_argument('--phase', choices=('independent','portfolio','candidate'), required=True)
@@ -281,7 +282,7 @@ def main(argv=None):
         elif args.command == 'research-orchestrated-result':
             result=research.orchestrated_result(args.root,read(args.spec),args.guard_attempt)
         elif args.command == 'research-market-amendment':
-            result=research.amend_market(args.root,args.independent,args.rollout,args.dispatch,args.returned,args.additional,args.turn,args.guard_attempt)
+            result=research.amend_market(args.root,args.independent,args.rollout,args.dispatch,args.returned,args.additional,args.turn,args.guard_attempt,source_phase=args.source_phase)
         elif args.command == 'research-read':
             result=research.read_input(args.root,args.request,args.phase,args.candidate_id,args.independent_id)
         elif args.command == 'research-independent':

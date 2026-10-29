@@ -1239,6 +1239,41 @@ class ReplayAndFingerprintTests(unittest.TestCase):
 
 
 class BundleSchemaTests(unittest.TestCase):
+    def test_model_unresolved_price_observation_can_reference_verified_dimension(self) -> None:
+        bundle = make_bundle()
+        for hypothesis in bundle['causal_attribution']['hypotheses']:
+            hypothesis['causal_timeline'][0]['evidence_ref'] = 'price_quotes'
+        errors = []
+        contract._validate_bundle_schema(bundle, errors, model_market=True)
+        self.assertEqual(errors, [])
+        legacy_errors = []
+        contract._validate_bundle_schema(bundle, legacy_errors)
+        self.assertTrue(any('not bound to its evidence dimension' in e for e in legacy_errors))
+
+    def test_price_dimension_reference_cannot_claim_causality_or_unsupported_observation(self) -> None:
+        original = make_bundle()
+        for hypothesis in original['causal_attribution']['hypotheses']:
+            hypothesis['causal_timeline'][0]['evidence_ref'] = 'price_quotes'
+        for change in ('cause', 'response', 'missing', 'one_origin', 'clock', 'unknown_source'):
+            bundle = deepcopy(original)
+            event = bundle['causal_attribution']['hypotheses'][0]['causal_timeline'][0]
+            quotes = bundle['evidence_matrix']['price_quotes']
+            if change in ('cause', 'response'):
+                event['event_role'] = 'CAUSE_OBSERVED' if change == 'cause' else 'PRICE_RESPONSE_OBSERVED'
+            elif change == 'missing':
+                quotes['status'] = 'UNAVAILABLE'
+            elif change == 'one_origin':
+                quotes['sources'] = quotes['sources'][:1]
+            elif change == 'clock':
+                event['occurred_at'] = '2026-09-02T04:39:00+09:00'
+            else:
+                quotes['sources'][0]['endpoint_url'] = 'https://unestablished.example/prices'
+            errors = []
+            contract._validate_bundle_schema(bundle, errors, model_market=True)
+            with self.subTest(change=change):
+                self.assertTrue(any('evidence_ref' in e or 'reference' in e or 'referenced evidence time' in e
+                                    for e in errors), errors)
+
     def test_valid_quote_only_bundle_is_explicitly_limited(self) -> None:
         bundle = make_bundle()
         self.assertEqual("VERIFIED", bundle["quote_verification_status"])
