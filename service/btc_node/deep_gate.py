@@ -227,12 +227,39 @@ def resolve_fault(db, *, fault_id, repair_digest, verification_ref, verification
     return item
 
 
-def reconcile_unknown(db, *, claim_id, outcome, evidence_ref, result_ref=None):
-    """Resolve an unknown older call; never reopens its already spent day."""
+def reconcile_unknown(db, *, claim_id, outcome, evidence_ref, result_ref=None,
+                      expected_result_ref=None):
+    """Reconcile an original call without reopening its already spent day."""
     if outcome not in ('COMPLETE','CANCELED','FAILED') or not evidence_ref:
         raise ValueError('verified original-call outcome and evidence required')
     state = _state(db)
     slot = next((v for v in state['days'].values() if v['claim_id'] == claim_id),None)
+    if slot and slot['state'] == 'COMPLETE' and expected_result_ref is not None:
+        if outcome != 'COMPLETE' or not isinstance(evidence_ref, str):
+            raise Conflict('completion reference correction cannot change outcome')
+        result_ref = _digest(result_ref)
+        corrections = slot.get('result_ref_corrections', [])
+        if slot.get('result_ref') == result_ref and any(
+                item['previous_result_ref'] == expected_result_ref
+                and item['result_ref'] == result_ref and item['evidence_ref'] == evidence_ref
+                for item in corrections):
+            return {'claim': slot, 'action': 'ALREADY_CORRECTED_COMPLETION_REFERENCE'}
+        if slot.get('result_ref') != expected_result_ref:
+            raise Conflict('original completion reference changed; inspect it before correction')
+        try:
+            _digest(slot['result_ref'])
+        except ValueError:
+            pass
+        else:
+            raise Conflict('an existing digest binding cannot be replaced')
+        slot['result_ref_corrections'] = corrections + [{
+            'previous_result_ref': slot['result_ref'], 'result_ref': result_ref,
+            'evidence_ref': evidence_ref, 'corrected_at_ms': millis()}]
+        slot['result_ref'] = result_ref
+        _save(db, state)
+        return {'claim': slot, 'action': 'CORRECTED_COMPLETION_REFERENCE_NO_NEW_CALL'}
+    if expected_result_ref is not None:
+        raise Conflict('reference correction requires the completed original call')
     if not slot or slot['state'] not in ('CLAIMED','UNKNOWN'):
         raise Conflict('only an in-flight or unknown original call can be reconciled')
     if outcome == 'COMPLETE' and not result_ref:

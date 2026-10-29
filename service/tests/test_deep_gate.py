@@ -1,5 +1,6 @@
 """Isolated daily admission using one shared simulated node authority."""
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import threading
@@ -113,6 +114,62 @@ class DeepGateTests(unittest.TestCase):
         self.assertEqual('CLAIMED_NEW',self.call('next-natural-day')['action'])
         with self.assertRaisesRegex(Conflict,'today'):
             self.call('new-day-again')
+
+    def test_completed_non_digest_reference_can_be_explicitly_corrected_without_new_call(self):
+        original = self.call()['claim']
+        ended = self.settle('original-claim', 'COMPLETE', result_ref='completion-metadata.json')['claim']
+        before = deepcopy(ended)
+        self.clock += 100
+        params = {'claim_id': original['claim_id'], 'outcome': 'COMPLETE',
+                  'expected_result_ref': 'completion-metadata.json',
+                  'result_ref': digest('immutable actual creator proof'),
+                  'evidence_ref': 'verified-original-completion-and-binding-error'}
+        with patch.object(deep_gate, 'millis', return_value=self.clock):
+            fixed = invoke(self.node.client(), 'model.deep.reconcile', params)
+            repeated = invoke(self.node.client(), 'model.deep.reconcile', params)
+        self.assertEqual('CORRECTED_COMPLETION_REFERENCE_NO_NEW_CALL', fixed['action'])
+        self.assertEqual('ALREADY_CORRECTED_COMPLETION_REFERENCE', repeated['action'])
+        record = fixed['claim']
+        self.assertEqual(params['result_ref'], record['result_ref'])
+        self.assertEqual(before, {key: record[key] for key in before if key != 'result_ref'}
+                         | {'result_ref': before['result_ref']})
+        self.assertEqual([{'previous_result_ref': before['result_ref'],
+                           'result_ref': params['result_ref'], 'evidence_ref': params['evidence_ref'],
+                           'corrected_at_ms': self.clock}], record['result_ref_corrections'])
+        self.assertEqual(1, len(self.node.data[deep_gate.STATE_NAME]['days']))
+        self.assertEqual('REUSE', self.call()['action'])
+        self.clock += 1000
+        self.assertEqual('CLAIMED_NEW', self.call('next-natural-day')['action'])
+
+    def test_completion_reference_correction_rejects_unrelated_or_valid_bindings(self):
+        self.call()
+        self.settle('original-claim', 'COMPLETE', result_ref='completion-metadata.json')
+        params = {'claim_id': 'original-claim', 'outcome': 'COMPLETE',
+                  'expected_result_ref': 'completion-metadata.json',
+                  'result_ref': digest('immutable actual creator proof'), 'evidence_ref': 'actual-proof'}
+        for change in ({'expected_result_ref': 'other-record'}, {'result_ref': 'another-path'},
+                       {'outcome': 'FAILED'}, {'evidence_ref': ''}):
+            with self.subTest(change=change):
+                before = deepcopy(self.node.data)
+                with self.assertRaises((Conflict, ValueError)):
+                    invoke(self.node.client(), 'model.deep.reconcile', dict(params, **change))
+                self.assertEqual(before, self.node.data)
+        self.node.data[deep_gate.STATE_NAME]['days'][deep_gate.tokyo_day(self.clock)]['result_ref'] = digest('already-bound')
+        before = deepcopy(self.node.data)
+        with self.assertRaisesRegex(Conflict, 'digest'):
+            invoke(self.node.client(), 'model.deep.reconcile',
+                   dict(params, expected_result_ref=digest('already-bound')))
+        self.assertEqual(before, self.node.data)
+
+    def test_reference_correction_does_not_complete_an_inflight_claim(self):
+        self.call()
+        before = deepcopy(self.node.data)
+        with self.assertRaisesRegex(Conflict, 'completed original'):
+            invoke(self.node.client(), 'model.deep.reconcile',
+                   {'claim_id': 'original-claim', 'outcome': 'COMPLETE',
+                    'expected_result_ref': 'completion-metadata.json',
+                    'result_ref': digest('claimed proof'), 'evidence_ref': 'not-completed'})
+        self.assertEqual(before, self.node.data)
 
     def test_known_defect_requires_changed_repair_and_keeps_unrelated_scope(self):
         fault=deep_gate.open_fault(self.node.client(),scope='btc/report',kind='DETERMINISTIC',

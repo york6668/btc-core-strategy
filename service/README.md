@@ -8,6 +8,8 @@
 
 `model.deep.status/claim/finish/reconcile` 将整个 BTC 系统的高等级深评按东京自然日限制为一次，复用本服务的 MySQL 写入锁和 `node_metadata`，不另建本地任务预算。丢失 claim 响应的同 operation 重放只返回核查提示，不授权再次启动；跨午夜在途和 UNKNOWN 阻断次日名额直至原调用核清。`model.defect.open/resolve` 保留受影响范围的故障与实际修复证据。研究登记还须绑定同一已完成票据与真实模型轨迹；旧固定发布若无票据入口，服务拒绝其新结果登记并保留原研究供兼容修复。平台代理工具的启动不经过本服务，调用者须先在本节点取得 claim；服务本身不能拦截未经它发起的外部模型调用。
 
+研究登记的完成凭据使用不可变实际模型轨迹的 SHA256，不以完成说明文件路径代替。已完成票据若误存了非摘要引用，可在同一 `model.deep.reconcile` 中明确提供原 `claim_id`、`outcome=COMPLETE`、`expected_result_ref`、经核实的摘要 `result_ref` 和实际纠错 `evidence_ref`。它只纠正该非摘要引用并追加原值及证据；结果、原完成时间、issue/phase/input 与当天名额均不变，已有摘要绑定不能替换。登记仍须核验原模型、阶段及真实轨迹，引用纠正不授予后继阶段批准。
+
 ## 准备与迁移
 
 `python3 service/setup_node.py --node <现有 node.json> --data <节点专属目录> --docker <实际 Docker CLI> --compose-project <节点名>` 只准备关闭的接入配置。使用生成的 compose.env 与覆盖文件启动 mysql/core，检查实际健康。镜像从本仓库 service 源码构建；reader/collector 镜像由 market-roles 的 `roles/containers/build.py` 从源码白名单导出构建。
