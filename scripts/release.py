@@ -74,7 +74,7 @@ def check_sources(path):
     required = read(path / 'export-manifest.json')
     files = required['files']
     entries = {'scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
-               'project-methods/AGENTS.md'}
+               'project-methods/AGENTS.md', 'tasks/hourly.md'}
     if not isinstance(files, list) or not all(isinstance(name, str) for name in files) or not entries.issubset(files):
         raise ValueError('release source manifest is missing its runtime or method entries')
     for name in files:
@@ -179,12 +179,20 @@ def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None
 def enter(config, run_id, context=None):
     with locked(config) as root:
         run_file = record_path(root, 'runs', run_id)
+        action = 'START_NEW_RUN'
         if run_file.exists():
             run = read(run_file)
             if run['run_id'] != run_id:
                 raise ValueError('run identity mismatch')
             if context and run.get('resume_context') != context:
                 raise ValueError('a pinned run cannot change recovery context')
+            if run.get('status') == 'FINISHED':
+                # A repeated trigger is not a new execution. Keep the original
+                # terminal bytes, even after activation of a newer release.
+                return dict(run, entry_action='RETURN_FINISHED_RUN')
+            if run.get('status') != 'ACTIVE':
+                raise ValueError('unknown run state; inspect the original run')
+            action = 'RESUME_ORIGINAL_RUN'
         else:
             if context:
                 bound = read(record_path(root, 'contexts', context))
@@ -200,13 +208,64 @@ def enter(config, run_id, context=None):
         check_release(release)
         run.update(status='ACTIVE', release=str(release), node_config=config['_path'],
                    skill=str(release / 'skill/btc-core-strategy/SKILL.md'),
+                   task=str(release / 'tasks/hourly.md'),
                    methods=str(release / 'project-methods'), project_dir=config['project_dir'],
                    python=config['python'], environment={
                        'BTC_RELEASE': str(release), 'BTC_PROJECT': config['project_dir'],
                        'BTC_NODE_CONFIG': config['_path'], 'BTC_PYTHON': config['python'],
                    })
         write(run_file, run)
-        return run
+        return dict(run, entry_action=action)
+
+
+def status(config):
+    """Discover original active executions without starting or repairing one.
+
+    Release records are execution pins, not market or delivery completion.
+    Material paths are returned only when the existing project entry and its
+    original identity agree; the domain CLI still validates their contents.
+    """
+    with locked(config) as root:
+        active = []
+        project = Path(config['project_dir'])
+        # Keep the logical project path for the domain CLI. The host may use a
+        # symlink while the container mounts these bytes at that logical path.
+        materials = project / '.strategy/v4/runs'
+        material_owner = materials.resolve()
+        for path in sorted((root / 'runs').glob('*.json')):
+            run = read(path)
+            if run.get('status') != 'ACTIVE':
+                continue
+            if path != record_path(root, 'runs', run['run_id']):
+                raise ValueError('stored run identity mismatch')
+            release = version_dir(root, run['commit'])
+            row = {key: run.get(key) for key in
+                   ('run_id', 'commit', 'resume_context', 'started_at', 'status')}
+            row.update(task=str(release / 'tasks/hourly.md'),
+                       run_material=None, material_status='NOT_FOUND_AT_PROJECT_RUN_ENTRY')
+            name = run['run_id']
+            if name not in ('', '.', '..') and Path(name).name == name:
+                material = materials / name / 'run.json'
+                if material.is_file():
+                    if material.is_symlink() or material_owner not in material.resolve().parents:
+                        row['material_status'] = 'IDENTITY_MISMATCH_REQUIRES_REVIEW'
+                    else:
+                        value = read(material)
+                        if (value.get('schema') != 'BTC_RUN_MATERIAL_V1'
+                                or value.get('run_ref') != name
+                                or Path(value.get('project', '')).resolve() != project.resolve()
+                                or Path(value.get('directory', '')).resolve() != material.parent.resolve()
+                                or Path(value.get('root', '')).resolve() != material_owner.parent):
+                            row['material_status'] = 'IDENTITY_MISMATCH_REQUIRES_REVIEW'
+                        else:
+                            row.update(run_material=str(material), material_status='AVAILABLE')
+            active.append(row)
+        selected = current(root)
+        return {'current': str(selected),
+                'task': str(selected / 'tasks/hourly.md'),
+                'pending': read(root / 'pending.json') if (root / 'pending.json').exists() else None,
+                'project_dir': config['project_dir'], 'node_config': config['_path'],
+                'active_runs': sorted(active, key=lambda row: (row['started_at'] or '', row['run_id']))}
 
 
 def bind(config, run_id, context):
@@ -271,9 +330,13 @@ def finish(config, run_id):
     with locked(config) as root:
         path = record_path(root, 'runs', run_id)
         run = read(path)
-        run['status'] = 'FINISHED'
-        write(path, run)
-        return {'run_id': run_id, 'status': 'FINISHED', 'commit': run['commit']}
+        if run.get('run_id') != run_id or run.get('status') not in ('ACTIVE', 'FINISHED'):
+            raise ValueError('invalid original run identity or state')
+        if run['status'] == 'ACTIVE':
+            run.update(status='FINISHED', finished_at=datetime.now(timezone.utc).isoformat())
+            write(path, run)
+        return {'run_id': run_id, 'status': 'FINISHED', 'commit': run['commit'],
+                'finished_at': run.get('finished_at')}
 
 
 def data_service(config, command):
@@ -323,9 +386,7 @@ def main():
     elif args.command == 'repair-context':
         result = repair_context(config, args.context, args.from_commit, args.to_commit, args.reason)
     else:
-        with locked(config) as root:
-            result = {'current': str(current(root)), 'pending': read(root / 'pending.json') if (root / 'pending.json').exists() else None,
-                      'project_dir': config['project_dir'], 'node_config': config['_path']}
+        result = status(config)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

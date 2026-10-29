@@ -128,7 +128,7 @@ class ReleaseTests(unittest.TestCase):
             'import sys\nfrom pathlib import Path\n'
             'assert sys.argv[1] == "--reader" and (Path(sys.argv[2]) / "reader.py").is_file()\n')
         entries = ['scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
-                   'project-methods/AGENTS.md', 'project-methods/价值因子.md']
+                   'project-methods/AGENTS.md', 'project-methods/价值因子.md', 'tasks/hourly.md']
         for name in entries:
             path = self.source / name; path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# Synthetic release entry\n', encoding='utf-8')
@@ -146,7 +146,7 @@ class ReleaseTests(unittest.TestCase):
     def test_missing_method_stops_entry_without_creating_an_active_run(self):
         root = Path(self.config['release_root'])
         installed = release.version_dir(root, self.first)
-        for name in ('skill/btc-core-strategy/SKILL.md', 'project-methods/价值因子.md'):
+        for name in ('skill/btc-core-strategy/SKILL.md', 'project-methods/价值因子.md', 'tasks/hourly.md'):
             with self.subTest(name=name):
                 path = installed / name; content = path.read_bytes(); path.unlink()
                 try:
@@ -158,6 +158,113 @@ class ReleaseTests(unittest.TestCase):
                 finally:
                     path.write_bytes(content)
         self.assertEqual(release.enter(self.config, 'restored-method')['commit'], self.first)
+        self.assertEqual(self.state.read_bytes(), self.before)
+
+    def test_duplicate_finished_trigger_preserves_terminal_record_and_original_version(self):
+        root = Path(self.config['release_root'])
+        first = release.enter(self.config, 'same-trigger')
+        self.assertEqual(first['entry_action'], 'START_NEW_RUN')
+        self.assertEqual(Path(first['task']).read_text(), '# Synthetic release entry\n')
+        self.assertEqual(release.enter(self.config, 'same-trigger')['entry_action'], 'RESUME_ORIGINAL_RUN')
+        done = release.finish(self.config, 'same-trigger')
+        path = release.record_path(root, 'runs', 'same-trigger')
+        original = path.read_bytes()
+        (self.source / 'change.txt').write_text('next version')
+        second = self.commit('second'); release.install(self.config, self.source)
+        repeated = release.enter(self.config, 'same-trigger')
+        self.assertEqual(repeated['status'], 'FINISHED')
+        self.assertEqual(repeated['entry_action'], 'RETURN_FINISHED_RUN')
+        self.assertEqual(repeated['commit'], self.first)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(release.finish(self.config, 'same-trigger'), done)
+        self.assertEqual(path.read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, 'active pinned run'):
+            release.bind(self.config, 'same-trigger', 'no-new-context-after-completion')
+        self.assertEqual(release.status(self.config)['active_runs'], [])
+        self.assertEqual(release.status(self.config)['current'], str(release.version_dir(root, second).resolve()))
+        self.assertEqual(self.state.read_bytes(), self.before)
+
+    def test_status_discovers_original_active_material_without_starting_or_rebinding(self):
+        root = Path(self.config['release_root'])
+        release.enter(self.config, 'interrupted')
+        release.bind(self.config, 'interrupted', 'unknown-attempt')
+        material = self.project / '.strategy/v4/runs/interrupted/run.json'
+        material.parent.mkdir(parents=True)
+        payload = {'schema': 'BTC_RUN_MATERIAL_V1', 'run_ref': 'interrupted',
+                   'directory': str(material.parent), 'root': str(material.parents[2]),
+                   'project': str(self.project)}
+        material.write_text(json.dumps(payload))
+        path = release.record_path(root, 'runs', 'interrupted')
+        original = path.read_bytes(); context = release.record_path(root, 'contexts', 'unknown-attempt').read_bytes()
+        got = release.status(self.config)
+        self.assertEqual(len(got['active_runs']), 1)
+        row = got['active_runs'][0]
+        self.assertEqual(row['run_id'], 'interrupted')
+        self.assertEqual(row['commit'], self.first)
+        self.assertEqual(row['material_status'], 'AVAILABLE')
+        self.assertEqual(row['run_material'], str(material))
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(release.record_path(root, 'contexts', 'unknown-attempt').read_bytes(), context)
+        self.assertEqual(self.state.read_bytes(), self.before)
+        payload['run_ref'] = 'different-execution'; material.write_text(json.dumps(payload))
+        mismatched = release.status(self.config)['active_runs'][0]
+        self.assertEqual(mismatched['material_status'], 'IDENTITY_MISMATCH_REQUIRES_REVIEW')
+        self.assertIsNone(mismatched['run_material'])
+        foreign = self.base / 'foreign.txt'; foreign.write_text('Not a run and not JSON')
+        material.unlink(); material.symlink_to(foreign)
+        self.assertEqual(release.status(self.config)['active_runs'][0]['material_status'],
+                         'IDENTITY_MISMATCH_REQUIRES_REVIEW')
+
+    def test_legacy_finished_record_is_not_reopened_or_given_a_fabricated_finish_time(self):
+        root = Path(self.config['release_root'])
+        run = release.enter(self.config, 'legacy-finished')
+        path = release.record_path(root, 'runs', 'legacy-finished')
+        run.pop('entry_action'); run['status'] = 'FINISHED'
+        release.write(path, run)
+        original = path.read_bytes()
+        self.assertIsNone(release.finish(self.config, 'legacy-finished')['finished_at'])
+        self.assertEqual(release.enter(self.config, 'legacy-finished')['status'], 'FINISHED')
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_status_preserves_logical_material_path_for_native_and_container_consumers(self):
+        from v4 import evidence, run_flow
+        from v4.common import Invalid, digest
+        self.project = self.project.resolve()
+        self.config['project_dir'] = str(self.project)
+        release.enter(self.config, 'mounted-run')
+        state = self.base.resolve() / 'objects/.strategy'; state.mkdir(parents=True)
+        alias = self.project / '.strategy'; alias.symlink_to(state)
+        directory = alias / 'v4/runs/mounted-run'; directory.mkdir(parents=True)
+        raw = directory / 'market.json'; raw.write_text('{}\n')
+        stamp = '2020-01-01T00:00:00Z'
+        bundle = evidence.freeze({'parent_id': None, 'cutoff': stamp,
+            'sources': [{'id': 'market', 'origin': 'BINANCE', 'url': 'https://data-api.binance.vision/api/v3/klines',
+                         'trust': 'PUBLIC_RAW', 'published_at': None, 'retrieved_at': stamp,
+                         'start': stamp, 'end': stamp, 'raw_hash': digest(raw.read_bytes())}],
+            'measurements': [], 'verified_facts': [], 'candidates': [], 'gaps': [],
+            'handoff': {'previous_hour': None, 'successful_deep': None, 'changes_since_hour': [],
+                        'changes_since_deep': [], 'active_hypotheses': [], 'open_questions': []}},
+            {'market': raw}, directory / 'evidence')
+        payload = {'schema': 'BTC_RUN_MATERIAL_V1', 'run_ref': 'mounted-run',
+                   'project': str(self.project), 'root': str(alias / 'v4'), 'directory': str(directory),
+                   'market': str(raw), 'market_hash': digest({}),
+                   'evidence': str(directory / 'evidence'), 'evidence_id': bundle['evidence_id']}
+        material = directory / 'run.json'; release.write(material, payload)
+        run_record = release.record_path(Path(self.config['release_root']), 'runs', 'mounted-run')
+        original = run_record.read_bytes(); material_bytes = material.read_bytes()
+        row = release.status(self.config)['active_runs'][0]
+        self.assertEqual(row['material_status'], 'AVAILABLE')
+        self.assertEqual(row['run_material'], str(material))
+        self.assertEqual(run_flow.read_run(row['run_material'], alias / 'v4', self.project,
+                                          resolve_aliases=True), payload)
+        # The node mounts the same state at the logical project path. Preserve
+        # its stored identity rather than handing the container a host alias.
+        alias.unlink(); shutil.copytree(state, alias)
+        self.assertEqual(run_flow.read_run(row['run_material'], alias / 'v4', self.project), payload)
+        with self.assertRaisesRegex(Invalid, 'run directory binding differs'):
+            run_flow.read_run(state / 'v4/runs/mounted-run/run.json', alias / 'v4', self.project)
+        self.assertEqual(run_record.read_bytes(), original)
+        self.assertEqual(material.read_bytes(), material_bytes)
         self.assertEqual(self.state.read_bytes(), self.before)
 
     def test_repeat_activation_preserves_rollback_and_pending_upgrade(self):

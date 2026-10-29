@@ -45,7 +45,9 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 若节点的运行版 reader 不包含测试源码，安装时增加 `--reader /path/to/exported-reader`；可以传入前述 `.local/reader`。测试依赖与运行服务分开，安装不修改 reader 服务。
 
-按照 `enter` 返回的固定路径读取 Skill，并用该版本的脚本执行本轮。研究请求和投递任务产生时绑定上下文；恢复使用原上下文，不能因升级重新研究或重发。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
+通过 `status` 发现原在途运行和身份匹配的材料路径，再按真实触发身份进入；`enter` 返回同版的 `task`、Skill 和方法入口。相同已结束身份返回 `FINISHED/RETURN_FINISHED_RUN` 并保留原记录，恢复在途返回 `RESUME_ORIGINAL_RUN`。新轮才返回 `START_NEW_RUN`。重复 `finish` 保留原完成时间；旧记录缺少完成时间时仍为未知，不补造历史。研究请求和投递任务产生时绑定上下文，恢复使用原上下文。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
+
+调度只调用固定版本的 [任务入口](tasks/hourly.md)，项目方法和状态规则随源码维护；真实机器绑定与报告目的地留在节点。这个分工使用 OpenAI 的 [Scheduled tasks](https://learn.chatgpt.com/docs/automations) 与 [Skills](https://learn.chatgpt.com/docs/build-skills) 已有能力。投递沿现有 outbox、发送尝试和原生回读推进，重复触发不能复活已结束运行，UNKNOWN 不能自动重发；这对应 [outbox 与幂等消费](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) 的可靠性原则。原生工具的真实副作用及手机可见性仍分别验证。
 
 代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–9，新入口准备 revision 9；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
 
