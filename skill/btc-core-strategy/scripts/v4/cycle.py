@@ -360,7 +360,8 @@ def baseline(root, assessment, fact_version=None, as_of=None):
     if separated and assessment.get('revision', 1) >= 5 and matches:
         from . import research
         independent = research._load(root, 'independent', saved['independent_id'])
-        market_state.ensure_research_mapping(independent, {'assessment': assessment})
+        market_state.ensure_research_mapping(independent, {'assessment': assessment},
+            _companion_report=lambda: research._candidate_companion_report(root, independent))
         public_report = independent['market_result']['market_report']
     return {'status': status, 'market_status': status,
             'portfolio_status': 'FACTS_CHANGED' if not facts_match else 'CURRENT', 'result_id': saved['result_id'], 'request_id': saved['request_id'],

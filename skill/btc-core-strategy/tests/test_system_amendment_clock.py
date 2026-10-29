@@ -237,6 +237,28 @@ class PortfolioPublicManifestTests(unittest.TestCase):
         self.assertEqual(owner_path.read_bytes(),before)
         self.base.assert_old_registrations_unchanged()
 
+    def test_approved_cycle_baseline_keeps_exact_companion_binding_without_private_read(self):
+        from v4 import cycle
+        owner,candidate=self.companion_case()
+        assessment=deepcopy(candidate['assessment']);assessment.update(revision=9,fact_version={})
+        disclosed={'candidate':candidate}
+        result={'result_id':digest('generated approved result'), 'request_id':owner['request_id'],
+                'independent_id':owner['independent_id'], 'fact_version':{}, 'market_cutoff':T2,
+                'evidence_id':self.fixture.package['evidence_id'], 'market_evidence_id':digest('market'),
+                'completed_at':T2, 'cycle_review':{'recheck_at':(instant(T2)+timedelta(hours=2)).isoformat(),
+                'coverage':{},'unresolved':[],'reopen_conditions':['actual evidence change'],
+                'counterevidence':[],'report_narrative':self.full_body}}
+        self.full_path.unlink()  # Approved baseline must also use metadata, not private original.
+        with mock.patch.object(cycle,'adopted',return_value=(result,disclosed)), \
+             mock.patch.object(cycle,'pending_reassessment',return_value=[]):
+            baseline=cycle.baseline(self.root,assessment,as_of=T2)
+            self.assertEqual('CURRENT',baseline['status'])
+            self.assertEqual(self.public['market_report'],baseline['market_report'])
+            self.assertEqual(self.full_body,baseline['report_narrative'])
+            changed=deepcopy(assessment);changed['conclusion']['narrative']+='changed after review'
+            with self.assertRaisesRegex(Invalid,'full report changed'):
+                cycle.baseline(self.root,changed,as_of=T2)
+
     def test_companion_body_mutation_or_main_supplied_hash_cannot_authorize(self):
         saved,candidate=self.companion_case()
         for changed in (self.full_body+'x',self.full_body[:-1],' '+self.full_body):
