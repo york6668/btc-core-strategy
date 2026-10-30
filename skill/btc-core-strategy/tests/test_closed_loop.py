@@ -174,7 +174,7 @@ class HourlyClosedLoopTests(unittest.TestCase):
         self.assertEqual(material['market_candidate'], read(candidate['market_candidate']))
         self.assertIn(market_state.PUBLIC_RESULT_REVIEW, material['instructions'])
         view = read(candidate['read_set']['market_review'])
-        self.assertEqual(view['view_revision'], 3)
+        self.assertEqual(view['view_revision'], 4)
         self.assertEqual(candidate['review_read']['arguments'][:3], ['run-read', '--run', str(p['run'])])
         parts = ''.join(Path(part).read_text() for item in view['required'] for part in item['parts'])
         self.assertIn(ambiguous, parts)
