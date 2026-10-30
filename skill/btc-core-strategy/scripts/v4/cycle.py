@@ -31,6 +31,7 @@ CORE_REPORT_REVIEW = (
 )
 APPLICABILITY_REVIEW = (
     '用实际原始引用填写 applicability_review；未触发研究不等于 VALID，缺证保留具体限制。'
+    '顶层REVISE表示已采纳正式周期须修订，不用于仅更新小时描述；原周期仍适用时据实选VALID或EVIDENCE_LIMITED，未证A/B和具体限制另行保留。'
     '核验当前周期状态的机制、价值和累计反证，日内方向反复但周期依据未变时保留主结论；重大机制变化无需等价格破位，周期依据不足也不能降为小时主线。'
     '到期核验适用性；实质反证、遗漏或原判断失去支持才恢复同一 BTC_CYCLE，普通小时和时间到期不重跑。'
     '市场识别、深评、通知分别判断；结构、动量或其他新证据先核对对原主因果链和当前参与价值的影响，局部变化不直接推送。真正反证不因评级未变、中期未反转或当日已送达被屏蔽；实质组合危险和重要纠错独立保留。'
@@ -468,10 +469,54 @@ def validate_report_basis(spec, ctx):
                 'missing full report cannot be presented as a completed deep review')
 
 
-def validate_applicability(value, ctx, package, directory):
+def applicability_correction(root, ctx, value):
+    """Explicitly correct a mis-authored outcome, never silently clear open work.
+
+    The complete still-pending revision chain is named in the new immutable
+    observation. Its original inputs, outcomes and clocks remain untouched.
+    Other material reasons and unadopted requests are not correction targets.
+    """
+    correction = value.get('correction')
+    if correction is None:
+        return False
+    from . import sensing
+    exact(correction, 'field prior_outcome observation_ids reason', 'applicability correction')
+    require(correction['field'] == '/applicability_review/outcome'
+            and correction['prior_outcome'] == 'REVISE', 'correction only targets a prior applicability outcome')
+    text(correction['reason'], 'actual reason for the outcome correction')
+    require(value['outcome'] in ('VALID', 'EVIDENCE_LIMITED') and value['refs'],
+            'correction needs an explicit bounded reassessment and actual evidence')
+    ids = correction['observation_ids']
+    require(isinstance(ids, list) and ids and all(isinstance(v, str) for v in ids)
+            and len(ids) == len(set(ids)), 'correction needs unique original observations')
+    require(root is not None and (Path(root) / 'sensing-current.json').exists(),
+            'correction needs the current persisted observation')
+    identity = read(Path(root) / 'sensing-current.json')['observation_id']
+    pending = []
+    visited = set()
+    while identity and identity not in visited:
+        visited.add(identity)
+        observed = sensing.observation(root, identity)
+        gate = observed.get('gate', {}).get('cycle_review', {})
+        if (gate.get('basis_result_id') != value['basis_result_id']
+                or not gate.get('required')
+                or 'APPLICABILITY_REVISION_REQUIRED' not in gate.get('reasons', [])):
+            break
+        authored = observed['review'].get('applicability_review') or {}
+        if authored.get('outcome') == 'REVISE':
+            pending.append(identity)
+        identity = (observed['context'].get('previous_hour') or {}).get('observation_id')
+    require(pending and set(ids) == set(pending),
+            'correction must name the complete current applicability revision chain')
+    require(ctx['cycle_baseline']['result_id'] == value['basis_result_id'], 'stale correction basis')
+    return True
+
+
+def validate_applicability(value, ctx, package, directory, *, root=None):
     """Check explicit authorship and real references, never infer evidence sufficiency."""
     from . import evidence
-    exact(value, 'basis_result_id outcome explanation refs limitations', 'cycle applicability review')
+    exact(value, 'basis_result_id outcome explanation refs limitations'
+          + (' correction' if 'correction' in value else ''), 'cycle applicability review')
     require(value['basis_result_id'] == ctx['cycle_baseline']['result_id'], 'stale applicability basis')
     require(value['outcome'] in ('VALID', 'EVIDENCE_LIMITED', 'REVISE'), 'invalid applicability outcome')
     text(value['explanation'], 'actual applicability reasoning')
@@ -481,6 +526,7 @@ def validate_applicability(value, ctx, package, directory):
         require(value['basis_result_id'] is not None and value['refs'], 'valid applicability needs an adopted basis and actual evidence')
     for ref in value['refs']:
         evidence.resolve(package, directory, ref)
+    applicability_correction(root, ctx, value)
 
 
 def review_gate(root, ctx, review, research_issues):
@@ -488,11 +534,18 @@ def review_gate(root, ctx, review, research_issues):
     basis = ctx['cycle_baseline']
     reasons = []
     applicability = review.get('applicability_review') or {}
-    if basis['status'] not in ('CURRENT', 'REVIEW_DUE', 'EVIDENCE_LIMITED'):
+    corrected = applicability_correction(root, ctx, applicability)
+    pending = list(basis.get('pending_reasons', []))
+    if corrected:
+        pending = [r for r in pending if r not in ('APPLICABILITY_REVISION_REQUIRED', 'REASSESSMENT_PENDING')]
+    # REASSESSMENT_PENDING is derived from its causes, not an independent
+    # perpetual cause after an explicit correction of the erroneous field.
+    corrected_pending = corrected and basis['status'] == 'REASSESSMENT_PENDING' and not pending
+    if basis['status'] not in ('CURRENT', 'REVIEW_DUE', 'EVIDENCE_LIMITED') and not corrected_pending:
         reasons.append(basis['status'])
     if applicability.get('outcome') == 'REVISE':
         reasons.append('APPLICABILITY_REVISION_REQUIRED')
-    reasons.extend(basis.get('pending_reasons', []))
+    reasons.extend(pending)
     if review['market_review']['deep_review']['required']:
         reasons.append('MODEL_IDENTIFIED_CYCLE_CHANGE')
     for check in ([] if market_state.enabled(root) else review['recommendation_checks']):

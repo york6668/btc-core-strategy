@@ -408,7 +408,7 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
         ctx.get('market_baseline', {}).get('dispute_zones', []), bundle['cutoff'], rev)
     factors.validate(authored['factor_checks'], bundle, evidence_dir, revision=rev)
     if 'cycle_baseline' in ctx:
-        cycle.validate_applicability(authored['applicability_review'], ctx, bundle, evidence_dir)
+        cycle.validate_applicability(authored['applicability_review'], ctx, bundle, evidence_dir, root=root)
     candidate = deepcopy(authored['market_review'])
     candidate.update(schema=market.REVIEW_SCHEMA, evidence_id=raw['evidence_id'], observed_hour=raw['observed_hour'],
                      context_id=ctx['context_id'], model=dict(market.CURRENT_HOURLY_MODEL))
@@ -465,7 +465,7 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
                                            review['main_evaluation']['required'])
         if cycle_workflow:
             from .cycle import validate_applicability
-            validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir)
+            validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir, root=root)
         candidate = review['market_review']
         require(candidate['model'] == market.CURRENT_HOURLY_MODEL, 'hourly sensing requires '+market.CURRENT_HOURLY_MODEL['name']+'/high')
         completed = (ctx['cycle_baseline'] if ctx['cycle_baseline']['result_id'] else None) if cycle_workflow else (ctx['current_core'] if workflow else ctx['successful_deep'])

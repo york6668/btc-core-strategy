@@ -81,7 +81,7 @@ class CycleWorkflowTests(unittest.TestCase):
         self.d.bind()
         return req, saved, result_spec
 
-    def observe(self, finding='NO_MATERIAL_CHANGE', required=False, extra=None, applicability='VALID', source_id='hourly'):
+    def observe(self, finding='NO_MATERIAL_CHANGE', required=False, extra=None, applicability='VALID', source_id='hourly', correction=None):
         f = self.f
         ctx = sensing.context(f.store, f.project / '.strategy/market_observation.sqlite3', f.project, f.raw, evidence_dir=f.evidence_dir)
         review = {'schema': 'BTC_SENSING_REVIEW_V4', 'revision': 4, 'context_id': ctx['context_id'],
@@ -95,6 +95,8 @@ class CycleWorkflowTests(unittest.TestCase):
                 'explanation': 'Synthetic explicit assessment of the full thesis and cumulative evidence.',
                 'refs': [{'source_id': source_id, 'pointer': '/datasets', 'value_hash': digest(f.raw['datasets'])}],
                 'limitations': 'Synthetic account uncertainty is unchanged; no fill or account safety inferred.'}}
+        if correction is not None:
+            review['applicability_review']['correction'] = correction
         return sensing.record(f.store, f.project / '.strategy/market_observation.sqlite3', f.project, f.raw, review, evidence_dir=f.evidence_dir)
 
     def test_initial_missing_baseline_requests_deep_and_preserves_legacy_current(self):
@@ -672,6 +674,75 @@ class CycleWorkflowTests(unittest.TestCase):
         second = self.observe()
         self.assertTrue(second['deep_eligible'])
         self.assertEqual(cycle.baseline(self.f.store, storage.current(self.f.store)['assessment'])['status'], 'REASSESSMENT_PENDING')
+
+    def correction(self, *observations):
+        return {'field': '/applicability_review/outcome', 'prior_outcome': 'REVISE',
+                'observation_ids': [v['observation_id'] for v in observations],
+                'reason': 'The authored enum incorrectly denoted a formal revision for a local description update; the adopted cycle remains applicable with its original limits.'}
+
+    def test_explicit_outcome_correction_preserves_originals_and_does_not_backdate_due_verification(self):
+        _, saved, _ = self.study(); self.d.commit()
+        first = self.observe(applicability='REVISE')
+        second = self.observe(applicability='REVISE')
+        before = {v['observation_id']: sensing.observation(self.f.store, v['observation_id']) for v in (first, second)}
+        stamp = '2030-03-02T13:01:00Z'
+        with mock.patch('v4.cycle.now', return_value=stamp), mock.patch('v4.sensing.now', return_value=stamp):
+            fixed = self.observe(correction=self.correction(first, second))
+            observed = sensing.observation(self.f.store, fixed['observation_id'])
+            self.assertFalse(observed['gate']['cycle_review']['required'])
+            self.assertTrue(observed['gate']['cycle_review']['verification_completed'])
+            self.assertEqual(observed['created_at'], stamp)
+            self.assertEqual(observed['review']['applicability_review']['correction'], self.correction(first, second))
+            assessment = storage.current(self.f.store)['assessment']
+            self.assertEqual(cycle.baseline(self.f.store, assessment)['status'], 'REVIEW_DUE')
+            fresh = deepcopy(self.f.raw)
+            for retrieval in fresh['retrievals'].values():
+                retrieval['retrieved_at'] = stamp
+            with mock.patch('v4.reporting.raw_for_observation', return_value=fresh):
+                basis = cycle.baseline(self.f.store, assessment)
+            self.assertEqual(basis['status'], 'CURRENT')
+            self.assertEqual(basis['applicability_verification']['verified_at'], stamp)
+            self.assertEqual(basis['completed_at'], saved['completed_at'])
+        for identity, original in before.items():
+            self.assertEqual(sensing.observation(self.f.store, identity), original)
+        self.assertFalse(self.observe()['deep_eligible'])
+
+    def test_correction_requires_complete_original_chain_and_exact_field(self):
+        self.study(); self.d.commit()
+        first = self.observe(applicability='REVISE'); second = self.observe(applicability='REVISE')
+        with self.assertRaisesRegex(Invalid, 'complete current applicability revision chain'):
+            self.observe(correction=self.correction(second))
+        wrong = self.correction(first, second); wrong['field'] = '/market_assessment'
+        with self.assertRaisesRegex(Invalid, 'only targets a prior applicability outcome'):
+            self.observe(correction=wrong)
+        self.assertEqual(read(self.f.store/'sensing-current.json')['observation_id'], second['observation_id'])
+
+    def test_limited_correction_is_not_valid_and_does_not_clear_material_work(self):
+        self.study(); self.d.commit()
+        first = self.observe(applicability='REVISE')
+        fixed = self.observe(applicability='EVIDENCE_LIMITED', correction=self.correction(first))
+        self.assertFalse(sensing.observation(self.f.store, fixed['observation_id'])['gate']['cycle_review']['verification_completed'])
+        self.assertEqual(cycle.baseline(self.f.store, storage.current(self.f.store)['assessment'])['status'], 'EVIDENCE_LIMITED')
+        material = self.observe(finding='COUNTEREVIDENCE', applicability='REVISE')
+        corrected = self.observe(correction=self.correction(material))
+        gate = sensing.observation(self.f.store, corrected['observation_id'])['gate']['cycle_review']
+        self.assertTrue(gate['required'])
+        self.assertIn('upper_short:MATERIAL_REASSESSMENT', gate['reasons'])
+        self.assertNotIn('APPLICABILITY_REVISION_REQUIRED', gate['reasons'])
+
+    def test_correction_does_not_clear_a_real_unadopted_request(self):
+        req, _, _ = self.study(); self.d.commit()
+        first = self.observe(applicability='REVISE')
+        spec = {k: deepcopy(req[k]) for k in ('issue_key','scope','question','decision_id','evidence_id','change','reopen_conditions')}
+        spec['decision_id'] = storage.current(self.f.store)['decision_id']
+        spec['change'].update(kind='NEW_KEY_EVIDENCE', refs=[{'source_id':'hourly', 'pointer':'/windows', 'value_hash':digest(self.f.raw['windows'])}])
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:04:00Z'):
+            pending = research.request(self.f.store, self.f.project, spec)
+        fixed = self.observe(correction=self.correction(first))
+        gate = sensing.observation(self.f.store, fixed['observation_id'])['gate']['cycle_review']
+        self.assertTrue(gate['required'])
+        self.assertIn('UNADOPTED_CYCLE_REQUEST', gate['reasons'])
+        self.assertEqual(gate['existing_request']['request_id'], pending['request_id'])
 
     def test_legacy_implicit_verification_does_not_renew_current_report(self):
         self.study(); self.d.commit()
