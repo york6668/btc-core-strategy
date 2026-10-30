@@ -122,13 +122,49 @@ class ReadingTests(unittest.TestCase):
             create(directory / 'candidate.json', original)
             index = read(material_reads.make(directory, 'market-review', directory / 'candidate.json', compact=True))
             view = self.view(index)
-            self.assertEqual(index['view_revision'], 3)
+            self.assertEqual(index['view_revision'], 4)
             ref = view['market']['basis']['$read_ref']
             self.assertEqual(set(ref), {'pointer'})
             self.assertEqual(pointer(original, ref['pointer']), basis)
             self.assertEqual(self.expand(view, index['material']), original)
             self.assertEqual(view['changed']['conditions'], original['changed']['conditions'])
             self.assertLess(sum(v['characters'] for v in index['required']), len(json.dumps(original, ensure_ascii=False)) // 2)
+
+    def test_compact_reuse_keeps_each_required_document_origin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            shared = {'evidence': '同一证据，内部空白与限制不能改变。\n  ' * 60,
+                      'limits': ['UNKNOWN']}
+            template_only = '模板自己的原文\n  仍须精确还原。' * 40
+            originals = {
+                'context': {'accumulation': shared, 'repeat': shared},
+                'template': {'bindings': shared, 'first': template_only,
+                             'repeat': template_only, 'judgement': None},
+                'other': {'same_template_value': template_only,
+                          'limits': ['UNKNOWN', '新的独有条件']},
+            }
+            paths = {name: directory / (name + '.json') for name in originals}
+            for name, value in originals.items():
+                create(paths[name], value)
+            path = material_reads.make(directory, 'observe', paths['context'],
+                required={name: paths[name] for name in ('template', 'other')}, compact=True)
+            index = read(path)
+            views = {entry['role']: json.loads(''.join(Path(p).read_text() for p in entry['parts']))
+                     for entry in index['required']}
+            for role, name in (('stage_context', 'context'), ('template', 'template'), ('other', 'other')):
+                self.assertEqual(self.expand(views[role], str(paths[name])), originals[name])
+            self.assertEqual(set(views['stage_context']['repeat']['$read_ref']), {'pointer'})
+            self.assertEqual(views['template']['bindings']['$read_ref']['material'], str(paths['context']))
+            self.assertEqual(set(views['template']['repeat']['$read_ref']), {'pointer'})
+            self.assertEqual(views['other']['same_template_value']['$read_ref']['material'], str(paths['template']))
+
+            # Existing compact descriptors remain readable without rewriting them.
+            legacy = dict(index, view_revision=3)
+            legacy_path = Path(path).parent / 'legacy-read-set.json'
+            create(legacy_path, legacy)
+            before = legacy_path.read_bytes()
+            self.assertTrue(material_reads.read_page(legacy_path, 0, 12000)['segments'])
+            self.assertEqual(legacy_path.read_bytes(), before)
 
     def test_reader_returns_all_required_fragments_and_reports_a_real_next_cursor_without_writes(self):
         with tempfile.TemporaryDirectory() as folder:

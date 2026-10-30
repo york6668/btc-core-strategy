@@ -54,3 +54,13 @@ reader 检查点按原附件接收时间增量投影已验证的历史序列；�
 证据新鲜度、判断适用期、建议有效期、存储保留期各自独立。缓存/导出 24 小时；已完成运行 7 天；已关闭故障 14 天；普通原文及细于小时观测 30 天；小时序列 400 天；日线、正式决策、重要变化、结果复核、事实版本、最终报告和确认长期保留。活动对象和未决任务的必要证据受引用保护，回收有 48 小时缓冲。普通过程材料须先确认用途结束；未回踩长期锚不按年龄删除。
 
 切换后 `acceptance.start` 从下一个日本完整自然日开始计七日。每日 `acceptance.window` 提取上一完整日的实际输入、状态变化和消费结果，由模型逐项审查后 `acceptance.record`；缺陷登记 `acceptance.defect` 并重验受影响窗口。没有自然发生的场景写 REPLAY_ONLY、实际回放证据与 natural_gap；没有实际 observe 的日不能通过运行链项。七天到期、容器健康及测试通过都不自动关闭验收。GitHub、本机、云端发布、全新云端任务及自然运行分别确认。
+
+## 固定 PUBLIC 快照的模型读取视图
+
+全量 inventory、不可变对象与每条未决要求继续保留，读取体量不能作为删除、解决或后移义务的理由。正常 PUBLIC 接续可用本项目 `scripts/continuous_public_read.py` 对已经固定的 `continuous-public.json`、对应版本的 PUBLIC `object.get` 原回执及本轮已完整读过的 PUBLIC read_set 生成有界视图；该工具只读本地原件、写读取材料，不联网、不采集、不投影新业务状态。`--reader-scripts` 可明确指定本轮已安装的读取实现，其代码散列与修正工具散列分别记录，不能把本地新工具说成旧引擎已经发布。
+
+工具的 native 视图沿用 `material_reads.make(compact=True, base=<同一作者已读的本轮PUBLIC read_set>)`，保留全部对象 payload、生命周期、来源和依赖。新作者未读该 base 时须先完整读取，不借另一作者或上一轮的读取证明。要求视图按真实 subject 和原 reason 分组；`causes` 保留每个实际 cause_key/cause_version，`opened_ms_values` 保留每个实际开启时钟，组内 `entries` 的三列依次是原行序号、cause 索引和时钟索引。所有差异及独有业务字段仍在 required 材料；相同默认字段只在实际逐值相同时复用。仅 opaque 的 requirement_key 可放身份目录，原行号一对一绑定，完整要求能够逐值还原。分组和目录不是语义复核或解除凭据，模型仍须逐项解释实际变化及其判断影响，证据不足保留具体未知。
+
+未决要求可能关联已经退休、未列在活跃对象索引的主体。沿既有 `scope=PUBLIC object.list(active=null)` 或 `conditions.due` 只发现稳定 kind/object_id，再用原运行的 as_of/版本取得原文；当前发现状态不替换原快照。工具显式保留 `subject_gaps`，不把缺原文当无义务，不自动 resolve。PERSONAL 查询仍须独立市场冻结，不能借读取视图提前进入。
+
+生成后的 manifest 给出正常 `run-read --run <原run> --read-set <返回read_set> --cursor 0` 所需路径。按实际 next_cursor 读到 complete 并完成语义审阅；展开相等、分页完成和工具返回成功分别只是对应机械证据，不能替代模型已理解、市场候选或正式业务完成。原始输入、旧视图、失败与真实时钟不覆盖。

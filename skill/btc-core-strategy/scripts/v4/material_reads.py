@@ -67,7 +67,7 @@ def make(directory, stage, material, base=None, required=None, on_demand=None, *
                 known.setdefault(digest(child), {'read_set': str(cursor), 'material': prior['material'],
                                                 'pointer': path})
         cursor = prior.get('base_read_set')
-    revision = 3 if compact else 2
+    revision = 4 if compact else 2
     identity = {'view_revision': revision, 'value': value, 'material': str(material), 'base': base,
                 'required': {k: digest(Path(p).read_bytes()) for k, p in (required or {}).items()},
                 'on_demand': on_demand or {}}
@@ -83,13 +83,15 @@ def make(directory, stage, material, base=None, required=None, on_demand=None, *
         reusable = isinstance(child, (dict, list, str)) if compact else isinstance(child, (dict, list))
         if reusable and len(json.dumps(child, ensure_ascii=False)) >= (120 if compact else 800):
             if key in seen:
-                reference = {'$read_ref': seen[key]}
+                first = seen[key]
+                reference = {'$read_ref': ({'pointer': first['pointer']}
+                    if compact and first['material'] == origin else first)}
                 # Only exact repeated bytes are reused. Short local pointers
                 # retain every parent object and all differing conditions.
                 if not compact or len(json.dumps(child, ensure_ascii=False)) > len(json.dumps(reference, ensure_ascii=False)) + 32:
                     return reference
-            seen.setdefault(key, {'pointer': path} if compact and origin == str(material) else
-                {'read_set': str(target / 'read-set.json'), 'material': origin, 'pointer': path})
+            seen.setdefault(key, {'read_set': str(target / 'read-set.json'),
+                                  'material': origin, 'pointer': path})
         if isinstance(child, str) and (path.endswith('/conclusion/narrative') or path.endswith('/report_narrative')) and child:
             report_dir = directory / 'reading' / 'reports' / key[7:]
             full = _save(report_dir / 'full.txt', child.encode('utf-8'))
