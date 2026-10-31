@@ -473,6 +473,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         save(directory / 'context.json', brief)
         save(directory / 'recovery.json', recovery)
         reads = material_reads.make(directory, 'observe', directory / 'context.json',
+            compact=ctx.get('revision', 1) >= 5,
             required={'market_summary': directory / 'market-summary.json',
                       'observation_template': directory / ('market-template.json' if ctx.get('revision', 1) >= 5 else 'observation-template.json'),
                       'vocabulary': directory / 'vocabulary.json'},

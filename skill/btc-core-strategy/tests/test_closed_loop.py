@@ -136,6 +136,48 @@ class HourlyClosedLoopTests(unittest.TestCase):
                     'limitations': ['Allocation requires actual assessment.'], 'material': False}}
         return form
 
+    def test_prepare_returns_lossless_compact_public_roles_through_normal_reader(self):
+        from v4 import material_reads
+        from v4.common import pointer
+        prepared = self.prepare()
+        index = read(prepared['read_set']['observe'])
+        self.assertEqual(index['view_revision'], 4)
+        expected = {'stage_context': prepared['context'], 'market_summary': prepared['market_summary'],
+                    'observation_template': prepared['market_template'], 'vocabulary': prepared['vocabulary']}
+        self.assertEqual({row['role'] for row in index['required']}, set(expected))
+        originals = {path: Path(path).read_bytes() for path in [prepared['run'], *expected.values()]}
+        before = run_flow.anchors(self.root, self.f.f.project)
+        returned = {role: '' for role in expected}
+        cursor = 0
+        while True:
+            page = material_reads.read_page(prepared['read_set']['observe'], cursor, 12000,
+                                           allowed_directory=self.f.d / 'reading')
+            for segment in page['segments']:
+                returned[segment['role']] += segment['content']
+            if page['complete']:
+                break
+            cursor = page['next_cursor']
+
+        def expand(value, origin):
+            if isinstance(value, dict):
+                if '$read_ref' in value:
+                    ref = value['$read_ref']; source = read(ref.get('material', origin))
+                    return pointer(source, ref['pointer']) if ref['pointer'] else source
+                if '$report_ref' in value:
+                    return Path(value['$report_ref']).read_text()
+                return {key: expand(child, origin) for key, child in value.items()}
+            if isinstance(value, list):
+                return [expand(child, origin) for child in value]
+            return value
+
+        for role, path in expected.items():
+            self.assertEqual(expand(json.loads(returned[role]), path), read(path), role)
+        self.assertNotEqual(read(prepared['market_template']), read(prepared['observation_template']))
+        self.assertEqual(originals, {path: Path(path).read_bytes() for path in originals})
+        self.assertEqual(before, run_flow.anchors(self.root, self.f.f.project))
+        self.assertFalse((self.f.d / 'market-result.json').exists())
+        self.assertFalse(list(self.f.d.glob('portfolio-*')))
+
     def test_account_edits_do_not_change_public_material_or_frozen_result(self):
         p, frozen, public = self.freeze()
         before = read(p['context']); old_hash = frozen['market_result_hash']

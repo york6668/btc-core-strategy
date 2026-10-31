@@ -57,6 +57,8 @@ reader 检查点按原附件接收时间增量投影已验证的历史序列；�
 
 ## 固定 PUBLIC 快照的模型读取视图
 
+revision 5 及以上的正常 `run-prepare` 已直接返回 compact view 4，包含原上下文、市场摘要、纯市场模板和词表。按返回的 read_set 读取，无需在节点另行重建角色映射；初始 `observation_template` 角色绑定的是 `market-template.json`，返回路径中的后市场观察模板不能替代它。旧运行保留自己的读取材料。
+
 全量 inventory、不可变对象与每条未决要求继续保留，读取体量不能作为删除、解决或后移义务的理由。正常 PUBLIC 接续可用本项目 `scripts/continuous_public_read.py` 对已经固定的 `continuous-public.json`、对应版本的 PUBLIC `object.get` 原回执及本轮已完整读过的 PUBLIC read_set 生成有界视图；该工具只读本地原件、写读取材料，不联网、不采集、不投影新业务状态。`--reader-scripts` 可明确指定本轮已安装的读取实现，其代码散列与修正工具散列分别记录，不能把本地新工具说成旧引擎已经发布。
 
 工具的 native 视图沿用 `material_reads.make(compact=True, base=<同一作者已读的本轮PUBLIC read_set>)`，保留全部对象 payload、生命周期、来源和依赖。新作者未读该 base 时须先完整读取，不借另一作者或上一轮的读取证明。要求视图按真实 subject 和原 reason 分组；`causes` 保留每个实际 cause_key/cause_version，`opened_ms_values` 保留每个实际开启时钟，组内 `entries` 的三列依次是原行序号、cause 索引和时钟索引。所有差异及独有业务字段仍在 required 材料；相同默认字段只在实际逐值相同时复用。仅 opaque 的 requirement_key 可放身份目录，原行号一对一绑定，完整要求能够逐值还原。分组和目录不是语义复核或解除凭据，模型仍须逐项解释实际变化及其判断影响，证据不足保留具体未知。
