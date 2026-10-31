@@ -931,9 +931,10 @@ def orchestrated_result(root, spec, guard_attempt=None):
         require(phase.get('verification_scope') == ORCHESTRATED_SCOPE or continued_public,
                 'native research must retain native input-read verification')
         require(req['request_id'] == disclosed['request_id'] == phase['request_id'], 'orchestrated phases bind different requests')
-        # A later desktop segment must actually contain the original dispatch
-        # and final through its runtime-declared history; path equality is not provenance.
-        first = _orchestration_turn(spec['rollout_path'], phase['dispatch_call_id'], phase['return_message_id'], 'spawn_agent')
+        # Recheck PUBLIC through its frozen proof. APPROVAL keeps its own
+        # completed claim's byte-bound proof; neither phase needs a rewritten
+        # file containing both histories. Paths alone are not provenance.
+        first = _orchestration_turn(phase['rollout_path'], phase['dispatch_call_id'], phase['return_message_id'], 'spawn_agent')
         require(first['dispatch_hash'] == phase['trace_proof']['dispatch_hash'] and first['return_hash'] == phase['trace_proof']['return_hash'], 'independent orchestration proof changed')
         if 'continuations' in phase:
             require(first['continuations'] == phase['continuations'], 'independent phase continuation trace changed')
