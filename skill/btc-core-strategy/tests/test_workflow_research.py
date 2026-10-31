@@ -477,6 +477,44 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual({s['source']['id'] for s in phase['evidence_context']['sources']},
             {s['id'] for s in self.evidence['sources']} | {'later_official'})
 
+    def separated_orchestration_phases(self):
+        req = self.request()
+        public = self.orchestration_trace().rename(self.base / 'public-proof.jsonl')
+        phase = research.orchestrated_independent(self.store, req['request_id'], public,
+            'SPAWN', 'FINAL1', self.main_input_review(req, req['independent_input_id'], 'SPAWN'))
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:05Z'):
+            candidate = research.reveal(self.store, req['request_id'], phase['independent_id'],
+                                        {'hypothesis': 'Candidate after the frozen public phase.'})
+        approval = self.orchestration_trace('followup_task', 'FOLLOWUP', 'FINAL2',
+            '2030-03-01T13:03:06Z', '2030-03-01T13:03:09Z')
+        spec = {'request_id': req['request_id'], 'candidate_id': candidate['candidate_id'],
+            'rollout_path': str(approval), 'dispatch_call_id': 'FOLLOWUP', 'return_message_id': 'FINAL2',
+            'input_review': self.main_input_review(req, candidate['candidate_id'], 'FOLLOWUP'),
+            'coverage': ['Question scope'], 'counterevidence': [], 'unresolved': [],
+            'reopen_conditions': self.spec['reopen_conditions']}
+        return public, approval, phase, spec
+
+    def test_orchestrated_result_consumes_each_frozen_phase_proof(self):
+        public, approval, phase, spec = self.separated_orchestration_phases()
+        before = public.read_bytes(), approval.read_bytes(), storage.current(self.store)
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:10Z'):
+            result = research.orchestrated_result(self.store, spec)
+        self.assertEqual(result['analysis'], 'Actual orchestration analysis FINAL2')
+        self.assertEqual(result['independent_id'], phase['independent_id'])
+        self.assertEqual(result['rollout_path'], str(approval))
+        self.assertEqual((public.read_bytes(), approval.read_bytes(), storage.current(self.store)), before)
+
+    def test_separate_approval_does_not_hide_changed_public_proof(self):
+        public, approval, _, spec = self.separated_orchestration_phases()
+        events = [json.loads(line) for line in public.read_text().splitlines()]
+        events[-1]['payload']['content'][0]['text'] += ' changed after independent registration'
+        public.write_text('\n'.join(json.dumps(item) for item in events) + '\n')
+        approval_bytes = approval.read_bytes()
+        with self.assertRaisesRegex(Invalid, 'independent orchestration proof changed'):
+            research.orchestrated_result(self.store, spec)
+        self.assertEqual(approval.read_bytes(), approval_bytes)
+        self.assertEqual(list((self.store / 'research/results').glob('*.json')), [])
+
     def test_orchestrated_supplement_rejects_late_changed_and_omitted_sources(self):
         req = self.request()
         path = self.orchestration_trace()
