@@ -419,6 +419,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         path = self.orchestration_trace()
         phase = research.orchestrated_independent(self.store, req['request_id'], path, 'SPAWN', 'FINAL1', self.main_input_review(req, req['independent_input_id'], 'SPAWN'))
         self.assertEqual(phase['summary'], 'Actual orchestration analysis FINAL1')
+        self.assertNotIn('evidence_context', phase)
+        self.assertEqual(phase, research.orchestrated_independent(self.store, req['request_id'], path,
+            'SPAWN', 'FINAL1', self.main_input_review(req, req['independent_input_id'], 'SPAWN')))
         self.assertNotIn('turn_id', phase)
         self.assertFalse(phase['inner_tool_trace_verified'])
         with mock.patch('v4.research.now', return_value='2030-03-01T13:03:05Z'):
@@ -437,6 +440,68 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(storage.current(self.store)['decision_id'], before)
         with self.assertRaisesRegex(Invalid, 'invalid fields'):
             research.orchestrated_result(self.store, dict(spec, analysis='Handwritten replacement is forbidden.'))
+
+    def test_orchestrated_supplement_consumes_cli_and_preserves_identity(self):
+        import contextlib
+        import io
+        import strategy_v4
+        bundle, directory = self.supplement()
+        req = self.request()
+        path = self.orchestration_trace(end='2030-03-01T13:03:06Z')
+        review = self.main_input_review(req, req['independent_input_id'], 'SPAWN')
+        review_path = self.base / 'main-review.json'
+        create(review_path, review)
+        arguments = ['--project', str(self.project), '--root', str(self.store), '--full',
+            'research-orchestrated-independent', '--request', req['request_id'],
+            '--rollout', str(path), '--dispatch', 'SPAWN', '--returned', 'FINAL1',
+            '--input-review', str(review_path), '--additional', str(directory)]
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:10Z'), \
+             mock.patch.object(research, '_public_result', wraps=research._public_result) as consumer:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(strategy_v4.main(arguments), 0)
+            phase = json.loads(output.getvalue())
+            consumer.assert_called_once_with(self.store.as_posix(), req,
+                'Actual orchestration analysis FINAL1', str(directory))
+            repeated = research.orchestrated_independent(self.store, req['request_id'], path,
+                'SPAWN', 'FINAL1', review, additional=directory)
+        self.assertEqual(phase, repeated)
+        self.assertEqual(phase['request_id'], req['request_id'])
+        self.assertEqual(phase['input_id'], req['independent_input_id'])
+        self.assertEqual(phase['evidence_context']['evidence_id'], bundle['evidence_id'])
+        self.assertEqual(phase['evidence_context']['knowledge_cutoff'], bundle['cutoff'])
+        self.assertEqual(phase['verification_scope'], research.ORCHESTRATED_SCOPE)
+        self.assertFalse(phase['inner_tool_trace_verified'])
+        self.assertFalse(phase['os_input_isolation_verified'])
+        self.assertEqual(research._load(self.store, 'requests', req['request_id']), req)
+        self.assertEqual({s['source']['id'] for s in phase['evidence_context']['sources']},
+            {s['id'] for s in self.evidence['sources']} | {'later_official'})
+
+    def test_orchestrated_supplement_rejects_late_changed_and_omitted_sources(self):
+        req = self.request()
+        path = self.orchestration_trace()
+        review = self.main_input_review(req, req['independent_input_id'], 'SPAWN')
+        _, directory = self.supplement()
+        with mock.patch('v4.research.now', return_value='2030-03-01T13:03:10Z'):
+            with self.assertRaisesRegex(Invalid, 'after the actual completed answer'):
+                research.orchestrated_independent(self.store, req['request_id'], path,
+                    'SPAWN', 'FINAL1', review, additional=directory)
+            (self.base / 'later-official.json').unlink()
+            _, changed = self.supplement(rewrite_source=True)
+            with self.assertRaisesRegex(Invalid, 'rewrite an existing'):
+                research.orchestrated_independent(self.store, req['request_id'], path,
+                    'SPAWN', 'FINAL1', review, additional=changed)
+            spec = read(directory / 'evidence.json')
+            spec = {k: v for k, v in spec.items() if k not in ('schema', 'evidence_id')}
+            spec['sources'] = [s for s in spec['sources'] if s['id'] == 'later_official']
+            files = {'later_official': directory / 'raw' / (spec['sources'][0]['raw_hash'][7:] + '.json')}
+            omitted = self.base / 'omitted-source'
+            evidence.freeze(spec, files, omitted)
+            storage.archive_evidence(self.store, omitted)
+            with self.assertRaisesRegex(Invalid, 'omit an existing'):
+                research.orchestrated_independent(self.store, req['request_id'], path,
+                    'SPAWN', 'FINAL1', review, additional=omitted)
+        self.assertEqual(list((self.store / 'research/independent').glob('*.json')), [])
 
     def _result_after_verified_public_successor(self, source_phase):
         req=self.request();path=self.orchestration_trace()
@@ -521,6 +586,57 @@ class ResearchWorkflowTests(unittest.TestCase):
         path.write_text('\n'.join(json.dumps(v) for v in [child_meta,events[2]])+'\n')
         with self.assertRaisesRegex(Invalid,'another session'):
             research._orchestration_turn(path,'SPAWN','FINAL1','spawn_agent')
+
+    def test_orchestration_streams_without_bulk_reads_or_retaining_unrelated_events(self):
+        import weakref
+        path = self.orchestration_trace()
+        original_open = Path.open
+        class Stream:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): return self
+            def __exit__(self, *args): return self.stream.__exit__(*args)
+            def __getattr__(self, name): return getattr(self.stream, name)
+            def read(self, *args): raise AssertionError('bulk trace read is forbidden')
+        with mock.patch.object(Path, 'open', lambda p, *a, **kw: Stream(original_open(p, *a, **kw))), \
+             mock.patch.object(Path, 'read_text', side_effect=AssertionError('whole trace read is forbidden')):
+            proof = research._orchestration_turn(path, 'SPAWN', 'FINAL1', 'spawn_agent')
+        events = list(research._orchestration_items(path))
+        class Event(dict): pass
+        def items(*args):
+            yield events[0]
+            refs = []
+            for index in range(20):
+                self.assertLessEqual(sum(r() is not None for r in refs), 2)
+                value = Event(type='response_item', payload={'type': 'unrelated', 'index': index})
+                refs.append(weakref.ref(value))
+                yield value
+            yield from events[1:]
+        with mock.patch.object(research, '_orchestration_items', side_effect=items):
+            streamed = research._orchestration_turn(path, 'SPAWN', 'FINAL1', 'spawn_agent')
+        self.assertEqual(streamed['analysis'], proof['analysis'])
+        self.assertEqual(streamed['dispatch_hash'], proof['dispatch_hash'])
+        self.assertEqual(streamed['return_hash'], proof['return_hash'])
+
+    def test_orchestration_stream_preserves_rejected_proofs(self):
+        path = self.orchestration_trace()
+        events = list(research._orchestration_items(path))
+        variants = []
+        def changed(index, **changes):
+            values = deepcopy(events)
+            values[index]['payload'].update(changes)
+            return values
+        args = json.loads(events[0]['payload']['arguments'])
+        variants.append((changed(0, arguments=json.dumps(dict(args, model='gpt-6.1-sol'))), 'Astra/max'))
+        variants.append((changed(0, arguments=json.dumps(dict(args, fork_turns='all'))), 'without inherited'))
+        variants.append(([events[2], *events[:2]], 'predates dispatch'))
+        variants.append(([*events, events[2]], 'unique actual dispatch'))
+        variants.append(([events[0], events[1], events[1], events[2]], 'actual tool receipt'))
+        variants.append((changed(1, output=json.dumps({'task_name': '/root/other'})), 'different agent'))
+        variants.append((changed(1, output=json.dumps({'isError': True})), 'dispatch failed'))
+        for values, error in variants:
+            with self.subTest(error=error), mock.patch.object(research, '_orchestration_items', side_effect=lambda *a: iter(values)):
+                with self.assertRaisesRegex(Invalid, error):
+                    research._orchestration_turn(path, 'SPAWN', 'FINAL1', 'spawn_agent')
 
     def test_unfinished_phase_can_resume_but_completed_return_cannot_be_relabelled(self):
         path=self.orchestration_trace()

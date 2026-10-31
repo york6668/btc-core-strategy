@@ -600,6 +600,8 @@ def _review_evidence(root, req, candidate, directory):
             'supplementary evidence differs from its archive')
     original = read(Path(root) / 'evidence' / req['evidence_id'][7:] / 'evidence.json')
     old_sources = {s['id']: s for s in original['sources']}
+    require(old_sources.keys() <= {s['id'] for s in package['sources']},
+            'supplement cannot omit an existing research source')
     sources, markets = [], []
     for source in package['sources']:
         require(source['id'] not in old_sources or source == old_sources[source['id']],
@@ -772,18 +774,25 @@ PUBLIC_ARTIFACT_SCOPES = {
 }
 
 
+def _orchestration_lines(path, limit=None):
+    """Decode one record at a time, respecting the runtime's byte boundary."""
+    with Path(path).open('rb') as stream:
+        while limit is None or stream.tell() < limit:
+            line = stream.readline() if limit is None else stream.readline(limit - stream.tell())
+            if not line:
+                break
+            yield json.loads(line)
+
+
 def _orchestration_items(path, limit=None, seen=None):
-    """Follow actual paginated desktop history without fabricating a joined trace."""
+    """Stream actual paginated history without retaining unrelated trace objects."""
     path = Path(path).resolve()
     seen = set() if seen is None else seen
     require(path not in seen, 'cyclic orchestration history')
     seen.add(path)
-    with path.open('rb') as stream:
-        raw = stream.read() if limit is None else stream.read(limit)
-    values = [json.loads(line) for line in raw.decode('utf-8').splitlines()]
-    meta = next((v['payload'] for v in values if v.get('type') == 'session_meta'), {})
+    meta = next((v['payload'] for v in _orchestration_lines(path, limit)
+                 if v.get('type') == 'session_meta'), {})
     history = meta.get('history_base') if meta.get('history_mode') == 'paginated' else None
-    preceding = []
     if history:
         parent_id = history.get('thread_id', '')
         require(re.fullmatch(r'[a-f0-9-]{36}', parent_id), 'invalid orchestration history identity')
@@ -796,23 +805,27 @@ def _orchestration_items(path, limit=None, seen=None):
         end = history.get('end_byte_offset')
         require(isinstance(end, int) and end > 0 and end <= matches[0].stat().st_size,
                 'invalid orchestration history boundary')
-        preceding = _orchestration_items(matches[0], end, seen)
-    return preceding + values
+        yield from _orchestration_items(matches[0], end, seen)
+    yield from _orchestration_lines(path, limit)
 
 
 def _orchestration_turn(path, dispatch_id, return_id, method, agent_id=None):
     """Read real parent dispatch/return events; do not invent native child turns."""
-    items = []
+    dispatch_count = return_count = 0
+    dispatched = returned = None
+    # The author is established by the unique final. A second streaming pass
+    # checks only that author's interval; no unrelated messages are retained.
     for number, item in enumerate(_orchestration_items(path), 1):
-        if item.get('type') == 'response_item':
-            items.append((number, item))
-    dispatches = [(n, v) for n, v in items if v.get('payload', {}).get('type') == 'function_call'
-                  and v['payload'].get('call_id') == dispatch_id]
-    returns = [(n, v) for n, v in items if v.get('payload', {}).get('type') == 'agent_message'
-               and v['payload'].get('id') == return_id]
-    require(len(dispatches) == len(returns) == 1, 'orchestration needs unique actual dispatch and final return events')
-    dispatch_line, dispatched = dispatches[0]
-    return_line, returned = returns[0]
+        if item.get('type') != 'response_item':
+            continue
+        payload = item.get('payload', {})
+        if payload.get('type') == 'function_call' and payload.get('call_id') == dispatch_id:
+            dispatch_count += 1
+            dispatch_line, dispatched = number, item
+        if payload.get('type') == 'agent_message' and payload.get('id') == return_id:
+            return_count += 1
+            return_line, returned = number, item
+    require(dispatch_count == return_count == 1, 'orchestration needs unique actual dispatch and final return events')
     call, message = dispatched['payload'], returned['payload']
     require(call.get('namespace') == 'collaboration' and call.get('name') == method, 'wrong orchestration dispatch method')
     args = json.loads(call['arguments'])
@@ -826,10 +839,22 @@ def _orchestration_turn(path, dispatch_id, return_id, method, agent_id=None):
         require(method == 'followup_task' and agent_id == author, 'candidate research must return from the same agent')
         require(args.get('target') in (author, author.rsplit('/', 1)[-1]), 'candidate follow-up targets a different agent')
     require(dispatch_line < return_line and instant(dispatched['timestamp']) <= instant(returned['timestamp']), 'orchestration return predates dispatch')
-    outputs = [v['payload'] for n, v in items if dispatch_line < n < return_line and v['payload'].get('type') == 'function_call_output'
-               and v['payload'].get('call_id') == dispatch_id]
-    require(len(outputs) == 1, 'orchestration dispatch has no actual tool receipt')
-    output = outputs[0].get('output')
+    receipt_count, output, continuations = 0, None, []
+    for number, item in enumerate(_orchestration_items(path), 1):
+        if not dispatch_line < number < return_line or item.get('type') != 'response_item':
+            continue
+        q = item['payload']
+        if q.get('type') == 'function_call_output' and q.get('call_id') == dispatch_id:
+            receipt_count += 1
+            output = q.get('output')
+        if q.get('type') == 'agent_message' and q.get('author') == author:
+            prior = '\n'.join(c.get('text', '') for c in q.get('content', []))
+            require(not prior.startswith('Message Type: FINAL_ANSWER\n'), 'earlier completed return must be registered before a later phase')
+        if q.get('type') == 'function_call' and q.get('name') == 'followup_task':
+            intervening = json.loads(q['arguments'])
+            if intervening.get('target') in (author, author.rsplit('/', 1)[-1]):
+                continuations.append({'call_id': q['call_id'], 'hash': digest(item)})
+    require(receipt_count == 1, 'orchestration dispatch has no actual tool receipt')
     try:
         decoded = json.loads(output) if isinstance(output, str) else output
     except ValueError:
@@ -837,16 +862,6 @@ def _orchestration_turn(path, dispatch_id, return_id, method, agent_id=None):
     require(not (isinstance(decoded, dict) and (decoded.get('isError') or decoded.get('error'))), 'orchestration dispatch failed')
     if isinstance(decoded, dict) and 'task_name' in decoded:
         require(decoded['task_name'] == author, 'dispatch receipt identifies a different agent')
-    continuations = []
-    for number, item in items:
-        q = item['payload']
-        if dispatch_line < number < return_line and q.get('type') == 'agent_message' and q.get('author') == author:
-            prior = '\n'.join(c.get('text', '') for c in q.get('content', []))
-            require(not prior.startswith('Message Type: FINAL_ANSWER\n'), 'earlier completed return must be registered before a later phase')
-        if dispatch_line < number < return_line and q.get('type') == 'function_call' and q.get('name') == 'followup_task':
-            intervening = json.loads(q['arguments'])
-            if intervening.get('target') in (author, author.rsplit('/', 1)[-1]):
-                continuations.append({'call_id':q['call_id'], 'hash':digest(item)})
     content = '\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') in ('input_text', 'text'))
     require(content.startswith('Message Type: FINAL_ANSWER\n') and '\nPayload:\n' in content, 'orchestration message is not an actual final answer')
     require('\nSender: ' + author + '\n' in content, 'orchestration final sender mismatch')
@@ -870,7 +885,7 @@ def _main_input_review(value, request_id, input_id, dispatch_id):
     return value
 
 
-def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None):
+def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None, additional=None):
     """Dispatch and actual final are verified; inner reads remain a declared main review."""
     with locked(root):
         req = _load(root, 'requests', request_id)
@@ -879,10 +894,16 @@ def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, r
         proof = _orchestration_turn(rollout_path, dispatch_call_id, return_message_id, 'spawn_agent')
         require(proof['started_at'] >= instant(req['created_at']).timestamp(), 'independent dispatch predates the frozen request')
         _main_input_review(input_review, request_id, req['independent_input_id'], dispatch_call_id)
+        supplement = {}
+        if additional is not None:
+            context = _review_evidence(root, req, None, additional)
+            require(instant(context['knowledge_cutoff']).timestamp() <= proof['completed_at'],
+                    'independent supplement is after the actual completed answer')
+            supplement['evidence_context'] = context
         return _save(root, 'independent', 'independent_id', {'schema': 'BTC_RESEARCH_INDEPENDENT_V4',
             'request_id': request_id, 'agent_id': proof['agent_id'], 'rollout_path': str(Path(rollout_path).resolve()),
             'input_id': req['independent_input_id'], 'summary': proof['analysis'],
-            **_public_result(root, req, proof['analysis']), 'started_at': proof['started_at'],
+            **_public_result(root, req, proof['analysis'], additional), **supplement, 'started_at': proof['started_at'],
             'completed_at': proof['completed_at'], 'verification_scope': ORCHESTRATED_SCOPE,
             'dispatch_call_id': dispatch_call_id, 'return_message_id': return_message_id,
             'trace_proof': {k: proof[k] for k in ('dispatch_line', 'return_line', 'dispatch_hash', 'return_hash')},
