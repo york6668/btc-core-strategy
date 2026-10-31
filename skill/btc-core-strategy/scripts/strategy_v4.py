@@ -120,6 +120,7 @@ def main(argv=None):
     for flag in ('request','rollout','dispatch','returned','input-review'):
         p.add_argument('--'+flag,required=True)
     p.add_argument('--guard-attempt')
+    p.add_argument('--additional', help='archived supplementary public evidence disclosed before the actual final answer')
     p = sub.add_parser('research-orchestrated-result')
     p.add_argument('--spec',required=True)
     p.add_argument('--guard-attempt')
@@ -278,7 +279,7 @@ def main(argv=None):
         elif args.command == 'research-result':
             result=research.result(args.root,read(args.spec),args.guard_attempt)
         elif args.command == 'research-orchestrated-independent':
-            result=research.orchestrated_independent(args.root,args.request,args.rollout,args.dispatch,args.returned,read(args.input_review),args.guard_attempt)
+            result=research.orchestrated_independent(args.root,args.request,args.rollout,args.dispatch,args.returned,read(args.input_review),args.guard_attempt,additional=args.additional)
         elif args.command == 'research-orchestrated-result':
             result=research.orchestrated_result(args.root,read(args.spec),args.guard_attempt)
         elif args.command == 'research-market-amendment':

@@ -123,6 +123,72 @@ class NativeResearchTransportTests(unittest.TestCase):
         self.assertEqual(archived['market_result'],self.public)
         self.assertEqual(archived['public_result_reference'],self.reference)
 
+    def test_orchestrated_current9_public_reference_consumes_original_and_added_sources(self):
+        import test_market_observation as market_fixture
+        from v4 import evidence
+        later = (instant(T2) + timedelta(seconds=60)).isoformat()
+        completed = (instant(T2) + timedelta(seconds=120)).isoformat()
+        spec = {k: deepcopy(v) for k, v in self.package.items() if k not in ('schema', 'evidence_id')}
+        spec['cutoff'] = later
+        files = {s['id']: self.directory / 'raw' / (s['raw_hash'][7:] + '.json') for s in spec['sources']}
+        for name, payload in (('market', market_fixture.evidence(int(instant(T2).timestamp()))),
+                              ('supplement', {'observation': 110})):
+            raw = self.root / (name + '-generated.json')
+            create(raw, payload)
+            spec['sources'].append(dict(self.package['sources'][0], id=name, raw_hash=digest(raw.read_bytes()),
+                retrieved_at=later))
+            files[name] = raw
+        directory = self.root / 'generated-supplement'
+        package = evidence.freeze(spec, files, directory)
+        storage.archive_evidence(self.root, directory)
+        req = research._save(self.root, 'requests', 'request_id', dict(
+            {k: v for k, v in self.req.items() if k != 'request_id'},
+            issue_key='BTC_CYCLE', market_cutoff=T2, knowledge_cutoff=T2))
+        public = deepcopy(self.public)
+        for market in public['outlook']['market_assessment']['markets']:
+            for horizon in market['horizons']:
+                forward = horizon['forward']
+                forward['lifecycle']['claim'].update(formed_at=later, data_cutoff=later)
+                forward['observed_window'] = {'start': later, 'end': later}
+                forward['judgement_window']['start'] = later
+        public['outlook']['refs'].append({'source_id': 'supplement', 'pointer': '/observation', 'value_hash': digest(110)})
+        reference = self.output(public)
+        author = '/root/generated_public'
+        args = {'task_name': 'generated_public', 'fork_turns': 'none', 'model': 'gpt-6-astra', 'reasoning_effort': 'max'}
+        events = [
+            {'timestamp': later, 'type': 'response_item', 'payload': {'type': 'function_call', 'namespace': 'collaboration',
+                'name': 'spawn_agent', 'call_id': 'SPAWN', 'arguments': json.dumps(args)}},
+            {'timestamp': later, 'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': 'SPAWN',
+                'output': json.dumps({'task_name': author})}},
+            {'timestamp': completed, 'type': 'response_item', 'payload': {'type': 'agent_message', 'id': 'FINAL', 'author': author,
+                'content': [{'type': 'input_text', 'text': 'Message Type: FINAL_ANSWER\nSender: ' + author + '\nPayload:\n' + json.dumps(reference)}]}}]
+        path = self.root / 'generated-parent.jsonl'
+        path.write_text('\n'.join(json.dumps(e) for e in events) + '\n')
+        review = {'reviewer_role': 'MAIN', 'request_id': req['request_id'], 'input_id': req['independent_input_id'],
+            'dispatch_call_id': 'SPAWN', 'material_review': 'Generated raw-only disclosure review.',
+            'phase_order_review': 'Generated public-only phase.', 'evidence_refs': ['Generated original and supplementary disclosures.']}
+        with mock.patch('v4.forward_lifecycle.now', return_value=completed):
+            with self.assertRaisesRegex(Invalid, 'reference source absent|exceeds cutoff'):
+                research.orchestrated_independent(self.root, req['request_id'], path, 'SPAWN', 'FINAL', review)
+            saved = research.orchestrated_independent(self.root, req['request_id'], path,
+                'SPAWN', 'FINAL', review, additional=directory)
+        self.assertEqual(saved['market_result'], public)
+        self.assertEqual(saved['public_result_reference'], reference)
+        self.assertEqual(saved['market_result_hash'], digest(public))
+        self.assertEqual(saved['evidence_context']['evidence_id'], package['evidence_id'])
+        self.assertEqual(saved['evidence_context']['knowledge_cutoff'], later)
+        self.assertEqual(saved['input_id'], req['independent_input_id'])
+        self.assertFalse(saved['inner_tool_trace_verified'])
+        self.assertEqual(research._load(self.root, 'requests', req['request_id']), req)
+        # An appended source does not bypass original revision9 value checks.
+        public['outlook']['refs'][-1]['value_hash'] = digest(999)
+        bad = self.output(public)
+        events[-1]['payload']['content'][0]['text'] = events[-1]['payload']['content'][0]['text'].replace(json.dumps(reference), json.dumps(bad))
+        path.write_text('\n'.join(json.dumps(e) for e in events) + '\n')
+        with self.assertRaisesRegex(Invalid, 'raw value reference mismatch'):
+            research.orchestrated_independent(self.root, req['request_id'], path,
+                'SPAWN', 'FINAL', review, additional=directory)
+
     def test_reference_cannot_change_bytes_hash_filename_or_owner_directory(self):
         path=self.root/self.reference['path']
         original=path.read_bytes();path.write_bytes(original+b' ')
