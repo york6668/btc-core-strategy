@@ -190,11 +190,11 @@ class SchedulerTests(unittest.TestCase):
             calls.append(task['attempt_id'])
             return {'outcome': 'UNKNOWN', 'kind': 'RESULT_UNVERIFIED', 'detail': 'no proof'}
 
-        with patch('node_scheduler_worker.require_admission', side_effect=node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')):
+        # Projection can evict release modules from sys.modules. Patch the
+        # actual worker object retained by this fixture, not a reimport by name.
+        with patch.object(node_scheduler_worker, 'require_admission', side_effect=node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')):
             blocked = node_scheduler_worker.run_once(config, Client(), uncertain)
-            self.assertEqual('USAGE_GUARD_BLOCKED_NO_CLAIM', blocked['action'],
-                             {'result': blocked, 'worker': node_scheduler_worker.__file__,
-                              'function': node_scheduler_worker.run_once.__code__.co_filename})
+            self.assertEqual('USAGE_GUARD_BLOCKED_NO_CLAIM', blocked['action'], blocked)
         self.assertEqual([], calls)
         self.assertTrue(all(t['state'] != 'RUNNING' for t in tasks.status(db)['tasks']))
         result = node_scheduler_worker.run_once(config, Client(), uncertain)
@@ -222,11 +222,9 @@ class SchedulerTests(unittest.TestCase):
                 raise AssertionError(method)
         config = {'project_dir': str(self.root / 'project'), 'release_root': str(self.root),
                   'node_scheduler': {'enabled': True, 'attempt_dir': str(self.root / 'late-denial'), 'codex_cli': str(self.cli)}}
-        with patch('node_scheduler_worker.require_admission', side_effect=[{}, node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')]):
+        with patch.object(node_scheduler_worker, 'require_admission', side_effect=[{}, node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')]):
             got = node_scheduler_worker.run_once(config, Client())
-        self.assertEqual(got['action'], 'REJECTED_BEFORE_MODEL_DISPATCH',
-                         {'result': got, 'worker': node_scheduler_worker.__file__,
-                          'function': node_scheduler_worker.run_once.__code__.co_filename})
+        self.assertEqual(got['action'], 'REJECTED_BEFORE_MODEL_DISPATCH', got)
         finished = next(p for method, p in operations if method == 'task.reconcile')
         self.assertEqual(finished['outcome'], 'NOT_EXECUTED')
         self.assertNotIn('task.finish', [m for m, p in operations])
