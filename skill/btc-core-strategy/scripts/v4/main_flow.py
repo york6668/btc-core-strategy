@@ -35,14 +35,30 @@ def sections_for_revision(revision):
     return SECTIONS + (('factor_assessment',) if revision >= 4 else ())
 
 
-def validate_contract(draft, *, historical=False):
-    exact(draft['provenance'], 'role model effort agent_id run_ref', 'main provenance')
-    p = draft['provenance']
-    models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {market.CURRENT_HOURLY_MODEL['name']}
-    require(p['role'] == 'MAIN' and p['model'] in models and p['effort'] == 'high',
-            'new main assessment requires actual '+market.CURRENT_HOURLY_MODEL['name']+'/high (Sol/high MAIN); historical completions retain their original model')
+def validate_provenance(p, *, historical=False):
+    extra = ' configuration_evidence' if 'configuration_evidence' in p else ''
+    exact(p, 'role model effort agent_id run_ref' + extra, 'main provenance')
+    require(p['role'] == 'MAIN', 'main role required')
     for key in ('agent_id', 'run_ref'):
         text(p[key], 'actual main ' + key)
+    if extra:
+        from . import durable_proof
+        proof = p['configuration_evidence']
+        exact(proof, 'scope proof_path proof_hash runtime_configuration_verified', 'MAIN configuration evidence')
+        require(p['model'] is None and p['effort'] is None and proof['runtime_configuration_verified'] is False
+                and proof['scope'] == durable_proof.MAIN_SCOPE, 'unverified MAIN configuration must remain null')
+        path = Path(proof['proof_path'])
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 16384,
+                'MAIN source manifest missing or invalid')
+        require(digest(path.read_bytes()) == proof['proof_hash'], 'MAIN source manifest changed')
+        return durable_proof.main_identity(path, p['agent_id'], p['run_ref'])
+    models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {market.CURRENT_HOURLY_MODEL['name']}
+    require(p['model'] in models and p['effort'] == 'high',
+            'new main assessment requires actual '+market.CURRENT_HOURLY_MODEL['name']+'/high (Sol/high MAIN); historical completions retain their original model')
+
+
+def validate_contract(draft, *, historical=False):
+    validate_provenance(draft['provenance'], historical=historical)
     c = draft['conclusion']
     exact(c, 'business_meaning narrative', 'current core conclusion')
     require(isinstance(c['business_meaning'], dict) and c['business_meaning'], 'completed core conclusion needs reviewed business meaning')

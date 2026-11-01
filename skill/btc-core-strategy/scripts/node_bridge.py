@@ -275,13 +275,34 @@ def sync_facts(project, directory):
 
 
 def copy_proof(source, directory, seen=None):
-    """Copy only an explicitly requested native transcript and its actual parents."""
+    """Copy an explicit native transcript or durable proof and its bound sources."""
     seen = set() if seen is None else seen
     if source in seen:
         raise ValueError('cyclic native proof history')
     seen.add(source)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     original = source.read_bytes()
+    from v4 import durable_proof
+    if durable_proof.is_manifest(source):
+        for raw_source in durable_proof.source_files(source):
+            raw = raw_source.read_bytes()
+            target = directory / raw_source.name
+            if target.exists():
+                if target.is_symlink() or target.read_bytes() != raw:
+                    raise ValueError('immutable durable source bridge collision')
+            else:
+                with target.open('xb') as stream:
+                    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+                target.chmod(0o600)
+        target = directory / source.name
+        if target.exists():
+            if target.is_symlink() or target.read_bytes() != original:
+                raise ValueError('immutable durable proof bridge collision')
+        else:
+            with target.open('xb') as stream:
+                stream.write(original); stream.flush(); os.fsync(stream.fileno())
+            target.chmod(0o600)
+        return
     first = json.loads(original.splitlines()[0]).get('payload', {})
     target = directory / source.name
     temporary = directory / ('.' + source.name + '.tmp')

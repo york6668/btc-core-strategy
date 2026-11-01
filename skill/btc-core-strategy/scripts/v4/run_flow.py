@@ -506,6 +506,16 @@ def result_paths(run, status):
 
 
 def identity(run):
+    if run.get('main_provenance') is not None:
+        from .main_flow import validate_provenance
+        value = deepcopy(run['main_provenance'])
+        validate_provenance(value)
+        require(value['agent_id'] == run['agent_id'] and value['run_ref'] == run['run_ref'],
+                'explicit MAIN provenance belongs to another run')
+        return value
+    # Existing native assignments retain their contract. A durable caller must
+    # supply its evidence-bound identity; never fill its null fields from this
+    # scheduled native assignment.
     return {'role': 'MAIN', 'model': market.CURRENT_HOURLY_MODEL['name'], 'effort': market.CURRENT_HOURLY_MODEL['reasoning_effort'],
             'agent_id': run['agent_id'], 'run_ref': run['run_ref']}
 

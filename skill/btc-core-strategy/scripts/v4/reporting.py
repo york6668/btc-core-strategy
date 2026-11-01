@@ -387,9 +387,8 @@ def record(root, spec, *, prepared_context=None):
         require(isinstance(spec['purposes'],list) and set(spec['purposes']) <= {'MARKET_SUMMARY','STRATEGY_UPDATE'},'invalid report purposes')
         for key in ('reason','next_observation','baseline_review','applicability_review'):
             text(spec[key],key); require(len(spec[key].strip())>=12,key+' requires concrete model judgement')
-        p=spec['provenance']; exact(p,'role model effort agent_id run_ref','report provenance')
-        require(p['role']=='MAIN' and p['model']==market.CURRENT_HOURLY_MODEL['name'] and p['effort']=='high','report judgement belongs to Sol/high MAIN')
-        text(p['agent_id'],'actual main agent');text(p['run_ref'],'actual main run')
+        from .main_flow import validate_provenance
+        validate_provenance(spec['provenance'])
         pending_cycle = ctx.get('cycle_policy_revision') == 1 and ctx['cycle_baseline']['status'] != 'CURRENT'
         current_fact_version = facts(Path(root).parent.parent)
         assessment_fact_version = storage.current(root)['assessment']['fact_version']

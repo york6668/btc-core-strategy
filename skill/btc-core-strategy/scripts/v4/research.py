@@ -811,6 +811,9 @@ def _orchestration_items(path, limit=None, seen=None):
 
 def _orchestration_turn(path, dispatch_id, return_id, method, agent_id=None):
     """Read real parent dispatch/return events; do not invent native child turns."""
+    from . import durable_proof
+    if durable_proof.is_manifest(path):
+        return durable_proof.turn(path, dispatch_id, return_id, method, agent_id)
     dispatch_count = return_count = 0
     dispatched = returned = None
     # The author is established by the unique final. A second streaming pass
@@ -885,6 +888,13 @@ def _main_input_review(value, request_id, input_id, dispatch_id):
     return value
 
 
+def _same_orchestration_author(previous, current):
+    original = previous.get('source_verification', {}).get('author_thread_id')
+    if original:
+        require(current.get('source_verification', {}).get('author_thread_id') == original,
+                'durable continuation must retain the original author thread')
+
+
 def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None, additional=None):
     """Dispatch and actual final are verified; inner reads remain a declared main review."""
     with locked(root):
@@ -904,7 +914,8 @@ def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, r
             'request_id': request_id, 'agent_id': proof['agent_id'], 'rollout_path': str(Path(rollout_path).resolve()),
             'input_id': req['independent_input_id'], 'summary': proof['analysis'],
             **_public_result(root, req, proof['analysis'], additional), **supplement, 'started_at': proof['started_at'],
-            'completed_at': proof['completed_at'], 'verification_scope': ORCHESTRATED_SCOPE,
+            'completed_at': proof['completed_at'], 'verification_scope': proof.get('verification_scope', ORCHESTRATED_SCOPE),
+            **({'source_verification': proof['source_verification']} if 'source_verification' in proof else {}),
             'dispatch_call_id': dispatch_call_id, 'return_message_id': return_message_id,
             'trace_proof': {k: proof[k] for k in ('dispatch_line', 'return_line', 'dispatch_hash', 'return_hash')},
             'input_review': input_review, 'continuations':proof['continuations'],
@@ -928,7 +939,8 @@ def orchestrated_result(root, spec, guard_attempt=None):
         continued_public = (isinstance(amendment, dict)
             and amendment.get('source_phase') in PUBLIC_ARTIFACT_SCOPES
             and phase.get('verification_scope') == PUBLIC_ARTIFACT_SCOPES[amendment['source_phase']])
-        require(phase.get('verification_scope') == ORCHESTRATED_SCOPE or continued_public,
+        from .durable_proof import SCOPE as durable_scope
+        require(phase.get('verification_scope') in (ORCHESTRATED_SCOPE, durable_scope) or continued_public,
                 'native research must retain native input-read verification')
         require(req['request_id'] == disclosed['request_id'] == phase['request_id'], 'orchestrated phases bind different requests')
         # Recheck PUBLIC through its frozen proof. APPROVAL keeps its own
@@ -939,6 +951,7 @@ def orchestrated_result(root, spec, guard_attempt=None):
         if 'continuations' in phase:
             require(first['continuations'] == phase['continuations'], 'independent phase continuation trace changed')
         proof = _orchestration_turn(spec['rollout_path'], spec['dispatch_call_id'], spec['return_message_id'], 'followup_task', phase['agent_id'])
+        _same_orchestration_author(first, proof)
         require(proof['started_at'] >= instant(disclosed['revealed_at']).timestamp(), 'candidate follow-up predates candidate disclosure')
         read_input(root, req['request_id'], 'candidate', spec['candidate_id'])
         _main_input_review(spec['input_review'], req['request_id'], spec['candidate_id'], spec['dispatch_call_id'])
@@ -948,7 +961,8 @@ def orchestrated_result(root, spec, guard_attempt=None):
             **({'cycle_review': cycle_review} if cycle_review is not None else {}),
             'issue_id': req['issue_id'], 'agent_id': phase['agent_id'], 'analysis': proof['analysis'],
             'scope': req['scope'], 'fact_version': _result_facts(req, disclosed), **_result_evidence(req, disclosed),
-            'independent_id': phase['independent_id'], 'verification_scope': ORCHESTRATED_SCOPE,
+            'independent_id': phase['independent_id'], 'verification_scope': proof.get('verification_scope', ORCHESTRATED_SCOPE),
+            **({'source_verification': proof['source_verification']} if 'source_verification' in proof else {}),
             'trace_proof': {k: proof[k] for k in ('dispatch_line', 'return_line', 'dispatch_hash', 'return_hash')},
             'inner_tool_trace_verified': False, 'os_input_isolation_verified': False, 'completed_at': now()})
 
@@ -1015,6 +1029,26 @@ def _referenced_public_result(root, reference):
         require(False,'public result reference must contain UTF-8 JSON')
 
 
+def _same_frozen_forward_text_correction(value, previous):
+    """A wording correction cannot manufacture a later forecast observation.
+
+    Only the three prose locations used by a public correction may differ.
+    All forecasts, reviews, evidence references, directions and other semantic
+    fields must retain their exact already-validated bytes and values.
+    """
+    from copy import deepcopy
+    def fixed(result):
+        result = deepcopy(result)
+        result['market_report'] = None
+        for item in result['outlook']['market_assessment']['markets']:
+            for horizon in item['horizons']:
+                horizon['basis'] = None
+        for factor in result['factor_assessment']['items']:
+            factor['assessment'] = None
+        return result
+    return previous is not None and fixed(value) == fixed(previous)
+
+
 def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
     if req.get('workflow_revision', 4) < 5:
         return {}
@@ -1033,6 +1067,18 @@ def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
     prior_result = (prior_phase or {}).get('market_result')
     prior_market = (prior_result['outlook']['market_assessment'] if prior_result else
                     ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment'))
+    original_cutoff = None
+    if prior_result is not None:
+        original_cutoff = ((prior_phase or {}).get('public_evidence_inputs')
+                           or (prior_phase or {}).get('evidence_context') or req).get('knowledge_cutoff')
+        if original_cutoff is None:
+            original_cutoff = read(Path(root) / 'evidence' / req['evidence_id'][7:] / 'evidence.json')['cutoff']
+    if (prior_result is not None and instant(package['cutoff']) == instant(original_cutoff)
+            and _same_frozen_forward_text_correction(result, prior_result)):
+        # Revalidate unchanged forecasts against their original request input,
+        # at the same original evidence cutoff. This does not grant a later
+        # outcome or renew a forecast; saving retains its first registration.
+        prior_market = ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment')
     market_state.validate_assessment(result['outlook']['market_assessment'], resolve, package['cutoff'], rev, prior_market, lifecycle_root=root)
     previous = prior_result['outlook']['dispute_zones'] if prior_result else historical.get('historical_dispute_zones', [])
     market_state.validate_zones(result['outlook']['dispute_zones'], resolve, prior=previous, cutoff=package['cutoff'], revision=rev)
@@ -1309,6 +1355,7 @@ def _verify_market_amendment(phase, root=None):
         else:
             proof = _orchestration_turn(amendment['rollout_path'], amendment['dispatch_call_id'],
                 amendment['return_message_id'], 'followup_task', phase['agent_id'])
+            _same_orchestration_author(phase, proof)
             require(proof['dispatch_hash'] == amendment['dispatch_hash'] and proof['return_hash'] == amendment['return_hash'],
                     'public market amendment trace changed')
             analysis = proof['analysis']
@@ -1398,6 +1445,7 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
         else:
             require(dispatch_call_id is not None and return_message_id is not None, 'actual amendment phase required')
             proof = _orchestration_turn(rollout_path, dispatch_call_id, return_message_id, 'followup_task', phase['agent_id'])
+            _same_orchestration_author(phase, proof)
             amendment = {'dispatch_call_id': dispatch_call_id, 'return_message_id': return_message_id,
                          'dispatch_hash': proof['dispatch_hash'], 'return_hash': proof['return_hash']}
         require(proof['started_at'] >= phase['completed_at'], 'amendment predates the independent result')

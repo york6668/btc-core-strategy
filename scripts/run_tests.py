@@ -27,6 +27,10 @@ SYNTHETIC_RESEARCH_MODULES = ('test_closed_loop', 'test_cycle_workflow', 'test_d
     'test_evidence_reasoning', 'test_investment', 'test_market_independence', 'test_market_state',
     'test_portfolio_risk', 'test_system_amendment_clock', 'test_system_research_transport',
     'test_workflow_research')
+# Durable transport cases reuse the same generated historical workflow fixture;
+# current revision9 content and real admission remain separate checks.
+HISTORICAL_CONTRACT_MODULES += ('test_durable_research_proof',)
+SYNTHETIC_RESEARCH_MODULES += ('test_durable_research_proof',)
 
 
 def main():

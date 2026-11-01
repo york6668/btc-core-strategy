@@ -289,6 +289,20 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 
 原节点传输同时核验客户端退出码和严格布尔响应；非零退出不能凭成功JSON认定完成。未知响应保留原operation、阶段、退出码或启动errno、输出长度与散列，不在错误中复制原始stderr、环境或凭据。客户端permission denied、程序拒绝、工具执行前审核拒绝和根因证明分别记录；诊断类别不证明任务策略来源，也不授权重试或改写入通道。原operation核清前不重发，恢复合法执行条件后仍由原报告链核新鲜输入、质量、记录和真实送达；源码或离线通过不证明运行已采用或报告已恢复。
 
+### durable作者来源适配
+
+`research-orchestrated-independent`、`research-orchestrated-result`及原同作者amendment可将`--rollout`指向`BTC_DURABLE_AUTHOR_PROOF_V1`清单，保留原生JSONL路径。清单固定`provider=mcp__codex_app__read_thread`、`parent/child={path,sha256}`及真实`parent_turn_id/child_turn_id`；来源文件为同目录按原始响应字节摘要命名的JSON。原工具响应逐字保存，不按另一宿主格式重建日志。`--dispatch`取真实`subAgentActivity.id`，`--returned`取子线程实际`final_answer`消息ID。
+
+程序核官方durable父子关系、唯一started/interacted与对应完成活动、同一作者线程、成功终态、真实时钟及唯一FINAL；结果仍绑定原请求、冻结输入、补证截止、完整候选和原COMPLETE阶段claim。后续批准及修订重验原始来源字节，原PUBLIC和各后继阶段保留独立证明，不能将PORTFOLIO冒充APPROVAL。节点桥接只复制清单及两份摘要绑定的原始响应，不复制无关会话或改写事件。
+
+此路径的`verification_scope=DURABLE_AUTHOR_FINAL_AND_MAIN_INPUT_REVIEW`只证明所列范围。`source_verification`明确保留`runtime_model/runtime_effort/runtime_fork_turns=null`、`runtime_configuration_verified=false`及`inbound_messages_verified=false`；不以claim型号、提示语或作者自述补为平台事实。实际派发仍依项目Astra/max分工，MAIN按可得原输入、公开文件、读取轨迹及实际阶段审阅，说明未暴露部分；原独立性只能按这份证据强度表达。平台未导出历史配置不使真实完成成果失效，也不授权伪造来源、另跑研究、绕过锁或权限。
+
+这调整的是项目的来源消费契约，保留作者与证据可追溯、公开先于个人、同作者完整候选审阅、内容实质验收和用户事实边界。任何明确要求逐字段运行配置证明的未来任务，应选能提供该证明的正常入口；不能把本适配范围写成已满足更强证明。
+
+同知识截止的纯正文纠错若仅改变 market_report、horizon.basis 或 factor.assessment，其他字段（包括全部 forward/lifecycle、方向与引用）逐值未变，则按原请求输入重新核验原冻结前瞻，不要求作者补造一次后验观察。原 claim 首次登记保持原样；截止时间变化或任一其他字段变化仍走正常后继校验，正文修正不构成预测兑现或续期。
+
+同一 durable MAIN 的正式映射及报告也不得把预期 Sol/high 写成已证实配置。其 provenance 使用真实 MAIN thread ID 作为 agent_id、实际 run_ref、model/effort=null，并提供 configuration_evidence={scope:DURABLE_MAIN_THREAD_TURN_AND_RUN_ENTRY,proof_path,proof_hash,runtime_configuration_verified:false}。BTC_DURABLE_MAIN_PROOF_V1 清单绑定官方原响应的 thread/turn、本节点配置所指 bin/btc-core 的独立 enter 命令及其完整成功 JSON 输出；run_ref、ACTIVE、固定发布目录与节点配置必须相符，不能由多行 shell 的整体退出码冒充入口成功。原响应为摘要命名的同目录文件。MAIN turn 可正在执行，不能强求提交本轮结果前先结束本轮。已暴露配置、错误或失败入口、改过的原件以及 thread/turn/run 错绑均不接受该未知分支；原 native/历史契约保留。调用方先用现有 copy_proof 固定清单及原响应到共享 native proof 目录，再将容器可读路径绑定到 identity；不假设嵌套 proof_path 会自动桥接。正式映射与 report-review 共用验证，明确传入运行身份时不再由 run_flow 的原生调度预期填充空字段。这份来源不证明未导出的模型配置，也不替代原研究作者的真实 APPROVAL。
+
 新完整链验收必须实际经过原 `research.request/read_input/_public_result` 的市场、前景和完整 `factor_assessment={items,summary}` 合同，冻结公开阶段后才读取个人事实并完成同一原研究的候选审阅、主Owner映射与报告消费。只把已有散文填成固定 semantic、旁路 factors 或造空 legacy Owner 的消费者回放，不能代替原链完成。事实、后续反馈和成稿须分别保留原身份及实际时钟；无新形成后市场事实时说明尚无自然后验。合成支持/部分/证伪/未知及范围测试单独标记，验收模型是否维持、降级、替代或撤回对应命题，不能只验反馈进入payload。独立语义审阅对照实际主因形成、一步前瞻、反证影响、原入口/消费者和正文；失败全文与实质正例均需判定，字段、关键词、测试通过不提供语义评分。
 
 同作者已完成的 PORTFOLIO 回合若在真实 FINAL 中明确声明后来公开更新、原公开未改且尚未登记，可沿既有 `research-market-amendment --source-phase PORTFOLIO` 消费该公开子产物。程序核同作者实际 followup/FINAL、原 COMPLETE/PORTFOLIO claim 与同一不可变 creator proof，核 FINAL 的 manifest/path/hash 与 active public 条目、root 内原件及不可变公开副本；不读取或登记个人提案为批准。公开 review 绑定的原 canonical EvidenceBundle 及原知识钟联合形成临时校验视图，视图创建不代表作者曾读取一个后来新包，不能传后造 Sol merge 倒填。后继公共验证以实际原公开 Owner 为 prior，保留既有 claim/data_cutoff/lifecycle；记录 `DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_PORTFOLIO`，不称新盲评。默认 PUBLIC_CORRECTION 及其原票据标准保留，没有相位 fallback；完整候选仍须真实 reveal 后由原作者实际审阅，PORTFOLIO 更新不等于 APPROVAL 或正式采纳。 后继真实 APPROVAL 结果可沿原 orchestrated-result 消费这个已验真的公开 Owner，先重验原 PORTFOLIO amendment/manifest，再核原 PUBLIC spawn、同作者候选 followup/FINAL 与独立 APPROVAL 票据；不把该公开后继标签当 native input-read 证明，也不混用旧票据。

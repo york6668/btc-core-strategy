@@ -36,10 +36,11 @@ class AmendmentRegistrationClockTests(unittest.TestCase):
         self.later = instant(T2) + timedelta(days=1)
         self.freeze_at = (self.later + timedelta(seconds=11)).isoformat()
 
-    def amend(self, public):
-        for market in public['outlook']['market_assessment']['markets']:
-            for horizon in market['horizons']:
-                horizon['forward']['prior_check'] = {'outcome':'EVIDENCE_LIMITED','explanation':'Generated continuing review with no new realization evidence.','refs':[]}
+    def amend(self, public, *, preserve_forward=False):
+        if not preserve_forward:
+            for market in public['outlook']['market_assessment']['markets']:
+                for horizon in market['horizons']:
+                    horizon['forward']['prior_check'] = {'outcome':'EVIDENCE_LIMITED','explanation':'Generated continuing review with no new realization evidence.','refs':[]}
         reference = self.fixture.output(public)
         proof = {'started_at': self.later.timestamp() - 1,
                  'completed_at': self.later.timestamp() + 10,
@@ -87,6 +88,29 @@ class AmendmentRegistrationClockTests(unittest.TestCase):
                          len(self.old_records))
         for path in self.old_records:
             self.assertEqual(read(path)['registered_at'], json.loads(self.old_records[path])['registered_at'])
+        self.assert_old_registrations_unchanged()
+
+    def test_text_only_correction_does_not_require_invented_later_outcome(self):
+        public = deepcopy(self.fixture.public)
+        public['market_report'] += '\nCorrected wording with identical original facts and forecasts.'
+        public['outlook']['market_assessment']['markets'][0]['horizons'][0]['basis'] += ' Corrected prose.'
+        for factor in public['factor_assessment']['items']:
+            factor['assessment'] += ' Corrected prose.'
+        amended = self.amend(public, preserve_forward=True)
+        self.assertEqual(amended['market_result'], public)
+        self.assert_old_registrations_unchanged()
+        self.assertEqual(len(list((self.root / 'market-lifecycle/claims').glob('*.json'))), len(self.old_records))
+
+    def test_text_correction_cannot_hide_changed_forecast_or_direction(self):
+        for field in ('direction', 'forward'):
+            public = deepcopy(self.fixture.public)
+            horizon = public['outlook']['market_assessment']['markets'][0]['horizons'][0]
+            if field == 'direction':
+                horizon['direction'] = 'BEARISH' if horizon['direction'] != 'BEARISH' else 'BULLISH'
+            else:
+                horizon['forward']['conditions'].append('Changed condition is not a prose correction')
+            with self.subTest(field=field), self.assertRaisesRegex(Invalid, 'actual outcome check'):
+                self.amend(public, preserve_forward=True)
         self.assert_old_registrations_unchanged()
 
 
