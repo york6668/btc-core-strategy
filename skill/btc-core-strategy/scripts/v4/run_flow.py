@@ -471,7 +471,17 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         brief['prior_proposition_roles'] = prior_proposition_roles(core)
         brief['accepted_corrections'] = accepted_corrections
         save(directory / 'context.json', brief)
-        save(directory / 'recovery.json', recovery)
+        # A market-stage reader may inspect the recovery inventory as well as
+        # the primary read set. Keep that sibling material public too; full
+        # maintenance, report reasons and displayed bodies belong to report.
+        recovery_material = ({
+            'current': recovery['current'],
+            'reports_not_enqueued': recovery['reports_not_enqueued'],
+            'report_review_required': recovery['report_review_required'],
+            'pending_work': deepcopy(brief['pending_work']),
+            'details_stage': 'report',
+        } if ctx.get('revision', 1) >= 5 else recovery)
+        save(directory / 'recovery.json', recovery_material)
         reads = material_reads.make(directory, 'observe', directory / 'context.json',
             compact=ctx.get('revision', 1) >= 5,
             required={'market_summary': directory / 'market-summary.json',
