@@ -191,7 +191,10 @@ class SchedulerTests(unittest.TestCase):
             return {'outcome': 'UNKNOWN', 'kind': 'RESULT_UNVERIFIED', 'detail': 'no proof'}
 
         with patch('node_scheduler_worker.require_admission', side_effect=node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')):
-            self.assertEqual('USAGE_GUARD_BLOCKED_NO_CLAIM', node_scheduler_worker.run_once(config, Client(), uncertain)['action'])
+            blocked = node_scheduler_worker.run_once(config, Client(), uncertain)
+            self.assertEqual('USAGE_GUARD_BLOCKED_NO_CLAIM', blocked['action'],
+                             {'result': blocked, 'worker': node_scheduler_worker.__file__,
+                              'function': node_scheduler_worker.run_once.__code__.co_filename})
         self.assertEqual([], calls)
         self.assertTrue(all(t['state'] != 'RUNNING' for t in tasks.status(db)['tasks']))
         result = node_scheduler_worker.run_once(config, Client(), uncertain)
@@ -221,7 +224,9 @@ class SchedulerTests(unittest.TestCase):
                   'node_scheduler': {'enabled': True, 'attempt_dir': str(self.root / 'late-denial'), 'codex_cli': str(self.cli)}}
         with patch('node_scheduler_worker.require_admission', side_effect=[{}, node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')]):
             got = node_scheduler_worker.run_once(config, Client())
-        self.assertEqual(got['action'], 'REJECTED_BEFORE_MODEL_DISPATCH')
+        self.assertEqual(got['action'], 'REJECTED_BEFORE_MODEL_DISPATCH',
+                         {'result': got, 'worker': node_scheduler_worker.__file__,
+                          'function': node_scheduler_worker.run_once.__code__.co_filename})
         finished = next(p for method, p in operations if method == 'task.reconcile')
         self.assertEqual(finished['outcome'], 'NOT_EXECUTED')
         self.assertNotIn('task.finish', [m for m, p in operations])
