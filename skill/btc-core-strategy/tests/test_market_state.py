@@ -107,6 +107,27 @@ class MarketStateTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid,'portfolio stage cannot edit'):
             run_flow.advance(prepared['run'],'observe',self.f.file(authored))
 
+    def test_market_recovery_inventory_does_not_expose_personal_report_conditions(self):
+        private = 'Synthetic private maintenance and report condition.'
+        recovery = storage.recover(self.store)
+        recovery['report_care']['active_maintenance'] = {'thesis': private}
+        recovery['report_delivery_obligations'] = [{'review_id': 'PENDING_REVIEW', 'reason': private}]
+        recovery['report_reviews_not_enqueued'] = deepcopy(recovery['report_delivery_obligations'])
+        recovery['outbox'] = [{'delivery_id': 'PENDING_DELIVERY', 'assistant': {'body': private}}]
+        before = run_flow.anchors(self.store, self.f.f.project)
+        with mock.patch.object(storage, 'recover', return_value=recovery):
+            prepared = self.f.prep()
+        inventory = read(Path(prepared['run']).parent / 'recovery.json')
+        self.assertNotIn(private, json.dumps(inventory))
+        self.assertNotIn('report_care', inventory)
+        self.assertNotIn('outbox', inventory)
+        self.assertEqual(inventory['current'], before['decision_id'])
+        self.assertEqual(inventory['reports_not_enqueued'], recovery['reports_not_enqueued'])
+        self.assertEqual(inventory['report_review_required'], recovery['report_review_required'])
+        self.assertEqual(inventory['pending_work']['undelivered_reports'], 1)
+        self.assertEqual(inventory['details_stage'], 'report')
+        self.assertEqual(before, run_flow.anchors(self.store, self.f.f.project))
+
     def test_open_market_assessment_does_not_require_five_legacy_patterns(self):
         _,result,public=self.observe(patterns=[])
         observed=sensing.observation(self.store,result['observation_id'])
