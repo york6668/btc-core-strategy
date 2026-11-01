@@ -559,7 +559,9 @@ def phase_material(run, label, stage='report'):
         return {'main_template': template, 'cycle_request_template': request, 'read_set': {'main': reads}}
     # Every observation still reviews report necessity. Body material is lazy.
     ctx = reporting.context(root)
-    prefix = label + '-authored-report-' + digest(ctx)[7:19]
+    # The same context has one physical template regardless of the caller's
+    # label. Body authoring then reuses the already read necessity material.
+    prefix = 'authored-report-' + digest(ctx)[7:19]
     full_path = save(d / (prefix + '-full.json'), ctx)
     brief_path = save(d / (prefix + '-context.json'), report_brief(ctx))
     form = report_template(ctx)
@@ -576,9 +578,31 @@ def phase_material(run, label, stage='report'):
     if stage == 'report-body':
         extra = {'layout_template': save(d / (prefix + '-layout-template.json'), layout),
                  'report_metrics': save(d / (prefix + '-metrics.json'), ctx['metrics'])}
-    reads = {'report': material_reads.make(d, 'report', brief_path, base=None if ctx.get('market_revision', 0) >= 6 else base_reads,
-                required={'report_template': template_path},
-                on_demand=({**extra} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path, **extra}))}
+    prior = None
+    if stage == 'report-body':
+        # A fresh clock/maintenance check must not re-emit all earlier facts.
+        # Use the preceding read view with this exact business identity; make
+        # validates its hash and references only byte-identical subtrees.
+        candidates = []
+        for candidate_path in sorted((d / 'reading').glob('report-*/read-set.json')):
+            index = read(candidate_path)
+            if index.get('stage') != 'report':
+                continue
+            require(d.resolve() in Path(index['material']).resolve().parents, 'prior report material escapes run')
+            candidate = read(index['material'])
+            if (candidate.get('context_id') == ctx['context_id'] and candidate.get('evaluated_at')
+                    and candidate.get('report_contract_revision') == ctx.get('report_contract_revision')
+                    and instant(candidate['evaluated_at']) <= instant(ctx['evaluated_at'])):
+                candidates.append((instant(candidate['evaluated_at']), str(candidate_path)))
+        if candidates:
+            prior = max(candidates)[1]
+    prior = prior or material_reads.make(d, 'report', brief_path,
+                base=None if ctx.get('market_revision', 0) >= 6 else base_reads,
+                required={'report_template': template_path}, compact=True,
+                on_demand={} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path})
+    reads = {'report': (material_reads.make(d, 'report-body', brief_path, base=prior,
+                required={'report_template': template_path}, compact=True, on_demand=extra)
+                if stage == 'report-body' else prior)}
     recovery = ctx['pending_delivery']
     return {'report_context': brief_path, 'report_template': template_path, **extra,
             'delivery_recovery': recovery, 'delivery_obligations': ctx['delivery_obligations'],
@@ -765,7 +789,7 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         portfolio_path = save(d / ('portfolio-context-' + digest(portfolio)[7:] + '.json' if ctx.get('revision', 1) >= 6 else 'portfolio-context.json'), portfolio)
         reads = material_reads.make(d, 'portfolio', portfolio_path,
             base=None if ctx.get('revision', 1) >= 6 else run.get('read_set', {}).get('observe'),
-            required={'observation_template': form_path})
+            required={'observation_template': form_path}, compact=True)
     return {'status': 'MARKET_RESULT_FROZEN', 'market_result': path,
             'market_result_hash': frozen['result_hash'], 'portfolio_context': portfolio_path,
             'observation_template': str(form_path), 'read_set': {'portfolio': reads},

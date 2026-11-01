@@ -48,6 +48,31 @@ class WorkerRecoveryTests(unittest.TestCase):
 
  def never_launch(self,*args):raise AssertionError('original attempt must not relaunch')
 
+ def test_usage_rejection_lost_receipt_recovers_original_transaction(self):
+  with self.case(native=False)as(c,db,task,attempts,d,client,config,write):
+   write(d/'result.json',{'schema':'BTC_NODE_WORK_ATTEMPT_V1','task_id':task['task_id'],
+     'attempt_id':task['attempt_id'],'outcome':'FAILED','not_executed':True,
+     'failure_kind':'CAPACITY','detail':'native usage interlock blocked new work: ANOMALOUS',
+     'native_thread_id':None,'native_turn_id':None,'completion_ref':None})
+   original=client.request; recoveries=[]
+   def lost(method,params=None,operation_id=None):
+    if method=='task.reconcile':client.reconciliations+=1;raise RuntimeError('original reply unknown')
+    if method=='core.recover':
+     recoveries.append(params)
+     request=params['original_request']
+     return {'recovery':'ORIGINAL_NODE_TRANSACTION_RECONCILED','operation_id':params['operation_id'],
+             'result':tasks.reconcile(db,**request['params'])}
+    return original(method,params,operation_id)
+   client.request=lost
+   first=worker.recover_pending(client,attempts)
+   self.assertEqual(first[0]['outcome'],'NOT_EXECUTED')
+   self.assertEqual(first[0]['action'],'ORIGINAL_RECONCILIATION_PENDING')
+   second=worker.recover_pending(client,attempts)
+   self.assertEqual(second[0]['outcome'],'NOT_EXECUTED')
+   self.assertEqual(len(recoveries),1);self.assertEqual(client.reconciliations,1)
+   self.assertEqual(recoveries[0]['original_request']['method'],'task.reconcile')
+   self.assertFalse((d/'events.jsonl').exists())
+
  def test_01_native_complete_lost_finish_recovered_without_second_launch(self):
   with self.case()as(c,db,task,attempts,d,client,config,write):
    result=worker.run_once(config,client,self.never_launch)

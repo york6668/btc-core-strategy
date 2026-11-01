@@ -4,6 +4,7 @@ from decimal import Decimal
 from datetime import timedelta, timezone
 from .common import digest, exact, instant, pointer, require, text
 from .mobile_report import QUALITY, INDEX_NAME
+from .report_intent import OUTLOOK, DISCIPLINE
 
 FORMAT = 'AUTHORED_REPORT_V1'
 DISPLAY_FORMATS = {'MARKET_MOBILE_V2', FORMAT}
@@ -28,6 +29,8 @@ BODY_AUTHORING_INSTRUCTIONS = (
     '正文不按内部维护组织，不附机构式风险声明；不强制交易，不以未知默认安全。'
     '长度按用户阅读需要及内容完整性取舍，不硬截断、不用字数、关键词或固定段数代替语义验收。'
 )
+BODY_AUTHORING_INSTRUCTIONS += OUTLOOK + DISCIPLINE
+READING_REVIEW['decision_delivery'] += OUTLOOK + DISCIPLINE
 
 
 def quality_keys(context):

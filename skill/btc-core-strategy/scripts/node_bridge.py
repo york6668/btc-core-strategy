@@ -139,6 +139,9 @@ def forward_if_enabled(argv, *, requested_release=None):
         return
     import node_config
     config = node_config.load()
+    if subcommand(argv) in ('run-prepare', 'run-material', 'run-advance', 'context', 'observe', 'research-independent', 'research-orchestrated-independent'):
+        from native_usage import require_admission
+        require_admission(config)
     docker = config.get('docker_service')
     if not docker or not docker.get('enabled'):
         return

@@ -220,6 +220,11 @@ def enter(config, run_id, context=None):
                    'started_at': datetime.now(timezone.utc).isoformat()}
         release = version_dir(root, run['commit'])
         check_release(release)
+        # A finished run returned above is read-only reuse. Every new/resumed
+        # execution on an adopted node checks the shared native anomaly latch.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skill/btc-core-strategy/scripts'))
+        from native_usage import require_admission
+        require_admission(config)
         run.update(status='ACTIVE', release=str(release), node_config=config['_path'],
                    skill=str(release / 'skill/btc-core-strategy/SKILL.md'),
                    task=str(release / 'tasks/hourly.md'),

@@ -190,6 +190,10 @@ class SchedulerTests(unittest.TestCase):
             calls.append(task['attempt_id'])
             return {'outcome': 'UNKNOWN', 'kind': 'RESULT_UNVERIFIED', 'detail': 'no proof'}
 
+        with patch('node_scheduler_worker.require_admission', side_effect=node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')):
+            self.assertEqual('USAGE_GUARD_BLOCKED_NO_CLAIM', node_scheduler_worker.run_once(config, Client(), uncertain)['action'])
+        self.assertEqual([], calls)
+        self.assertTrue(all(t['state'] != 'RUNNING' for t in tasks.status(db)['tasks']))
         result = node_scheduler_worker.run_once(config, Client(), uncertain)
         self.assertEqual('BLOCKED', result['action'])
         self.assertEqual(1, len(calls))
@@ -199,6 +203,28 @@ class SchedulerTests(unittest.TestCase):
 
     def test_worker_disabled_has_no_node_side_effect(self):
         self.assertEqual({'action': 'DISABLED'}, node_scheduler_worker.run_once({}))
+
+    def test_final_boundary_rejection_is_known_not_executed(self):
+        db = Node(self.root, 'ACTIVE')
+        scheduler.observe_reader(db, self.receipt(db)); scheduler.tick(db)
+        operations = []
+        class Client:
+            def request(self, method, params=None, operation_id=None):
+                operations.append((method, params))
+                if method == 'task.status': return tasks.status(db)
+                if method == 'schedule.window': return scheduler.window(db)
+                if method == 'schedule.claim': return scheduler.claim(db, **params)
+                if method == 'task.finish': return tasks.finish(db, **params)
+                if method == 'task.reconcile': return tasks.reconcile(db, **params)
+                raise AssertionError(method)
+        config = {'project_dir': str(self.root / 'project'), 'release_root': str(self.root),
+                  'node_scheduler': {'enabled': True, 'attempt_dir': str(self.root / 'late-denial'), 'codex_cli': str(self.cli)}}
+        with patch('node_scheduler_worker.require_admission', side_effect=[{}, node_scheduler_worker.NativeUsageBlocked('ANOMALOUS')]):
+            got = node_scheduler_worker.run_once(config, Client())
+        self.assertEqual(got['action'], 'REJECTED_BEFORE_MODEL_DISPATCH')
+        finished = next(p for method, p in operations if method == 'task.reconcile')
+        self.assertEqual(finished['outcome'], 'NOT_EXECUTED')
+        self.assertNotIn('task.finish', [m for m, p in operations])
 
     def test_missing_local_executor_does_not_consume_original_attempt(self):
         db = Node(self.root, 'ACTIVE')

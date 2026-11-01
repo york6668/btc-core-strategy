@@ -106,6 +106,16 @@ class ExportManifestTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_guard_blocks_new_and_resumed_work_without_changing_run_or_delivery(self):
+        run = release.enter(self.config, 'guarded-run')
+        before = {str(p): p.read_bytes() for p in (self.base / 'runtime/runs').glob('*')}
+        with patch('native_usage.require_admission', side_effect=ValueError('ANOMALOUS')):
+            for identity in ('guarded-run', 'new-run'):
+                with self.assertRaisesRegex(ValueError, 'ANOMALOUS'):
+                    release.enter(self.config, identity)
+        self.assertEqual(before, {str(p): p.read_bytes() for p in (self.base / 'runtime/runs').glob('*')})
+        self.assertEqual(self.state.read_bytes(), self.before)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

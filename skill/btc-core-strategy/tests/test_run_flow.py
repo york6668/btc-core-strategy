@@ -631,6 +631,32 @@ class RunFlowTests(unittest.TestCase):
 
 
 class ReportStageTests(RunFlowTests):
+    def test_same_report_context_reuses_prior_reading_without_losing_authoring_intent(self):
+        from v4 import material_reads
+        from v4.report_intent import OUTLOOK, DISCIPLINE
+        self.observe()
+        run = read(self.d / 'run.json')
+        actual_context = reporting.context
+        def current_context(root):
+            # Keep real clock-sensitive context construction and opt this
+            # historical fixture into current authoring guidance only.
+            return {**actual_context(root), 'report_contract_revision': 7}
+        with mock.patch('v4.reporting.context', side_effect=current_context):
+            necessity = run_flow.phase_material(run, 'necessity', 'report')
+            from datetime import timedelta
+            from v4.common import instant
+            self.clock = (instant(self.clock) + timedelta(minutes=1)).isoformat()
+            body = run_flow.phase_material(run, 'body', 'report-body')
+            replay = run_flow.phase_material(run, 'recovery', 'report-body')
+        self.assertEqual(read(replay['read_set']['report'])['base_read_set'], necessity['read_set']['report'])
+        self.assertNotEqual(body['report_template'], necessity['report_template'])
+        page = material_reads.read_page(body['read_set']['report'])
+        self.assertEqual(page['base_read_set'], necessity['read_set']['report'])
+        brief = read(body['report_context'])
+        self.assertIn(OUTLOOK, brief['body_authoring_instructions'])
+        self.assertIn(DISCIPLINE, brief['body_authoring_instructions'])
+        self.assertEqual(read(body['read_set']['report'])['material_hash'], digest(brief))
+
     # Inherit setup only; scenarios below exercise the real observation/report owners.
     def setUp(self):
         super().setUp()

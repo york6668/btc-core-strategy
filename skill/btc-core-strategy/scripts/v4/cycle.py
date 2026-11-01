@@ -11,6 +11,7 @@ from pathlib import Path
 from .common import digest, exact, instant, now, read, require, text
 from . import market_state
 from .factors import OPPORTUNITY_COST_REVIEW
+from .report_intent import OUTLOOK, DISCIPLINE
 
 ISSUE_KEY = 'BTC_CYCLE'
 SECTIONS = ('domain', 'outlook', 'robustness', 'portfolio_analysis',
@@ -83,6 +84,9 @@ SPOT_RISK_REVIEW = (
     '必要现货与独立BTC归属、保护覆盖和资金检查在内部完成，篮子BTC不重复计数；建议改变仍由原研究审阅采纳。'
 )
 CORE_REPORT_REVIEW += market_state.CYCLE_THESIS_REVIEW
+CORE_REPORT_REVIEW += OUTLOOK + DISCIPLINE
+MAPPING_REVIEW += OUTLOOK + DISCIPLINE
+REPORT_SCOPE_REVIEW += OUTLOOK + DISCIPLINE
 APPLICABILITY_REVIEW += market_state.CYCLE_THESIS_REVIEW
 
 from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW

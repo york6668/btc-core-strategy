@@ -4,6 +4,53 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import run_usage
 
 class UsageTests(unittest.TestCase):
+    def test_explicit_heartbeat_roots_count_turn_families_not_thread_lifetimes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); db = root / 'native.sqlite'; parent = root / 'parent.jsonl'; child = root / 'child.jsonl'
+            def events(thread, turn, root_turn, minute, complete=True):
+                stamp = '2030-03-01T01:' + str(minute).zfill(2) + ':00Z'
+                def row(kind, payload): return {'timestamp': stamp, 'type': kind, 'payload': payload}
+                result = [row('event_msg', {'type':'task_started','turn_id':turn}),
+                          row('turn_context', {'turn_id':turn,'root_turn_id':root_turn,'model':'synthetic','effort':'high'}),
+                          row('token_usage_record', {'thread_id':thread,'turn_id':turn,'response_id':'response-'+turn,
+                                'usage':{'input_tokens':100,'cached_input_tokens':80,'output_tokens':10}})]
+                if complete:
+                    result.append({'timestamp':stamp.replace(':00Z', ':30Z'),'type':'event_msg','payload':{'type':'task_complete','turn_id':turn}})
+                return result
+            parent.write_text(''.join(json.dumps(x)+'\n' for x in events('p','p1','p1',10)+events('p','p2','p2',20)))
+            child.write_text(''.join(json.dumps(x)+'\n' for x in events('c','c1','p1',10)+events('c','c2','p2',20,False)))
+            with sqlite3.connect(db) as conn:
+                conn.execute('CREATE TABLE threads(id,rollout_path,created_at,updated_at,model,reasoning_effort,thread_source,name,source)')
+                conn.execute('CREATE TABLE thread_spawn_edges(parent_thread_id,child_thread_id)')
+                for identity, path in [('p',parent),('c',child)]:
+                    conn.execute('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?)',(identity,str(path),1,2000000000,'synthetic','high','vscode','current heartbeat','{}'))
+                conn.execute('INSERT INTO thread_spawn_edges VALUES (?,?)',('p','c'))
+            value = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',['p'])
+            self.assertEqual(value['summary']['completed_runs'],1)
+            self.assertEqual(value['runs'][0]['model_roundtrips'],2)
+            self.assertEqual(value['runs'][0]['root_turn_id'],'p1')
+            self.assertEqual(value['cost_totals']['all']['input_tokens']['sum'],400)
+            self.assertEqual(value['cost_totals']['incomplete_or_failed']['input_tokens']['sum'],200)
+            child.write_text(''.join(json.dumps(x)+'\n' for x in events('p','p1','p1',10)[:3] + events('c','c1','p1',10)))
+            inherited = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',['p'])
+            self.assertEqual(inherited['summary']['completed_runs'],2)
+            self.assertEqual(inherited['cost_totals']['all']['input_tokens']['sum'],300)
+            # A launched child with no first response still makes its parent
+            # family incomplete; an empty usage list is not completed work.
+            child.write_text(''.join(json.dumps(x)+'\n' for x in events('c','c1','p1',10,False)[:2]))
+            pending = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',['p'])
+            self.assertEqual([r['root_turn_id'] for r in pending['runs']],['p2'])
+            bad = events('c','c1','p1',10)
+            bad[2]['payload']['usage']['input_tokens'] = -1
+            child.write_text(''.join(json.dumps(x)+'\n' for x in bad))
+            damaged = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',['p'])
+            self.assertEqual(damaged['coverage']['status'],'INCOMPLETE')
+            self.assertEqual(damaged['summary']['completed_runs'],0)
+            child.unlink()
+            missing = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',['p'])
+            self.assertEqual(missing['coverage']['status'],'INCOMPLETE')
+            self.assertEqual(missing['summary']['completed_runs'],0)
+
     def test_readonly_source_discovery_checks_schema_and_never_guesses_latest(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory).resolve(); missing=root/'state_old.sqlite'

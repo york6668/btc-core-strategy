@@ -65,7 +65,8 @@ MARKET_INSTRUCTIONS += LIFECYCLE_REVIEW
 INSTRUCTIONS += CYCLE_THESIS_REVIEW
 REPORT_INSTRUCTIONS += REPORT_FIDELITY_REVIEW + CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
 from .investment import POLICY_INSTRUCTIONS
-INSTRUCTIONS += POLICY_INSTRUCTIONS
+from .report_intent import DISCIPLINE
+INSTRUCTIONS += POLICY_INSTRUCTIONS + DISCIPLINE
 REPORT_INSTRUCTIONS += (
     'validation_limits与gaps限制对应产品和安排；METHOD_CHECK只证明模拟方法，不得在正文写成杠杆组合、真实收益或策略有效。未支持能力影响动作时不输出执行建议，影响数量时保留有据方向和实际执行限制。'
     'revision 8报告消费investment_decision的总体取舍、优先关系、有据分项判断和具体依赖，不把风险与分项机会并列未决当作完整组合决定。'

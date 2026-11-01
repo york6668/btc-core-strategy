@@ -19,6 +19,7 @@ import sys
 import uuid
 
 import node_config
+from native_usage import NativeUsageBlocked, require_admission
 import market_observation as market
 
 
@@ -222,6 +223,7 @@ def _runtime_preflight(config):
 
 
 def launch(config, task, directory):
+    require_admission(config)
     runtime_root = Path(config['release_root']).resolve(strict=True)
     release_root = runtime_root / 'releases'
     release = release_root / task['release_id']
@@ -313,6 +315,29 @@ def _binding(task):
     return {key: task[key] for key in BINDING_FIELDS}
 
 
+def _usage_rejection_proof(directory, task, claim_bytes):
+    path = directory / 'result.json'
+    if not os.path.lexists(path):
+        return None
+    raw = _private_bytes(path)
+    result = json.loads(raw)
+    if result.get('not_executed') is not True:
+        return None
+    intent_bytes = _private_bytes(directory / 'launch-intent.json')
+    intent = json.loads(intent_bytes)
+    if (intent.get('worker_receipt_revision') != ATTEMPT_RECEIPT_REVISION or intent.get('task') != _binding(task)
+            or result.get('schema') != 'BTC_NODE_WORK_ATTEMPT_V1'
+            or result.get('task_id') != task['task_id'] or result.get('attempt_id') != task['attempt_id']
+            or result.get('outcome') != 'FAILED' or result.get('failure_kind') != 'CAPACITY'
+            or any(result.get(k) is not None for k in ('native_thread_id', 'native_turn_id', 'completion_ref'))
+            or any(os.path.lexists(directory / name) for name in ('events.jsonl', 'last-message.json'))):
+        raise ValueError('known usage rejection conflicts with native execution evidence')
+    return {'claim_sha256': hashlib.sha256(claim_bytes).hexdigest(),
+            'launch_intent_sha256': hashlib.sha256(intent_bytes).hexdigest(),
+            'rejection_sha256': hashlib.sha256(raw).hexdigest(),
+            'usage_guard_rejected_before_native_dispatch': True}
+
+
 def recover_pending(client, attempt_root):
     """Revisit original attempts under the host lock, without launching models.
 
@@ -375,7 +400,11 @@ def recover_pending(client, attempt_root):
                             or saved['evidence'].get('claim_sha256') != hashlib.sha256(claim_bytes).hexdigest()):
                         raise ValueError('original reconciliation proof checksum/binding mismatch')
                     if saved['outcome'] == 'NOT_EXECUTED':
-                        if (saved['completion_ref'] is not None
+                        if saved['evidence'].get('usage_guard_rejected_before_native_dispatch') is True:
+                            if saved['completion_ref'] is not None or saved['evidence'] != _usage_rejection_proof(directory, task, claim_bytes):
+                                raise ValueError('saved usage rejection proof differs from original evidence')
+                            row.update(action='ORIGINAL_RECONCILIATION_PENDING', outcome='NOT_EXECUTED')
+                        elif (saved['completion_ref'] is not None
                                 or saved['evidence'].get('launch_intent_absent_under_original_worker_lock') is not True
                                 or any(os.path.lexists(directory / name) for name in
                                        ('launch-intent.json', 'events.jsonl', 'last-message.json', 'result.json'))):
@@ -408,7 +437,11 @@ def recover_pending(client, attempt_root):
                 continue
             intent_path = directory / 'launch-intent.json'
             intent_missing = not os.path.lexists(intent_path)
-            if intent_missing and claim.get('worker_receipt_revision') == ATTEMPT_RECEIPT_REVISION:
+            rejection = _usage_rejection_proof(directory, task, claim_bytes)
+            if rejection:
+                outcome, completion, evidence = 'NOT_EXECUTED', None, rejection
+                row.update(action='ORIGINAL_RECONCILIATION_PENDING', outcome='NOT_EXECUTED')
+            elif intent_missing and claim.get('worker_receipt_revision') == ATTEMPT_RECEIPT_REVISION:
                 if any(os.path.lexists(directory / name) for name in
                        ('events.jsonl', 'last-message.json', 'result.json')):
                     raise ValueError('missing launch intent conflicts with saved execution artifacts')
@@ -491,6 +524,10 @@ def run_once(config, client=None, launcher=launch):
                     'reason': type(exc).__name__}
         if any(row['action'] in {'COMPLETED', 'NEEDED'} for row in recovered):
             return {'action': 'RECOVERED_ORIGINAL_ATTEMPT_NO_LAUNCH', 'recovery': recovered}
+        try:
+            require_admission(config)
+        except NativeUsageBlocked as exc:
+            return {'action': 'USAGE_GUARD_BLOCKED_NO_CLAIM', 'reason': str(exc)}
         # The Docker node owns the clock and due registration. A host adapter
         # may execute only while that clock has a fresh, fault-free window.
         window = client.request('schedule.window')
@@ -519,6 +556,10 @@ def run_once(config, client=None, launcher=launch):
             'task': _binding(task)}, sort_keys=True).encode())
         try:
             result = launcher(config, task, directory)
+        except NativeUsageBlocked as exc:
+            # The final boundary can close after claim. It has a known
+            # pre-dispatch rejection, unlike a lost model/transport outcome.
+            result = {'outcome': 'FAILED', 'kind': 'CAPACITY', 'detail': str(exc), 'not_executed': True}
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             result = {'outcome': 'UNKNOWN', 'kind': type(exc).__name__,
                       'detail': str(exc)[:500]}
@@ -527,8 +568,12 @@ def run_once(config, client=None, launcher=launch):
                  'native_thread_id': result.get('thread_id'),
                  'native_turn_id': result.get('turn_id'),
                  'completion_ref': result.get('completion_ref'),
+                 'not_executed': result.get('not_executed') is True,
                  'failure_kind': result.get('kind'), 'detail': result.get('detail')}
         _write_private(directory / 'result.json', json.dumps(trace, sort_keys=True).encode())
+        if result.get('not_executed') is True and result['outcome'] == 'FAILED':
+            return {'action': 'REJECTED_BEFORE_MODEL_DISPATCH', 'task_id': task['task_id'],
+                    'attempt_id': attempt_id, 'recovery': recover_pending(client, attempt_root)}
         if result['outcome'] == 'COMPLETE':
             params = {'task_id': task['task_id'], 'attempt_id': attempt_id,
                       'outcome': 'COMPLETE', 'completion_ref': result['completion_ref']}

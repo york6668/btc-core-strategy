@@ -93,6 +93,13 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
     errors = Counter(); aborted = set(); waits = 0; compactions = 0
     error_occurrences = []; seen_errors = set()
     active_call_id = None
+    turns = {}; active_turn = None; inherited_turns = set()
+    def turn(identity):
+        return turns.setdefault(identity, {'turn_id': identity, 'root_turn_id': identity,
+            'started_at': None, 'completed_at': None, 'model': None, 'effort': None,
+            'model_roundtrips': 0, 'tool_calls': 0, 'input_tokens': 0,
+            'cached_input_tokens': 0, 'output_tokens': 0, 'failed_or_interrupted': False,
+            'research_tool_observed': False, 'delivery_tool_observed': False})
     def record_errors(output, call_id, line_number, execution_id=None):
         for error in execution_errors(output):
             key = (call_id, error['signature'])
@@ -108,21 +115,53 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
     with open(path) as stream:
         for line_number, line in enumerate(stream, 1):
             try: event = json.loads(line)
-            except ValueError: continue  # A running file can end in a partial write.
+            except ValueError:
+                if not line.endswith('\n'): break  # A running file can end in a partial write.
+                raise ValueError('complete native record is invalid JSON')
             p = event.get('payload', {}); kind = event.get('type')
             stamp = timestamp(event['timestamp']) if event.get('timestamp') else None
+            if (kind == 'token_usage_record' and thread_id and p.get('thread_id')
+                    and p['thread_id'] != thread_id and p.get('turn_id')):
+                inherited_turns.add(p['turn_id'])
+            if kind == 'turn_context' and p.get('turn_id'):
+                active_turn = p['turn_id']
+                turn(active_turn).update(root_turn_id=p.get('root_turn_id') or active_turn,
+                                        model=p.get('model'), effort=p.get('effort'))
+            if kind == 'event_msg' and p.get('type') == 'task_started' and p.get('turn_id'):
+                active_turn = p['turn_id']
+                turn(active_turn)['started_at'] = event.get('timestamp')
+            if kind == 'event_msg' and p.get('turn_id'):
+                if p.get('type') == 'task_complete':
+                    turn(p['turn_id'])['completed_at'] = p.get('completed_at') or event.get('timestamp')
+                if p.get('type') in ('turn_aborted', 'task_failed'):
+                    turn(p['turn_id'])['failed_or_interrupted'] = True
             if stamp is not None and ((since is not None and stamp < since) or (until is not None and stamp >= until)):
                 continue
             if kind == 'token_usage_record':
                 identity = p.get('response_id')
                 if thread_id and p.get('thread_id') and p['thread_id'] != thread_id: continue
                 if identity and identity not in seen_responses:
-                    usage[identity] = p.get('usage', {}); seen_responses.add(identity)
+                    measured = p.get('usage', {})
+                    if any(key in measured and (type(measured[key]) is not int or measured[key] < 0) for key in FIELDS):
+                        raise ValueError('invalid native token category')
+                    if all(k in measured for k in FIELDS[:2]) and measured['cached_input_tokens'] > measured['input_tokens']:
+                        raise ValueError('cached tokens exceed input')
+                    usage[identity] = measured; seen_responses.add(identity)
+                    if p.get('turn_id'):
+                        native = turn(p['turn_id'])
+                        native['root_turn_id'] = p.get('root_turn_id') or native['root_turn_id']
+                        native['model_roundtrips'] += 1
+                        for field in FIELDS:
+                            value = p.get('usage', {}).get(field)
+                            native[field] = native[field] + value if native[field] is not None and isinstance(value, int) else None
             elif kind == 'event_msg':
                 if p.get('type') == 'task_started': started.add(p.get('turn_id'))
                 if p.get('type') == 'task_complete':
                     completed.add(p.get('turn_id')); completed_at = p.get('completed_at') or event.get('timestamp')
+                    if p.get('turn_id'): turn(p['turn_id'])['completed_at'] = completed_at
                 if p.get('type') in ('turn_aborted','task_failed'): aborted.add(p.get('turn_id'))
+                if p.get('type') in ('turn_aborted','task_failed') and p.get('turn_id'):
+                    turn(p['turn_id'])['failed_or_interrupted'] = True
                 item = p.get('item') or {}
                 if p.get('type') == 'item_completed' and item.get('type') == 'CommandExecution':
                     # Native completion carries the actual exit code even when an
@@ -140,6 +179,10 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
                 flags['research_tool_observed'] |= 'spawn_agent' in name or 'research-independent' in args or 'research-orchestrated-independent' in args
                 flags['delivery_tool_observed'] |= 'send_message_to_thread' in name or 'send_message_to_thread(' in args
                 waits += name.split('.')[-1] in ('wait_agent','wait_threads','list_agents')
+                if active_turn:
+                    native = turn(active_turn); native['tool_calls'] += 1
+                    native['research_tool_observed'] |= 'spawn_agent' in name or 'research-independent' in args
+                    native['delivery_tool_observed'] |= 'send_message_to_thread' in name or 'send_message_to_thread(' in args
             elif kind == 'response_item' and p.get('type') in ('function_call_output','custom_tool_call_output'):
                 call_id = p.get('call_id') or p.get('id') or 'line:' + str(line_number)
                 record_errors(p.get('output', ''), call_id, line_number)
@@ -149,7 +192,10 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
                 completed=complete, completed_at=completed_at, failed_or_interrupted=bool(aborted - completed),
                 error_counts=dict(errors), error_occurrences=error_occurrences,
                 repeated_errors=sum(max(0,n-1) for n in errors.values()),
-                wait_calls=waits, compactions=compactions, **flags)
+                wait_calls=waits, compactions=compactions,
+                native_turns=[v for v in turns.values() if v['turn_id'] not in inherited_turns and (v['model_roundtrips'] or
+                    (v['started_at'] and (until is None or timestamp(v['started_at']) < until)
+                     and (not v['completed_at'] or since is None or timestamp(v['completed_at']) >= since)))], **flags)
 
 
 def summarize(rows):
@@ -167,6 +213,14 @@ class UsageSourceUnavailable(ValueError):
     """This adapter cannot measure usage; market analysis remains independent."""
 
 
+def source_connection(path):
+    path = Path(path).resolve(strict=True)
+    uri = path.as_uri() + '?mode=ro'
+    if not Path(str(path) + '-wal').exists():
+        uri += '&immutable=1'
+    return sqlite3.connect(uri, uri=True)
+
+
 def usage_database(explicit=None, configured=None):
     """Respect an explicit source; discover only one schema-compatible candidate.
 
@@ -179,7 +233,7 @@ def usage_database(explicit=None, configured=None):
         if not path.is_file():
             raise UsageSourceUnavailable('usage database is unavailable: ' + str(path))
         try:
-            with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as conn:
+            with source_connection(path) as conn:
                 columns = {row[1] for row in conn.execute('PRAGMA table_info(threads)')}
                 missing = required - columns
                 if missing:
@@ -211,12 +265,11 @@ def usage_database(explicit=None, configured=None):
     return candidates[0]
 
 
-def audit(db, since, until):
+def audit(db, since, until, root_threads=None):
     start, end = timestamp(since), timestamp(until)
     if end <= start: raise ValueError('until must follow since')
     db = usage_database(explicit=db)
-    uri = db.as_uri() + '?mode=ro'
-    with sqlite3.connect(uri, uri=True) as conn:
+    with source_connection(db) as conn:
         conn.row_factory = sqlite3.Row
         threads = {v['id']:dict(v) for v in conn.execute('SELECT * FROM threads')}
         tables = {v[0] for v in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -224,19 +277,22 @@ def audit(db, since, until):
         for identity, v in threads.items():
             try: parents[identity] = json.loads(v.get('source',''))['subagent']['thread_spawn']['parent_thread_id']
             except (TypeError,ValueError,KeyError): pass
-    roots = {k for k,v in threads.items() if v.get('thread_source')=='automation' and v.get('name')=='BTC核心策略自动重评'
+    roots = set(root_threads) if root_threads is not None else {k for k,v in threads.items() if v.get('thread_source')=='automation' and v.get('name')=='BTC核心策略自动重评'
              and v['created_at'] < end and v.get('updated_at',v['created_at']) >= start}
+    if not roots or not roots <= threads.keys():
+        raise UsageSourceUnavailable('explicit current native roots are missing; no zero-usage assumption')
     def owner(identity):
         seen = set()
-        while identity in parents and identity not in seen:
+        while identity not in roots and identity in parents and identity not in seen:
             seen.add(identity); identity = parents[identity]
         return identity
     selected = sorted((v for k,v in threads.items() if owner(k) in roots and v['created_at'] < end),key=lambda v:v['created_at'])
-    rows = []; excluded = []; costs = []; seen_responses = set()
+    rows = []; excluded = []; costs = []; seen_responses = set(); unread = []
     for item in selected:
         thread_id,path,created,model,effort = (item.get(k) for k in ('id','rollout_path','created_at','model','reasoning_effort'))
         try: value = rollout(path,start,end,seen_responses,thread_id)
         except (OSError, ValueError) as exc:
+            unread.append(thread_id)
             excluded.append({'thread_id':thread_id,'reason':type(exc).__name__}); continue
         value.update(thread_id=thread_id,rollout_path=path,started_at=datetime.fromtimestamp(created,timezone.utc).isoformat(),model=model,effort=effort)
         value.update(root_thread_id=owner(thread_id),role='main' if thread_id in roots else 'subagent')
@@ -258,20 +314,54 @@ def audit(db, since, until):
         run['stratum'] = ('research' if len(family)>1 or any(v['research_tool_observed'] for v in family)
                           else 'delivery' if value['delivery_tool_observed'] else 'ordinary')
         rows.append(run)
+    completed_turns = set()
+    if root_threads is not None:
+        # Heartbeats reuse a long-lived thread. A thread lifetime is not one
+        # scheduled run; native root_turn_id supplies the exact family binding.
+        families = {}
+        for cost in costs:
+            for value in cost['native_turns']:
+                value = dict(value, thread_id=cost['thread_id'])
+                families.setdefault(value['root_turn_id'], []).append(value)
+        rows = []
+        for root_turn, family in families.items():
+            main = next((v for v in family if v['thread_id'] in roots and v['turn_id'] == root_turn), None)
+            full = main and all(v['started_at'] and v['completed_at'] and not v['failed_or_interrupted']
+                                and start <= timestamp(v['started_at']) < timestamp(v['completed_at']) < end for v in family)
+            if not full:
+                excluded.append({'root_turn_id': root_turn, 'reason': 'native turn family incomplete or partially outside window; costs retained'})
+                continue
+            row = dict(main, root_turn_id=root_turn, counted_thread_ids=sorted({v['thread_id'] for v in family}),
+                       elapsed_seconds=max(timestamp(v['completed_at']) for v in family)-min(timestamp(v['started_at']) for v in family),
+                       repeated_errors=None)
+            for field in ('model_roundtrips', 'tool_calls') + FIELDS:
+                row[field] = sum(v[field] for v in family) if all(v[field] is not None for v in family) else None
+            row['stratum'] = ('research' if len(family)>1 or any(v['research_tool_observed'] for v in family)
+                              else 'delivery' if main['delivery_tool_observed'] else 'ordinary')
+            rows.append(row)
+            completed_turns.update((v['thread_id'], v['turn_id']) for v in family)
+    if unread:
+        excluded.append({'reason': 'unread scoped thread prevents certifying complete run families'})
+        rows = []
+        completed_turns.clear()
+    incomplete_costs = ([v for cost in costs for v in cost['native_turns']
+                         if (cost['thread_id'], v['turn_id']) not in completed_turns]
+                        if root_threads is not None else [r for r in costs if not r['fully_completed_in_window']])
     groups = {}
     for row in rows: groups.setdefault('/'.join((row['model'] or 'UNKNOWN',row['effort'] or 'UNKNOWN',row['stratum'])),[]).append(row)
     errors = Counter()
     for row in costs: errors.update(row['error_counts'])
     return {'schema':'BTC_RUN_USAGE_AUDIT_V1','since':since,'until':until,
         'source':{'status':'AVAILABLE','adapter':'codex_internal_sqlite','path':str(db)},
+        'coverage':{'status':'INCOMPLETE' if unread else 'COMPLETE_LOCAL_SCOPE','unread_thread_ids':unread},
         'measurement':'Distinct model response usage records and outer model tool calls. Cached input is included in input; no quota conversion.',
-        'stratification':'Completed run totals include descendants; any descendant classifies the run as research. Conservative tool-trace flags, not a quality score.',
+        'stratification':'Native root-turn families for explicit heartbeat roots; legacy thread families otherwise. Descendants included. Conservative tool-trace flags, not a quality score.',
         'summary':summarize(rows),'groups':{key:summarize(value) for key,value in groups.items()},'runs':rows,'excluded':excluded,
         'cost_scope':'Window-filtered main and descendant usage; failed/incomplete work retained, never called successful.',
         'thread_costs':costs,'cost_totals':{scope:{k:v for k,v in summarize(items).items() if k!='completed_runs'}
             for scope,items in {'all':costs,'main':[r for r in costs if r['role']=='main'],
                 'subagent':[r for r in costs if r['role']=='subagent'],
-                'incomplete_or_failed':[r for r in costs if not r['fully_completed_in_window']]}.items()},
+                'incomplete_or_failed':incomplete_costs}.items()},
         'recurrence_signals':{'errors':dict(errors),'repeated_errors':sum(max(0,n-1) for n in errors.values()),
                               'wait_calls':sum(r['wait_calls'] for r in costs),'compactions':sum(r['compactions'] for r in costs)}}
 
@@ -361,17 +451,23 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db',help='Explicit read-only Codex usage database; no filename/version assumption');p.add_argument('--since');p.add_argument('--until')
     p.add_argument('--output');p.add_argument('--baseline')
-    p.add_argument('--status',action='store_true',help='Read only: preceding JST day and pending acceptance, requires --defect')
+    p.add_argument('--root-thread', action='append', help='Current native main thread identity; includes descendants and groups heartbeat root turns')
+    p.add_argument('--status',action='store_true',help='Read only: preceding JST day and pending acceptance, uses explicit or configured defect')
     p.add_argument('--defect',help='Update the existing local defect with usage evidence; never closes it.')
     a=p.parse_args()
     if a.status:
-        if not a.defect:p.error('--status requires --defect')
+        if not a.defect:
+            configured = __import__('node_config').load()
+            a.defect = configured.get('usage_defect')
+        if not a.defect or not Path(a.defect).is_file():
+            print(json.dumps({'status':'DEFECT_REFERENCE_UNAVAILABLE','usage_audit_available':True,
+                  'next':'Use --since/--until/--output and configured usage_root_threads; legacy defect absence does not block metering.'}));return
         print(json.dumps(daily_status(a.defect),ensure_ascii=False));return
     if not all((a.since,a.until,a.output)):p.error('audit requires --since, --until and --output')
     try:
-        configured = __import__('node_config').load().get('codex_state_db')
-        database = usage_database(a.db, configured)
-        value=audit(database,a.since,a.until)
+        configured = __import__('node_config').load()
+        database = usage_database(a.db, configured.get('codex_state_db'))
+        value=audit(database,a.since,a.until,a.root_thread or configured.get('usage_root_threads'))
     except (UsageSourceUnavailable, sqlite3.Error, OSError) as exc:
         value={'schema':'BTC_RUN_USAGE_AUDIT_V1','since':a.since,'until':a.until,
                'source':{'status':'UNAVAILABLE','adapter':'codex_internal_sqlite','reason':str(exc)},

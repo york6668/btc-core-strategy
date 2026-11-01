@@ -74,6 +74,9 @@ def status():
 
 
 def claim(issue_id, scope, phase, input_digest, model='gpt-6-astra', claim_id=None):
+    import node_config
+    from native_usage import require_admission
+    require_admission(node_config.load())
     claim_id = claim_id or 'btc-deep-' + uuid.uuid4().hex
     result = request('model.deep.claim', dict(claim_id=claim_id, issue_id=issue_id,
                      scope=scope, phase=phase, input_digest=input_digest, model=model),

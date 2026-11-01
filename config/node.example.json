@@ -20,5 +20,16 @@
     "codex_cli": "/absolute/local/Codex.app/Contents/Resources/codex-cli/bin/codex",
     "attempt_dir": "/absolute/local/btc-data/node-scheduler-attempts",
     "window_file": "/absolute/local/btc-data/node-scheduler-window.json"
-  }
+  },
+  "usage_guard_required": true,
+  "usage_guard": {
+    "command": [
+      "/absolute/local/codex-framework",
+      "usage-check"
+    ],
+    "policy": "/absolute/local/usage-guard/policy.json"
+  },
+  "usage_root_threads": [
+    "ACTUAL_NATIVE_ROOT_THREAD_ID"
+  ]
 }
