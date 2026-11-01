@@ -4,6 +4,39 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import run_usage
 
 class UsageTests(unittest.TestCase):
+    def test_missing_descendant_metadata_never_certifies_a_complete_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); db = root / 'native.sqlite'
+            start = run_usage.timestamp('2030-03-01T01:00:00Z')
+            with sqlite3.connect(db) as conn:
+                conn.execute('CREATE TABLE threads(id,rollout_path,created_at,updated_at,model,reasoning_effort,thread_source,name,source)')
+                conn.execute('CREATE TABLE thread_spawn_edges(parent_thread_id,child_thread_id)')
+                for identity in ('p', 'leaf'):
+                    path = root / (identity + '.jsonl')
+                    events = [
+                        ('01:01:00', 'event_msg', {'type':'task_started','turn_id':identity}),
+                        ('01:01:00', 'turn_context', {'turn_id':identity,'root_turn_id':'p','model':'synthetic','effort':'high'}),
+                        ('01:01:01', 'token_usage_record', {'thread_id':identity,'turn_id':identity,'response_id':identity,
+                            'usage':{'input_tokens':100,'cached_input_tokens':80,'output_tokens':10}}),
+                        ('01:01:30', 'event_msg', {'type':'task_complete','turn_id':identity})]
+                    path.write_text(''.join(json.dumps({'timestamp':'2030-03-01T'+clock+'Z','type':kind,'payload':payload})+'\n'
+                                            for clock,kind,payload in events))
+                    conn.execute('INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?)',
+                        (identity,str(path),start,start+90,'synthetic','high','automation' if identity=='p' else 'subagent',
+                         'BTC核心策略自动重评' if identity=='p' else None,'{}'))
+                conn.executemany('INSERT INTO thread_spawn_edges VALUES (?,?)',
+                    [('p','missing'),('missing','leaf'),('missing','missing-grandchild'),('unrelated','not-in-scope')])
+            for roots in (None, ['p']):
+                with self.subTest(roots=roots):
+                    value = run_usage.audit(db,'2030-03-01T01:00:00Z','2030-03-01T02:00:00Z',roots)
+                    self.assertEqual(value['coverage']['status'],'INCOMPLETE')
+                    self.assertEqual(value['coverage']['missing_metadata_thread_ids'],['missing','missing-grandchild'])
+                    self.assertEqual(value['coverage']['unread_thread_ids'],['missing','missing-grandchild'])
+                    self.assertEqual(value['summary']['completed_runs'],0)
+                    self.assertEqual(value['cost_totals']['all']['input_tokens']['sum'],200)
+                    self.assertEqual(value['cost_totals']['incomplete_or_failed']['input_tokens']['sum'],200)
+                    self.assertEqual({v['thread_id'] for v in value['thread_costs']},{'p','leaf'})
+
     def test_explicit_heartbeat_roots_count_turn_families_not_thread_lifetimes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); db = root / 'native.sqlite'; parent = root / 'parent.jsonl'; child = root / 'child.jsonl'

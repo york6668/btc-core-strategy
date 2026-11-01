@@ -58,6 +58,10 @@ run_usage 同时按普通嗅探、深评及报告交付分组输出 elapsed_seco
 
 节点明确配置 `usage_guard_required=true` 和 `usage_guard.command/policy` 后，版本准入、研究预留、宿主业务入口及原生节点 worker 启动前调用共享 `codex-framework usage-check`。方法见共享框架 `york-workstation/references/usage-anomaly.md`；不另外建立计费器或调度器。锁后拒绝新的工作，已完成结果可只读回收。内部平台响应、在途调用、未接入入口及其他机器无法由本地程序硬拦截，不能声称覆盖真实账户每笔积分；原调度暂停状态不改变。
 
+宿主 CLI 的具体覆盖是 `run-prepare/run-material/run-advance/context/observe/research-independent/research-orchestrated-independent/report-context/report-review/research-read`。其中独立报告入口不直接调用模型，但会生成大篇幅当前写作材料或重新构造并推进报告，必须同样准入。`run-read` 的有界冻结材料读取、`report-care` 状态诊断及既有结果导出仍可用于检查与恢复，不称为全部命令锁。容器内部沿宿主准入后执行；直接 Python 调用、绕过宿主的手工容器调用和任意文件阅读没有独立平台拦截，不能据此声称整个账户已停止消耗。
+
 没有足够经复核的可比正常日、计量源失效或异常时保持锁定。锁跨重启及跨日保留；人工复核后由共享入口解除，仍不恢复调度。正常基线不能自动采用最近异常日。统计显式使用当前 `usage_root_threads` 及后代，按原生 `root_turn_id` 聚合同一运行，失败和未完成消耗也计入成本，不按长寿命线程数冒充触发次数。缓存包含在输入内，不重复相加或换算积分。
+
+若原生父子边记录了后代，但相应线程元数据缺失，统计保留可观察成本并标为 `INCOMPLETE`，列出缺失身份，所有完成运行族暂不可认证；缺失后代不能记为零。共享准入此时拒绝计量，两者不将不完整范围视作正常基线。
 
 `run_usage.py --status` 使用节点 `usage_defect`；没有有效旧缺陷时返回 `DEFECT_REFERENCE_UNAVAILABLE`，独立用量统计仍可使用 `--since/--until/--output`。失踪的旧文件不伪造补齐，原历史缺陷不因新统计成功自动验收。持续工作只读本轮简短状态与新增证据，具体诊断才读历史；父子采用有界工作包及完成通知，不空等轮询，不重复读已在本会话核验过的相同哈希材料。

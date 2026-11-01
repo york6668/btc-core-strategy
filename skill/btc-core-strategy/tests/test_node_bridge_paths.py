@@ -18,6 +18,30 @@ class NativePaths(unittest.TestCase):
     def setUp(self):
         self.addCleanup(runtime_schedule.bind,None,None)
 
+    def test_standalone_authoring_entries_reject_before_host_or_docker_work(self):
+        from native_usage import NativeUsageBlocked
+        for command in ('report-context', 'report-review', 'research-read'):
+            for docker_enabled in (False, True):
+                for options in (['--project','/synthetic','--root','/synthetic/store'],
+                                ['--project=/synthetic','--root=/synthetic/store'],
+                                ['--proj=/synthetic','--roo=/synthetic/store']):
+                    with self.subTest(command=command,docker_enabled=docker_enabled,options=options):
+                        cfg={'usage_guard_required':True,'docker_service':{'enabled':docker_enabled}}
+                        with mock.patch.dict(os.environ, {'BTC_IN_CONTAINER':'0'}), \
+                             mock.patch('node_config.load',return_value=cfg), \
+                             mock.patch('native_usage.require_admission',side_effect=NativeUsageBlocked('locked')) as admit, \
+                             mock.patch.object(node_bridge,'sync_facts',side_effect=AssertionError('no fact sync')), \
+                             mock.patch.object(node_bridge.subprocess,'run',side_effect=AssertionError('no process')):
+                            with self.assertRaisesRegex(NativeUsageBlocked,'locked'):
+                                node_bridge.forward_if_enabled([*options,command])
+                            admit.assert_called_once_with(cfg)
+
+    def test_status_diagnostic_remains_available_while_usage_is_locked(self):
+        with mock.patch.dict(os.environ, {'BTC_IN_CONTAINER':'0'}), \
+             mock.patch('node_config.load',return_value={'usage_guard_required':True}), \
+             mock.patch('native_usage.require_admission',side_effect=AssertionError('status is not a new model task')):
+            self.assertIsNone(node_bridge.forward_if_enabled(['--project','/p','--root','/p/.strategy/v4','report-care']))
+
     def test_native_schedule_uses_existing_immutable_input_and_cli_bridge(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);run=root/'run.json';run.write_text('{"run_ref":"SYNTHETIC_RUN"}')

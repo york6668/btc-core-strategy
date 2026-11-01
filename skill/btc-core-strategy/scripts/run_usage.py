@@ -286,8 +286,13 @@ def audit(db, since, until, root_threads=None):
         while identity not in roots and identity in parents and identity not in seen:
             seen.add(identity); identity = parents[identity]
         return identity
+    # An edge is evidence of scoped work even if its child's metadata has gone
+    # missing. Walk the graph independently of existing rows, including through
+    # a missing intermediate parent; absence cannot certify a zero-cost child.
+    missing_metadata = sorted(k for k in parents if k not in threads and owner(k) in roots)
     selected = sorted((v for k,v in threads.items() if owner(k) in roots and v['created_at'] < end),key=lambda v:v['created_at'])
-    rows = []; excluded = []; costs = []; seen_responses = set(); unread = []
+    rows = []; costs = []; seen_responses = set(); unread = list(missing_metadata)
+    excluded = [{'thread_id':k, 'reason':'scoped descendant metadata missing; usage unknown'} for k in missing_metadata]
     for item in selected:
         thread_id,path,created,model,effort = (item.get(k) for k in ('id','rollout_path','created_at','model','reasoning_effort'))
         try: value = rollout(path,start,end,seen_responses,thread_id)
@@ -346,14 +351,15 @@ def audit(db, since, until, root_threads=None):
         completed_turns.clear()
     incomplete_costs = ([v for cost in costs for v in cost['native_turns']
                          if (cost['thread_id'], v['turn_id']) not in completed_turns]
-                        if root_threads is not None else [r for r in costs if not r['fully_completed_in_window']])
+                        if root_threads is not None else [r for r in costs if unread or not r['fully_completed_in_window']])
     groups = {}
     for row in rows: groups.setdefault('/'.join((row['model'] or 'UNKNOWN',row['effort'] or 'UNKNOWN',row['stratum'])),[]).append(row)
     errors = Counter()
     for row in costs: errors.update(row['error_counts'])
     return {'schema':'BTC_RUN_USAGE_AUDIT_V1','since':since,'until':until,
         'source':{'status':'AVAILABLE','adapter':'codex_internal_sqlite','path':str(db)},
-        'coverage':{'status':'INCOMPLETE' if unread else 'COMPLETE_LOCAL_SCOPE','unread_thread_ids':unread},
+        'coverage':{'status':'INCOMPLETE' if unread else 'COMPLETE_LOCAL_SCOPE','unread_thread_ids':unread,
+                    'missing_metadata_thread_ids':missing_metadata},
         'measurement':'Distinct model response usage records and outer model tool calls. Cached input is included in input; no quota conversion.',
         'stratification':'Native root-turn families for explicit heartbeat roots; legacy thread families otherwise. Descendants included. Conservative tool-trace flags, not a quality score.',
         'summary':summarize(rows),'groups':{key:summarize(value) for key,value in groups.items()},'runs':rows,'excluded':excluded,

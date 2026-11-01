@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,15 @@ PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--ans
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
                 '--retained-source-bindings', '--file', '--read-set', '--receipt', '--runtime-schedule')
+
+# These host entries prepare/refresh model-facing material or advance the
+# protected workflow. Standalone report/research paths must not bypass the
+# run-material/run-advance admission. They do not themselves invoke a model.
+USAGE_GUARDED_COMMANDS = frozenset((
+    'run-prepare', 'run-material', 'run-advance', 'context', 'observe',
+    'research-independent', 'research-orchestrated-independent',
+    'report-context', 'report-review', 'research-read',
+))
 
 
 class NodeTransportError(ValueError):
@@ -116,15 +126,14 @@ def absolute_paths(argv, directory):
 
 
 def subcommand(argv):
-    index = 0
-    while index < len(argv):
-        if argv[index] in ('--project', '--root', '--runtime-schedule'):
-            index += 2
-        elif argv[index] == '--full':
-            index += 1
-        else:
-            return argv[index]
-    return None
+    # Match the public parser's normal --name=value and unambiguous option
+    # abbreviations too. A spelling accepted by argparse cannot skip admission.
+    parser = argparse.ArgumentParser(add_help=False)
+    for flag in ('--project', '--root', '--runtime-schedule'):
+        parser.add_argument(flag)
+    parser.add_argument('--full', action='store_true')
+    parser.add_argument('command', nargs='?')
+    return parser.parse_known_args(argv)[0].command
 
 
 def forward_if_enabled(argv, *, requested_release=None):
@@ -139,7 +148,7 @@ def forward_if_enabled(argv, *, requested_release=None):
         return
     import node_config
     config = node_config.load()
-    if subcommand(argv) in ('run-prepare', 'run-material', 'run-advance', 'context', 'observe', 'research-independent', 'research-orchestrated-independent'):
+    if subcommand(argv) in USAGE_GUARDED_COMMANDS:
         from native_usage import require_admission
         require_admission(config)
     docker = config.get('docker_service')
