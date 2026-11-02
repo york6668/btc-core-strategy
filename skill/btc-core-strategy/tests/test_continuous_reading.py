@@ -9,6 +9,18 @@ from v4 import continuous_reading as views, material_reads
 
 
 class PublicContinuityReadingTests(unittest.TestCase):
+    def test_json_types_do_not_collapse_into_common_defaults_or_time_version_indices(self):
+        rows=[dict(requirement_key='r'+str(i),entity_key='subject',cause_key='cause',
+                   cause_version=value,reason='condition',opened_ms=value,condition_value=value)
+              for i,value in enumerate((True,1,1.0))]
+        original={'scope':'PUBLIC','requirements':rows}
+        view,ids=views.requirements_view(original,{})
+        restored=views.restore_requirements(view,ids)
+        self.assertEqual(json.dumps(restored,sort_keys=True),json.dumps(original,sort_keys=True))
+        self.assertNotIn('condition_value',view['row_defaults'])
+        self.assertEqual(len(view['causes']),3)
+        self.assertEqual(len(view['opened_ms_values']),3)
+
     def test_original_v1_directory_and_material_still_reconstruct(self):
         view={'schema':'BTC_PUBLIC_REQUIREMENTS_READING_V1','snapshot_header':{'scope':'PUBLIC'},
               'row_defaults':{'resolved_ms':None},'causes':[{'cause_key':'original-cause','cause_version':3}],
@@ -113,6 +125,22 @@ class PublicContinuityReadingTests(unittest.TestCase):
             m = json.loads(Path(views.build(p, snap, nat, base, material_reads)).read_text())
             self.assertEqual(m['subject_gaps'], ['retired'])
             self.assertEqual(m['original_requirements'], 1)
+
+    def test_supplement_cannot_replace_fixed_subject_payload_or_add_an_unrelated_subject(self):
+        for change in ('replace','unrelated'):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as tmp:
+                p=Path(tmp);snap,nat,sup,base=self.make_inputs(p)
+                item=json.loads(sup.read_text())
+                if change=='replace':
+                    original=json.loads(nat.read_text())[0]['response']['result']
+                    item['response']['result']=dict(original,payload={'changed':'not the pinned source'})
+                    item['request']['params'].update(kind=original['kind'],object_id=original['object_id'])
+                else:
+                    item['response']['result'].update(entity_key='unrelated',object_id='unrelated')
+                    item['request']['params']['object_id']='unrelated'
+                sup.write_text(json.dumps(item))
+                with self.assertRaisesRegex(ValueError,'original missing requirement'):
+                    views.build(p,snap,nat,base,material_reads,supplemental_paths=[sup])
 
     def test_supplement_versions_view_without_rewriting_original_view_or_base_cursor(self):
         with tempfile.TemporaryDirectory() as tmp:

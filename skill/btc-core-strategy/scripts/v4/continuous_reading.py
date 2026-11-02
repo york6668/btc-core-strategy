@@ -18,6 +18,11 @@ def _load(path):
     return json.loads(Path(path).read_bytes())
 
 
+def _json_value(value):
+    """JSON value identity preserves bool/int/float distinctions."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
 def _save(path, value):
     data = (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode()
     path = Path(path)
@@ -42,23 +47,24 @@ def requirements_view(snapshot, subjects):
     structural = {'requirement_key', 'entity_key', 'cause_key', 'cause_version', 'reason', 'opened_ms'}
     if rows:
         common = {k: v for k, v in rows[0].items() if k not in structural
-                  and all(k in row and row[k] == v for row in rows)}
+                  and all(k in row and _json_value(row[k]) == _json_value(v) for row in rows)}
     for ordinal, row in enumerate(rows):
         if not structural <= row.keys():
             raise ValueError('requirement lacks original identity/condition/time fields')
-        cause = (row['cause_key'], row['cause_version'])
+        cause = (row['cause_key'], _json_value(row['cause_version']))
         if cause not in cause_index:
             if cause[0] not in cause_key_index:
                 cause_key_index[cause[0]] = len(cause_keys)
                 cause_keys.append(cause[0])
             cause_index[cause] = len(causes)
-            causes.append({'cause_key_ref': cause_key_index[cause[0]], 'cause_version': cause[1]})
-        if row['opened_ms'] not in time_index:
-            time_index[row['opened_ms']] = len(times)
+            causes.append({'cause_key_ref': cause_key_index[cause[0]], 'cause_version': row['cause_version']})
+        clock = _json_value(row['opened_ms'])
+        if clock not in time_index:
+            time_index[clock] = len(times)
             times.append(row['opened_ms'])
         key = (row['entity_key'], row['reason'])
         group = groups.setdefault(key, {'entity_key': key[0], 'reason': key[1], 'events': {}})
-        event = group['events'].setdefault(time_index[row['opened_ms']], [])
+        event = group['events'].setdefault(time_index[clock], [])
         other = {k: v for k, v in row.items() if k not in structural and k not in common}
         event.append((ordinal, cause_index[cause], other))
         identifiers.append(row['requirement_key'])
@@ -109,6 +115,8 @@ def restore_requirements(view, identities):
                     entries.append((ordinal, cause_ref, time_ref,
                                     group['row_fields'].get(str(event_index) + '/' + str(position), {})))
         for ordinal, cause_ref, time_ref, fields in entries:
+            if type(ordinal) is not int or not 0 <= ordinal < view['requirement_count']:
+                raise ValueError('invalid original requirement ordinal')
             if ordinal in restored:
                 raise ValueError('duplicate requirement ordinal')
             cause = view['causes'][cause_ref]
@@ -158,13 +166,16 @@ def build(directory, snapshot_path, native_path, base_read_set, reader, *, suppl
                 or _millis(request['as_of']) != snapshot['as_of_ms']
                 or obj['known_ms'] > snapshot['as_of_ms']):
             raise ValueError('supplemental subject is not bound to snapshot as_of')
+        if ((obj['kind'], obj['object_id']) in indexed or obj['entity_key'] in subjects
+                or obj['entity_key'] not in {row['entity_key'] for row in snapshot['requirements']}):
+            raise ValueError('supplemental subject must fill an original missing requirement, not replace a pinned subject')
         subjects[obj['entity_key']] = {**obj,
                                        'role': 'SUPPLEMENTAL_AS_OF_SUBJECT_NOT_ADDED_TO_ORIGINAL_ACTIVE_INDEX'}
         objects.append({'request': item['request'], 'response': item['response']})
     missing = sorted({r['entity_key'] for r in snapshot['requirements']} - subjects.keys())
     view, ids = requirements_view(snapshot, subjects)
     view['subject_gaps'] = missing
-    if restore_requirements(view, ids) != snapshot:
+    if _json_value(restore_requirements(view, ids)) != _json_value(snapshot):
         raise ValueError('requirements view is not exactly reversible')
     binding = {'snapshot': _hash(snapshot_path), 'native': _hash(native_path),
                'base': _hash(base_read_set),
