@@ -55,7 +55,10 @@ def frozen_run(root, project, run_path, run_ref):
                            {'payload', 'result_hash', 'market_context_id', 'lifecycle_frozen_at'}),
             'invalid independent market freeze')
     require(frozen['result_hash'] == digest(frozen['payload']), 'independent market result changed')
-    require(frozen['market_context_id'] == read(d / 'context.json')['market_context_id'],
+    original_view = {key: value for key, value in frozen.items() if key != 'lifecycle_frozen_at'}
+    candidate = d / ('market-candidate-' + digest(original_view)[7:] + '.json')
+    require(frozen['market_context_id'] == read(d / 'context.json')['market_context_id']
+            or (candidate.is_file() and read(candidate) == original_view),
             'independent market freeze belongs to another public context')
     binding = d / 'market-freeze-binding.json'
     if binding.exists():

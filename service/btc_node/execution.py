@@ -143,6 +143,11 @@ def recovery_command(argv):
         elif argv[index] == '--full':
             index += 1
         else:
+            if argv[index].startswith('-'):
+                # Older argparse versions accept abbreviated global options.
+                # Unknown spellings must not be mistaken for a subcommand and
+                # skip disclosure checks, including on committed old requests.
+                raise ValueError('use exact supported global option spellings')
             return argv[index]
     return None
 

@@ -379,6 +379,13 @@ class HourlyClosedLoopTests(unittest.TestCase):
         frozen = run_flow.advance(p['run'], 'market', candidate['market_candidate'])
         original = Path(frozen['market_result']).read_bytes()
         self.assertEqual(original, Path(candidate['market_candidate']).read_bytes())
+        from v4 import recovery
+        own = read(p['run'])
+        _, verified = recovery.frozen_run(self.root, self.f.f.project, p['run'], own['run_ref'])
+        self.assertEqual(verified, read(frozen['market_result']))
+        self.assertEqual(recovery.inventory(self.root, self.f.f.project, p['run'], own['run_ref'])['scope'],
+                         'PERSONAL_REPORT')
+        self.assertIn('main_template', run_flow.phase_material(own, 'compatible', 'main'))
         with (self.f.f.project / '资产配置.md').open('a') as stream:
             stream.write('\nSynthetic facts-only update after the first current-candidate freeze.\n')
         for arguments in ({'input_path': candidate['market_candidate']},
@@ -395,6 +402,8 @@ class HourlyClosedLoopTests(unittest.TestCase):
         proof_bytes = proof.read_bytes()
         damaged = dict(read(proof), market_context_id=digest('different candidate context'))
         replace(proof, damaged)
+        with self.assertRaisesRegex(Invalid, 'another public context'):
+            recovery.frozen_run(self.root, self.f.f.project, p['run'], own['run_ref'])
         with self.assertRaisesRegex(Invalid, 'frozen public context differs'):
             run_flow.advance(p['run'], 'market', self.f.file(public))
         proof.unlink()

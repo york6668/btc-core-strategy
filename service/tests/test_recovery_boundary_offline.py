@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,7 +37,7 @@ class CommandJournal(Journal):
 
 class NodeRecoveryBoundaryTests(unittest.TestCase):
     def test_real_dispatch_sanitizes_pinned_cli_and_committed_operation_without_replay(self):
-        source = Path(__file__).resolve().parents[2]
+        source = Path(os.environ.get('BTC_TEST_SOURCE', Path(__file__).resolve().parents[2]))
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder); project = base / 'project'; project.mkdir()
             release = base / 'releases' / 'synthetic-pinned'; release.mkdir(parents=True)
@@ -70,13 +71,25 @@ class NodeRecoveryBoundaryTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE_',json.dumps(recovered))
                 self.assertNotIn('stdout',recovered)
                 self.assertEqual(original,db.value(original_digest))
+                abbreviated = deepcopy(request)
+                abbreviated['operation_id'] = 'old-abbreviated-recover'
+                abbreviated['params']['argv'].insert(-1, '--fu')
+                with self.assertRaisesRegex(ValueError, 'exact supported'):
+                    api.dispatch(settings,abbreviated)
+                self.assertEqual(1,child.call_count)
+                db.operations[abbreviated['operation_id']] = {
+                    'request_digest':fingerprint(encode(abbreviated['params'])), 'status':'COMMITTED',
+                    'result_digest':original_digest, 'release_id':release.name}
+                with self.assertRaisesRegex(ValueError, 'exact supported'):
+                    api.dispatch(settings,abbreviated)
+                self.assertEqual(original,db.value(original_digest))
                 # Labels, a directory, and the old global binding cannot unlock a body.
                 with self.assertRaises((ValueError,OSError,KeyError)):
                     api.dispatch(settings,{'method':'core.recover','params':{
                         'operation_id':'original-recover','run':str(project/'unprepared/run.json'),'run_ref':'new-run'}})
 
     def test_arbitrary_result_file_never_creates_personal_continuity(self):
-        source = Path(__file__).resolve().parents[2]
+        source = Path(os.environ.get('BTC_TEST_SOURCE', Path(__file__).resolve().parents[2]))
         with tempfile.TemporaryDirectory() as folder:
             project=Path(folder); d=project/'run'; d.mkdir()
             (d/'run.json').write_text(json.dumps({'created_at':'2030-01-01T00:00:00Z','run_ref':'invented'}))

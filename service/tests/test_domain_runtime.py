@@ -383,7 +383,9 @@ class DomainRuntime(unittest.TestCase):
                     self.assertIn('recovery_component_binding',reconciled)
                     self.assertEqual((sample.f.store/'sensing-current.json').read_bytes(),before)
                     self.assertNotIn('stdout',reconciled)
-                    self.assertEqual(execute(settings,broken)['stdout'],result['stdout'])
+                    replayed=execute(settings,broken)
+                    self.assertEqual(replayed['returncode'],reconciled['returncode'])
+                    self.assertEqual(execute(settings,broken),replayed)
                     # Resume an immutable pre-Docker release. Its real SQLite
                     # consumer must see the newest MySQL observation, and the
                     # native protocol state must survive the round trip.
