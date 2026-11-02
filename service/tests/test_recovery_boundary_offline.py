@@ -38,6 +38,7 @@ class CommandJournal(Journal):
 class NodeRecoveryBoundaryTests(unittest.TestCase):
     def test_real_dispatch_sanitizes_pinned_cli_and_committed_operation_without_replay(self):
         source = Path(os.environ.get('BTC_TEST_SOURCE', Path(__file__).resolve().parents[2]))
+        self.addCleanup(execution.load_methods, source)
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder); project = base / 'project'; project.mkdir()
             release = base / 'releases' / 'synthetic-pinned'; release.mkdir(parents=True)
@@ -90,6 +91,7 @@ class NodeRecoveryBoundaryTests(unittest.TestCase):
 
     def test_arbitrary_result_file_never_creates_personal_continuity(self):
         source = Path(os.environ.get('BTC_TEST_SOURCE', Path(__file__).resolve().parents[2]))
+        self.addCleanup(execution.load_methods, source)
         with tempfile.TemporaryDirectory() as folder:
             project=Path(folder); d=project/'run'; d.mkdir()
             (d/'run.json').write_text(json.dumps({'created_at':'2030-01-01T00:00:00Z','run_ref':'invented'}))

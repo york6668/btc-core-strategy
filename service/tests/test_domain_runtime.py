@@ -386,9 +386,10 @@ class DomainRuntime(unittest.TestCase):
                     replayed=execute(settings,broken)
                     self.assertEqual(replayed['returncode'],reconciled['returncode'])
                     self.assertEqual(execute(settings,broken),replayed)
-                    # Resume an immutable pre-Docker release. Its real SQLite
-                    # consumer must see the newest MySQL observation, and the
-                    # native protocol state must survive the round trip.
+                    # Resume the immutable pre-Docker adapter through public
+                    # recovery. The wrapper must export the newest observation
+                    # schema before its CLI and preserve native protocol state;
+                    # an unfrozen report-material call is no longer legal.
                     legacy=runtime/'synthetic-pre-docker';shutil.copytree(release,legacy)
                     adapter=legacy/'skill/btc-core-strategy/scripts/market_observation.py'
                     text=adapter.read_text()
@@ -398,9 +399,10 @@ class DomainRuntime(unittest.TestCase):
                     self.assertNotIn('connect_if_configured',adapter.read_text())
                     resumed={'method':'core.execute','operation_id':folder.name+'-old-release',
                         'params':{'release':str(legacy),'argv':['--project',str(project),'--root',str(sample.f.store),
-                            'run-material','--run',prepared['run']]}}
+                            'recover']}}
                     old_result=execute(settings,resumed)
                     self.assertEqual(old_result['returncode'],0,old_result['stderr'])
+                    self.assertEqual(json.loads(old_result['stdout'])['scope'],'PUBLIC')
                     self.assertEqual((sample.f.store/'sensing-current.json').read_bytes(),before)
                     import sqlite3
                     with sqlite3.connect(original) as copied:
