@@ -494,7 +494,8 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                'market': raw_path, 'market_hash': digest(raw), 'evidence': str(evidence_dir), 'evidence_id': package['evidence_id'],
                'additional': str(Path(additional).resolve()) if additional else None,
                'additional_hash': digest(read(Path(additional) / 'evidence.json')) if additional else None,
-               'deep': deep, 'context_id': ctx['context_id'], 'read_set': {'observe': reads}}
+               'deep': deep, 'context_id': ctx['context_id'], 'read_set': {'observe': reads},
+               'recovery_contract_revision': 1}
         if collector_path:
             run.update(collector=collector_path, collector_input=str(Path(collector_file).resolve()) if collector_file else None,
                        collector_input_hash=digest(Path(collector_file).read_bytes()) if collector_file else None)
@@ -559,6 +560,9 @@ def read_run(path, root=None, project=None, *, resolve_aliases=False):
 def phase_material(run, label, stage='report'):
     root, d = Path(run['root']), Path(run['directory'])
     require(stage in ('report', 'report-body', 'main'), 'invalid material stage')
+    if read(d / 'sensing-context.json').get('revision', 1) >= 5:
+        from .recovery import frozen_run
+        frozen_run(root, run['project'], d / 'run.json', run['run_ref'])
     base_reads = (run.get('read_set') or {}).get('observe')
     # Portfolio is already the preceding required stage. Reuse its exact
     # reading view as well as the public base instead of presenting it twice.
@@ -810,6 +814,8 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
         reads = material_reads.make(d, 'portfolio', portfolio_path,
             base=None if ctx.get('revision', 1) >= 6 else run.get('read_set', {}).get('observe'),
             required={'observation_template': form_path}, compact=True)
+        from .recovery import record_freeze
+        record_freeze(run, frozen)
     return {'status': 'MARKET_RESULT_FROZEN', 'market_result': path,
             'market_result_hash': frozen['result_hash'], 'portfolio_context': portfolio_path,
             'observation_template': str(form_path), 'read_set': {'portfolio': reads},

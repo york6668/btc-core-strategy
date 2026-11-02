@@ -6,6 +6,7 @@ projections are committed; ambiguous interrupted commands are never replayed.
 from __future__ import annotations
 
 import json
+import importlib
 import os
 import subprocess
 from pathlib import Path
@@ -102,6 +103,108 @@ def component_binding(release):
             'meaning': 'Actual executing method and service bytes; data/reader identity remains in frozen run inputs, not inferred from this pin.'}
 
 
+def load_methods(release):
+    scripts = str(Path(release) / 'skill/btc-core-strategy/scripts')
+    prior = getattr(load_methods, '_scripts', None)
+    if prior and prior != scripts:
+        for name, module in list(sys.modules.items()):
+            if (getattr(module, '__file__', '') or '').startswith(prior + '/'):
+                sys.modules.pop(name, None)
+        if prior in sys.path:
+            sys.path.remove(prior)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    load_methods._scripts = scripts
+
+
+def boundary_methods(settings, release):
+    # The running node owns disclosure even when executing an older pinned CLI.
+    current = Path(settings['release_root']).parent / 'current'
+    boundary = current.resolve() if current.is_dir() else Path(release)
+    if not (boundary / 'skill/btc-core-strategy/scripts/v4/recovery.py').is_file():
+        raise Conflict('installed recovery boundary unavailable; preserve original operation')
+    load_methods(boundary)
+    return importlib.import_module('v4.recovery')
+
+
+def option(argv, name):
+    if name not in argv:
+        return None
+    if argv.count(name) != 1 or argv.index(name) + 1 >= len(argv):
+        raise ValueError('one value required for ' + name)
+    return argv[argv.index(name) + 1]
+
+
+def recovery_command(argv):
+    index = 0
+    while index < len(argv):
+        if argv[index] in ('--project', '--root', '--runtime-schedule'):
+            index += 2
+        elif argv[index] == '--full':
+            index += 1
+        else:
+            return argv[index]
+    return None
+
+
+def require_frozen_run(settings, release, run, run_ref):
+    return boundary_methods(settings, release).frozen_run(
+        Path(settings['project']) / '.strategy/v4', settings['project'], run, run_ref)
+
+
+def command_disclosure(settings, release, argv, result=None):
+    command = recovery_command(argv)
+    run = option(argv, '--run')
+    if command in ('recover', 'report-care', 'report-context') and run:
+        require_frozen_run(settings, release, run, option(argv, '--run-ref'))
+    elif command == 'report-context':
+        raise Conflict('report context requires this execution frozen run')
+    elif command == 'run-material':
+        methods = boundary_methods(settings, release)
+        from v4 import run_flow
+        original = run_flow.read_run(run, Path(settings['project']) / '.strategy/v4', settings['project'], resolve_aliases=True)
+        methods.frozen_run(original['root'], original['project'], run, original['run_ref'])
+    if result is None:
+        return result
+    result = dict(result)
+    if 'continuity' in result:
+        continuity = result['continuity']
+        result['continuity'] = {key: continuity[key] for key in (
+            'public_context', 'public_context_binding', 'formal_market_binding',
+            'reader_receipts', 'history') if key in continuity}
+        result['continuity']['market_binding'] = None
+        path = run or (str(Path(option(argv, '--directory')) / 'run.json') if option(argv, '--directory') else None)
+        if path and continuity.get('personal_context'):
+            try:
+                original = json.loads(Path(path).read_bytes())
+                _, frozen = require_frozen_run(settings, release, path, original.get('run_ref'))
+                personal = Path(continuity['personal_context'])
+                if (personal.resolve() == (Path(original['directory']) / 'continuous-personal.json').resolve()
+                        and (continuity.get('market_binding') or {}).get('object_id') == frozen['result_hash']
+                        and json.loads(personal.read_bytes()).get('market_binding') == continuity['market_binding']):
+                    result['continuity'].update(personal_context=str(personal), market_binding=continuity['market_binding'])
+            except (ValueError, OSError, KeyError, TypeError):
+                pass
+    if command not in ('recover', 'report-care') or run:
+        return result
+    # Also project cached results from old releases. Never overwrite their
+    # original operation blob or infer that an UNKNOWN delivery was retried.
+    view = dict(result)
+    try:
+        value = json.loads(view.get('stdout') or '{}')
+        methods = boundary_methods(settings, release)
+        public = methods.public_inventory(value) if command == 'recover' else methods.public_care(value)
+    except (ValueError, Conflict):
+        public = {'scope': 'PUBLIC', 'details_after': 'original independently frozen run required'}
+    view['stdout'] = json.dumps(public)
+    view['stderr'] = ''
+    continuity = view.get('continuity') or {}
+    view['continuity'] = {key: continuity[key] for key in (
+        'public_context', 'public_context_binding', 'formal_market_binding') if key in continuity}
+    view['continuity']['market_binding'] = None
+    return view
+
+
 def execute(settings, request):
     params = request['params']
     release = Path(params['release']).resolve()
@@ -120,6 +223,8 @@ def execute(settings, request):
     for option, required in (('--project', project), ('--root', project / '.strategy/v4')):
         if argv.count(option) != 1 or project_path(argv[argv.index(option) + 1]) != required.resolve():
             raise ValueError('command belongs to another project')
+    if not help_only(argv):
+        command_disclosure(settings, release, argv)
     operation = request.get('operation_id')
     if not isinstance(operation, str) or not 0 < len(operation) <= 191:
         raise ValueError('stable operation_id required')
@@ -138,7 +243,7 @@ def execute(settings, request):
                 if previous['request_digest'] != request_digest:
                     raise Conflict('operation identity reused with different inputs')
                 if previous['status'] == 'COMMITTED':
-                    return db.value(previous['result_digest'])
+                    return command_disclosure(settings, release, argv, db.value(previous['result_digest']))
                 raise Conflict('interrupted command requires reconciliation; do not replay or resend')
             if pending:
                 raise Conflict('recover the interrupted writer before accepting another command')
@@ -202,29 +307,20 @@ def execute(settings, request):
                 db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",
                            (millis(), result_digest, operation))
             journal.unlink()
-            return result
+            return command_disclosure(settings, release, argv, result)
     finally:
         db.close()
 
 
 def project_state(db, settings, release, argv=()):
-    scripts = str(Path(release) / 'skill/btc-core-strategy/scripts')
     # Each service process is tied to an image/release. A different requested
     # method can execute in a subprocess, but projection uses this installed set.
-    prior = getattr(project_state, '_scripts', None)
-    if prior and prior != scripts:
-        for name, module in list(sys.modules.items()):
-            filename = getattr(module, '__file__', '') or ''
-            if filename.startswith(prior + '/'):
-                sys.modules.pop(name, None)
-        if prior in sys.path: sys.path.remove(prior)
-    if scripts not in sys.path: sys.path.insert(0, scripts)
-    project_state._scripts = scripts
+    load_methods(release)
     projection = Projection(db, Path(release).name)
     project = Path(settings['project'])
-    result = projection.refresh(project, project / '.strategy/v4')
-    result['formal_market_binding'] = result.get('market_binding')
-    result['market_binding'] = None
+    projected = projection.refresh(project, project / '.strategy/v4')
+    result = {key: projected[key] for key in ('history', 'reader_receipts') if key in projected}
+    result.update(formal_market_binding=projected.get('market_binding'), market_binding=None)
     directory = None
     if '--directory' in argv:
         directory = Path(argv[argv.index('--directory') + 1])
@@ -261,7 +357,11 @@ def project_state(db, settings, release, argv=()):
         result['public_context_binding'] = snapshot
         frozen_path = directory / 'market-result.json'
         if frozen_path.exists():
-            frozen = json.loads(frozen_path.read_bytes())
+            try:
+                _, frozen = require_frozen_run(settings, release, directory / 'run.json', run.get('run_ref'))
+            except (ValueError, OSError, KeyError, TypeError):
+                # Candidate-only, incomplete and damaged runs stay PUBLIC.
+                return result
             known = frozen.get('created_at') or frozen.get('frozen_at')
             if known is None:
                 from .codec import stamp
@@ -311,7 +411,7 @@ def full_context(db, scope, *, as_of=None):
             'meaning': 'Version-pinned maintenance index as known at the stated time. Read immutable judgement contents and recheck against external evidence; a prior opinion is not a new fact.'}
 
 
-def recover(settings, operation):
+def recover(settings, operation, *, run=None, run_ref=None):
     db = Database(settings)
     journal = Path(settings['journal']) / (fingerprint(operation.encode()) + '.json')
     try:
@@ -320,7 +420,8 @@ def recover(settings, operation):
             if not record:
                 raise ValueError('unknown operation')
             if record['status'] == 'COMMITTED':
-                return db.value(record['result_digest'])
+                result = db.value(record['result_digest'])
+                return recovered_view(settings, record, operation, result, run, run_ref)
             if not journal.is_file():
                 raise Conflict('missing execution journal; inspect compatibility state before reconciliation')
             value = json.loads(journal.read_bytes())
@@ -343,6 +444,24 @@ def recover(settings, operation):
             db.execute("UPDATE operations SET status='COMMITTED',finished_ms=%s,result_digest=%s WHERE operation_id=%s",
                        (millis(), digest, operation))
         journal.unlink(missing_ok=True)
-        return result
+        return recovered_view(settings, record, operation, result, run, run_ref)
     finally:
         db.close()
+
+
+def recovered_view(settings, record, operation, result, run, run_ref):
+    if run is None:
+        # A historical committed result may have arbitrary private stdout and
+        # continuity. Default recovery reports identity/effect, never its body.
+        view = {key: result[key] for key in (
+            'returncode', 'recovery', 'component_binding', 'recovery_component_binding') if key in result} | {
+            'operation_id': operation, 'scope': 'PUBLIC',
+            'details_after': 'core.recover with original operation_id and this execution frozen run/run_ref'}
+        continuity = result.get('continuity') or {}
+        view['continuity'] = {key: continuity[key] for key in (
+            'public_context', 'public_context_binding', 'formal_market_binding') if key in continuity}
+        view['continuity']['market_binding'] = None
+        return view
+    release = Path(settings['release_root']) / record['release_id']
+    require_frozen_run(settings, release, run, run_ref)
+    return result

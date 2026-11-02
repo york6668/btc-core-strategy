@@ -298,9 +298,9 @@ class DomainRuntime(unittest.TestCase):
                             with self.assertRaisesRegex(RuntimeError,'lost scalar'):execute(settings,lost)
                         with patch('btc_node.execution.subprocess.run',side_effect=AssertionError('must not replay')):
                             restored=recover(settings,lost['operation_id'])
-                        self.assertEqual(restored['stdout'],reference_result['stdout'])
+                        self.assertNotIn('stdout',restored)
                         self.assertEqual(restored['recovery'],'STATE_PRESERVED_NO_REPLAY')
-                        self.assertEqual(execute(settings,lost),restored)
+                        self.assertEqual(execute(settings,lost)['stdout'],reference_result['stdout'])
                         bad=deepcopy(reference_request);bad['operation_id']+='-bad'
                         bad['params']['argv'][-1]='/missing'
                         self.assertNotEqual(execute(settings,bad)['returncode'],0)
@@ -321,7 +321,7 @@ class DomainRuntime(unittest.TestCase):
                             with self.assertRaisesRegex(RuntimeError,'lost scalar'):execute(settings,lost_help)
                         with patch('btc_node.execution.subprocess.run',side_effect=AssertionError('must not replay')):
                             restored_help=recover(settings,lost_help['operation_id'])
-                        self.assertEqual(restored_help['stdout'],help_result['stdout'])
+                        self.assertNotIn('stdout',restored_help)
                         self.assertEqual(restored_help['recovery'],'STATE_PRESERVED_NO_REPLAY')
                     self.assertEqual({p:p.read_bytes() for p in sample.d.rglob('*') if p.is_file()},frozen_before)
                     self.assertNotIn('continuity',reference_result)
@@ -359,15 +359,17 @@ class DomainRuntime(unittest.TestCase):
                     material_request={'method':'core.execute','operation_id':folder.name+'-old-round-material',
                         'params':{'release':str(release),'argv':['--project',str(project),'--root',str(sample.f.store),
                             'run-material','--run',prepared['run']]}}
-                    material=execute(settings,material_request)
-                    self.assertEqual(material['returncode'],0,material['stderr'])
-                    self.assertEqual(Path(material['continuity']['public_context']).read_bytes(),frozen_public)
+                    # This historical fixture has no independent market phase.
+                    # A report-stage label must not disclose mixed material.
+                    with self.assertRaises(ValueError):
+                        execute(settings,material_request)
+                    self.assertEqual(Path(result['continuity']['public_context']).read_bytes(),frozen_public)
                     self.assertNotIn(future_id,{v['object_id'] for v in json.loads(frozen_public)['objects']})
-                    self.assertEqual(material['component_binding']['core_release'],release.name)
-                    self.assertEqual(set(material['component_binding']['service_sources']),
+                    self.assertEqual(result['component_binding']['core_release'],release.name)
+                    self.assertEqual(set(result['component_binding']['service_sources']),
                         {'execution.py','projection.py','entities.py','series.py','history.py'})
                     print('BTC_OLD_ROUND_FROZEN_PUBLIC='+json.dumps({'later_object_withheld':True,
-                        'snapshot_unchanged':True,'real_cli_returncode':0,'component_receipt':True}),flush=True)
+                        'snapshot_unchanged':True,'unfrozen_report_stage_rejected':True,'component_receipt':True}),flush=True)
                     before=(sample.f.store/'sensing-current.json').read_bytes()
                     # Simulate a lost response after the durable EXECUTED journal,
                     # then reconcile state without rerunning an analysis or send.
@@ -380,7 +382,8 @@ class DomainRuntime(unittest.TestCase):
                     self.assertEqual(reconciled['component_binding'],result['component_binding'])
                     self.assertIn('recovery_component_binding',reconciled)
                     self.assertEqual((sample.f.store/'sensing-current.json').read_bytes(),before)
-                    self.assertEqual(execute(settings,broken),reconciled)
+                    self.assertNotIn('stdout',reconciled)
+                    self.assertEqual(execute(settings,broken)['stdout'],result['stdout'])
                     # Resume an immutable pre-Docker release. Its real SQLite
                     # consumer must see the newest MySQL observation, and the
                     # native protocol state must survive the round trip.

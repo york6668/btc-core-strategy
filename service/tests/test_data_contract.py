@@ -916,7 +916,7 @@ class NodeContract(unittest.TestCase):
             self.assertTrue(self.db.value(original[-1]['provenance']['original_digest']))
             self.assertTrue(self.db.value(attachment_digest))
 
-    def test_frozen_run_binding_is_returned_and_formal_binding_stays_separate(self):
+    def test_arbitrary_frozen_filename_cannot_unlock_personal_binding(self):
         from btc_node.execution import project_state
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder);(path/'run.json').write_bytes(encode({'created_at':self.at(1)}))
@@ -925,9 +925,8 @@ class NodeContract(unittest.TestCase):
             formal={'object_id':'old-formal','version':1,'digest':'old'}
             with patch('btc_node.execution.Projection.refresh',return_value={'market_binding':formal}):
                 result=project_state(self.db,{'project':folder},os.environ['BTC_TEST_SOURCE'],['--run',str(path/'run.json')])
-            personal=json.loads((path/'continuous-personal.json').read_bytes())
-            self.assertEqual(result['market_binding'],personal['market_binding'])
-            self.assertEqual(result['market_binding']['object_id'],self.id)
+            self.assertFalse((path/'continuous-personal.json').exists())
+            self.assertIsNone(result['market_binding'])
             self.assertEqual(result['formal_market_binding'],formal)
 
     def test_recycle_preserves_essential_evidence_and_deduplicates(self):

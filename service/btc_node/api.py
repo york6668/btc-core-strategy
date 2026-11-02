@@ -159,7 +159,7 @@ def dispatch(settings, request):
         if 'original_request' in params:
             return recover_reconciliation(settings, **params)
         from .execution import recover
-        return recover(settings, params['operation_id'])
+        return recover(settings, params['operation_id'], run=params.get('run'), run_ref=params.get('run_ref'))
     if method == 'host.capacity':
         db=Database(settings)
         try:

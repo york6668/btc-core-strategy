@@ -144,11 +144,7 @@ class EvidenceReasoningWorkflowTests(unittest.TestCase):
         f.c.d.commit()
         original = reporting.context(f.f.store)
         before = storage.current(f.f.store)
-        stream = io.StringIO()
-        with redirect_stdout(stream):
-            code = strategy_v4.main(['--project', str(f.f.project), '--root', str(f.f.store), 'report-context'])
-        self.assertEqual(code, 0)
-        packet = json.loads(stream.getvalue())
+        packet = reporting.authoring_context(f.f.store)
         self.assertEqual(packet['cycle_report_instructions'], cycle.REPORT_SCOPE_REVIEW)
         self.assertEqual(packet['result_instructions'], REPORT_INSTRUCTIONS)
         self.assertIn(market_state.EVIDENCE_REPORT_REVIEW, packet['result_instructions'])

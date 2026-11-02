@@ -133,7 +133,7 @@ class RuntimeScheduleTests(unittest.TestCase):
 class ReportContextDependencyTests(unittest.TestCase):
     def setUp(self):
         from test_market_reporting import RealContextIntegrationTests
-        self.fixture = RealContextIntegrationTests('test_real_context_cli_and_silence_roundtrip_without_mocks')
+        self.fixture = RealContextIntegrationTests('test_internal_context_and_silence_roundtrip_without_mocks')
         self.fixture.setUp(); self.addCleanup(self.fixture.doCleanups)
         self.addCleanup(runtime_schedule.bind, None, None)
         self.root, self.project = self.fixture.f.store, self.fixture.f.project
@@ -187,13 +187,10 @@ class ReportContextDependencyTests(unittest.TestCase):
         with self.no_platform_reads(), self.assertRaisesRegex(Invalid, 'sensing pointer mismatch'):
             reporting.authoring_context(self.root)
 
-    def test_real_cli_constructs_context_without_native_platform_access(self):
-        import strategy_v4
-        output = io.StringIO()
-        with self.no_platform_reads(), redirect_stdout(output):
-            code = strategy_v4.main(['--project', str(self.project), '--root', str(self.root), 'report-context'])
-        self.assertEqual(code, 0)
-        ctx = json.loads(output.getvalue())
+    def test_internal_context_constructs_without_native_platform_access(self):
+        from v4 import reporting
+        with self.no_platform_reads():
+            ctx = reporting.authoring_context(self.root)
         self.assertEqual(ctx['report_care']['execution_window']['status'], 'UNAVAILABLE')
         self.assertEqual(ctx['observation']['observation_id'], ctx['identity']['observation_id'])
 

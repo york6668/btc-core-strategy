@@ -61,8 +61,11 @@ def main(argv=None):
     p.add_argument('--report', required=True)
     p.add_argument('--projection', required=True)
     p.add_argument('--provider-readback', required=True)
-    for name in ('pin', 'recover', 'facts'):
+    for name in ('pin', 'facts'):
         sub.add_parser(name)
+    p = sub.add_parser('recover')
+    p.add_argument('--run', help='original run with completed independent market freeze; otherwise public inventory only')
+    p.add_argument('--run-ref', help='this execution reference, matching the original run')
     p = sub.add_parser('context')
     p.add_argument('--limit', type=int, default=240)
     p.add_argument('--market', help='current public market package; required by recommendation sensing')
@@ -101,9 +104,12 @@ def main(argv=None):
     p = sub.add_parser('assemble-main')
     for flag in ('components', 'evidence', 'market', 'identity', 'checks', 'output', 'review-output'):
         p.add_argument('--' + flag, required=True)
-    sub.add_parser('report-context')
+    p=sub.add_parser('report-context')
+    p.add_argument('--run', required=True)
+    p.add_argument('--run-ref', required=True)
     p=sub.add_parser('report-care')
     p.add_argument('--run-ref')
+    p.add_argument('--run', help='original independently frozen run; otherwise public timing flags only')
     p = sub.add_parser('report-review')
     p.add_argument('--spec', required=True)
     p = sub.add_parser('market-report-source')
@@ -213,7 +219,8 @@ def main(argv=None):
         elif args.command == 'pin':
             result = storage.current(args.root)
         elif args.command == 'recover':
-            result = storage.recover(args.root)
+            from v4 import recovery
+            result = recovery.inventory(args.root,args.project,args.run,args.run_ref)
         elif args.command == 'facts':
             result = facts(args.project)
         elif args.command == 'context':
@@ -259,9 +266,15 @@ def main(argv=None):
             create(args.review_output,reviewed)
             result={'draft_id':value['draft_id'],'draft':args.output,'review':args.review_output}
         elif args.command == 'report-care':
-            from v4 import report_care
+            from v4 import report_care, recovery
+            if args.run:
+                recovery.frozen_run(args.root,args.project,args.run,args.run_ref)
             result=report_care.status(args.root,run_ref=args.run_ref)
+            if not args.run:
+                result=recovery.public_care(result)
         elif args.command == 'report-context':
+            from v4 import recovery
+            recovery.frozen_run(args.root,args.project,args.run,args.run_ref)
             result=reporting.authoring_context(args.root)
         elif args.command == 'report-review':
             result=reporting.record(args.root,read(args.spec))

@@ -12,6 +12,8 @@
 
 ## 正常路径
 
+`recover` 默认只给 PUBLIC 身份及计数；`report-care --run-ref <本轮引用>` 在独立市场冻结前只给公开时序标志。取得本轮 `MARKET_RESULT_FROZEN` 后，完整恢复用 `recover --run <本轮run.json> --run-ref <本轮引用>`，完整报告维护用同绑定的 `report-care`；`report-context` 同样要求这两个参数。`run-material` 的 main/report 标签不能跳过本轮冻结。节点 `core.recover` 默认只回原operation身份/效果；完整回收提供 `operation_id` 与当前已冻结 `run`、`run_ref`，沿原operation取回而不执行重放。全局current、候选、目录名或单独market-result文件不提供准入；旧合法冻结使用原上下文及已完成组合阶段材料兼容，不补造新阶段。
+
 投递恢复消费统一的 `delivery_recovery` 主动清单。完整 `attempt_recovery` 中的 `WAIT_FOR_NEW_EVIDENCE` 及其依据仅供按需历史查询，不能因原 state=UNKNOWN 在市场或报告阶段重新安排回读。没有新关联证据时，最终回复与 inbox 不重复此历史异常；原版本收到实际新运输状态、回复证据或用户明确复查时仍可恢复。未完成报告义务与新异常继续正常处理，详见[交付恢复](market-reporting.md#历史-unknown-的恢复与提醒)。
 
 Docker 节点返回 `continuity.public_context` 与冻结后的 `continuity.personal_context`，按[持续分析契约](continuous-analysis.md)在对应阶段读取；用稳定对象 ID、版本与证据提交观察和重要变化。历史查询使用事件窗口及 as_of，价格辅助材料保留原产品和单位。报告没提及的前瞻期限、计划条件、研究和纠偏仍由同一轮复核，不以复制上一小时整套内容代替进展。

@@ -157,12 +157,8 @@ class RealContextIntegrationTests(unittest.TestCase):
                'recommendation_checks':[{'side':side,'findings':['NO_MATERIAL_CHANGE'],'refs':['windows.4h.binance_spot_1h'],'explanation':'Synthetic unchanged recommendation evidence reviewed.'} for side in ('upper_short','lower_spot')],
                'extra_findings':[],'main_evaluation':{'required':False,'reasons':[]},'research_findings':[]}
         sensing.record(self.f.store,self.f.project/'.strategy/market_observation.sqlite3',self.f.project,self.f.raw,value)
-    def test_real_context_cli_and_silence_roundtrip_without_mocks(self):
-        import strategy_v4,io,json
-        from contextlib import redirect_stdout
-        stream=io.StringIO()
-        with redirect_stdout(stream):code=strategy_v4.main(['--project',str(self.f.project),'--root',str(self.f.store),'report-context'])
-        self.assertEqual(code,0);ctx=json.loads(stream.getvalue())
+    def test_internal_context_and_silence_roundtrip_without_mocks(self):
+        ctx=reporting.authoring_context(self.f.store)
         self.assertEqual(ctx['pending_delivery'],[]);self.assertEqual(ctx['pending_report_reviews'],[])
         self.assertEqual(ctx['metrics']['binance_spot_1h']['market'],'SPOT')
         self.assertTrue(reporting.review_required(self.f.store))
