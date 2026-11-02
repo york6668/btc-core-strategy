@@ -9,6 +9,33 @@ from v4 import continuous_reading as views, material_reads
 
 
 class PublicContinuityReadingTests(unittest.TestCase):
+    def test_original_v1_directory_and_material_still_reconstruct(self):
+        view={'schema':'BTC_PUBLIC_REQUIREMENTS_READING_V1','snapshot_header':{'scope':'PUBLIC'},
+              'row_defaults':{'resolved_ms':None},'causes':[{'cause_key':'original-cause','cause_version':3}],
+              'opened_ms_values':[40],'requirement_count':1,'groups':[{'entity_key':'subject','reason':'original reason',
+                  'entries':[[0,0,0]],'row_fields':{}}]}
+        identities={'schema':'BTC_REQUIREMENT_IDENTITIES_V1','requirement_keys':['original-requirement']}
+        self.assertEqual(views.restore_requirements(view,identities),{'scope':'PUBLIC','requirements':[
+            {'resolved_ms':None,'requirement_key':'original-requirement','entity_key':'subject',
+             'reason':'original reason','cause_key':'original-cause','cause_version':3,'opened_ms':40}]})
+
+    def test_repeated_identity_and_clock_indices_do_not_repeat_in_required_events(self):
+        rows = [dict(requirement_key='r%064d' % i, entity_key='subject',
+                     cause_key='c%064d' % (i % 5), cause_version=i // 5,
+                     reason='same dependency condition', opened_ms=100 + i % 2,
+                     resolved_ms=None, resolution_ref=None) for i in range(1000)]
+        original = {'scope':'PUBLIC','as_of_ms':200,'objects':[],'requirements':rows}
+        value, identities = views.requirements_view(original,{})
+        self.assertEqual(value['schema'],'BTC_PUBLIC_REQUIREMENTS_READING_V2')
+        self.assertEqual(len(identities['cause_keys']),5)
+        self.assertEqual(len(value['groups'][0]['events']),2)
+        self.assertEqual(sum(len(e[1]) for e in value['groups'][0]['events']),1000)
+        self.assertNotIn(rows[0]['cause_key'],json.dumps(value))
+        self.assertEqual(views.restore_requirements(value,identities),original)
+        # Required semantic dimensions remain; opaque identities/ordinals have
+        # an exact directory rather than being repeated in every model page.
+        self.assertLess(len(json.dumps(value)), 80000)
+
     def test_every_row_cause_version_clock_and_unique_condition_round_trips(self):
         rows = [dict(requirement_key='r' + str(i), entity_key='subject', cause_key='cause',
                      cause_version=i % 2 + 1, reason='same actual dependency condition',
@@ -20,10 +47,10 @@ class PublicContinuityReadingTests(unittest.TestCase):
         self.assertEqual(views.restore_requirements(value, identifiers), original)
         self.assertEqual(len(value['causes']), 2)
         self.assertEqual(value['opened_ms_values'], [100, 101, 102, 103])
-        self.assertEqual(value['groups'][0]['row_fields']['3']['unique_condition'], {'limit': 3})
-        self.assertEqual(value['groups'][0]['row_fields']['3']['resolved_ms'], 250)
-        self.assertEqual(set(identifiers), {'schema', 'requirement_keys'})
-        value['groups'][0]['entries'].pop()
+        self.assertEqual(value['groups'][0]['row_fields']['3/0']['unique_condition'], {'limit': 3})
+        self.assertEqual(value['groups'][0]['row_fields']['3/0']['resolved_ms'], 250)
+        self.assertEqual(identifiers['entry_ordinals'], [0, 1, 2, 3])
+        value['groups'][0]['events'].pop()
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             views.restore_requirements(value, identifiers)
 
@@ -62,7 +89,7 @@ class PublicContinuityReadingTests(unittest.TestCase):
             manifest = views.build(p, snap, nat, base, material_reads, supplemental_paths=[sup])
             result = json.loads(Path(manifest).read_text())
             self.assertEqual(result['subject_gaps'], [])
-            projected = json.loads((p / 'public-author/controlled-reading/requirements-material.json').read_text())
+            projected = json.loads(Path(json.loads(Path(result['requirements_read_set']).read_text())['material']).read_text())
             self.assertFalse(projected['subjects']['retired']['active'])
             self.assertEqual(projected['subjects']['retired']['version'], 2)
             self.assertEqual(projected['subjects']['retired']['valid_until'], 'old deadline')
@@ -86,6 +113,21 @@ class PublicContinuityReadingTests(unittest.TestCase):
             m = json.loads(Path(views.build(p, snap, nat, base, material_reads)).read_text())
             self.assertEqual(m['subject_gaps'], ['retired'])
             self.assertEqual(m['original_requirements'], 1)
+
+    def test_supplement_versions_view_without_rewriting_original_view_or_base_cursor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);snap,nat,sup,base=self.make_inputs(p)
+            first=views.build(p,snap,nat,base,material_reads)
+            before=Path(first).read_bytes(),Path(base).read_bytes()
+            page=material_reads.read_page(base,0,37,allowed_directory=p/'reading')
+            second=views.build(p,snap,nat,base,material_reads,supplemental_paths=[sup])
+            self.assertNotEqual(first,second)
+            self.assertEqual(before,(Path(first).read_bytes(),Path(base).read_bytes()))
+            self.assertEqual(page,material_reads.read_page(base,0,37,allowed_directory=p/'reading'))
+            manifest=json.loads(Path(second).read_text())
+            self.assertEqual(manifest['subject_gaps'],[])
+            native=json.loads(Path(manifest['native_read_set']).read_text())
+            self.assertEqual(native['base_read_set'],str(base))
 
     def test_wrong_as_of_and_private_supplement_cannot_enter_public_view(self):
         for field, value in [('as_of', '1970-01-01T00:00:01Z'), ('scope', 'PERSONAL')]:

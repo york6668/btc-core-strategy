@@ -61,7 +61,9 @@ revision 5 及以上的正常 `run-prepare` 已直接返回 compact view 4，包
 
 全量 inventory、不可变对象与每条未决要求继续保留，读取体量不能作为删除、解决或后移义务的理由。正常 PUBLIC 接续可用本项目 `scripts/continuous_public_read.py` 对已经固定的 `continuous-public.json`、对应版本的 PUBLIC `object.get` 原回执及本轮已完整读过的 PUBLIC read_set 生成有界视图；该工具只读本地原件、写读取材料，不联网、不采集、不投影新业务状态。`--reader-scripts` 可明确指定本轮已安装的读取实现，其代码散列与修正工具散列分别记录，不能把本地新工具说成旧引擎已经发布。
 
-工具的 native 视图沿用 `material_reads.make(compact=True, base=<同一作者已读的本轮PUBLIC read_set>)`，保留全部对象 payload、生命周期、来源和依赖。新作者未读该 base 时须先完整读取，不借另一作者或上一轮的读取证明。要求视图按真实 subject 和原 reason 分组；`causes` 保留每个实际 cause_key/cause_version，`opened_ms_values` 保留每个实际开启时钟，组内 `entries` 的三列依次是原行序号、cause 索引和时钟索引。所有差异及独有业务字段仍在 required 材料；相同默认字段只在实际逐值相同时复用。仅 opaque 的 requirement_key 可放身份目录，原行号一对一绑定，完整要求能够逐值还原。分组和目录不是语义复核或解除凭据，模型仍须逐项解释实际变化及其判断影响，证据不足保留具体未知。
+工具的 native 视图沿用 `material_reads.make(compact=True, base=<同一作者已读的本轮PUBLIC read_set>)`，保留全部对象 payload、生命周期、来源和依赖。新作者未读该 base 时须先完整读取，不借另一作者或上一轮的读取证明。已经部分读取且哈希未变的 base 从原 cursor 继续；新 native/要求视图从各自 cursor 0 开始，不把生成、输出或引用当作已读。
+
+要求视图 V2 按真实 subject/reason 分组，`causes` 保留每个不同原因身份引用与实际 cause_version，`opened_ms_values` 保留每个实际时钟。组内 `events` 两列为开启时钟索引及 cause 索引列表，列表每个位置对应一个原要求；独有业务字段用该组的 `event_index/cause_position` 精确绑定。身份目录只保存 opaque requirement/cause keys 和原行序号；完整要求可逐值还原，包括原顺序。相同时间只在值完全相同时共享，版本、时钟和独有条件不省略。要求视图引用同一作者先读的 native 原对象，不重复展开相同原文。V1 原矩阵及目录仍可还原，旧材料不改写；增加退休主体等补充输入生成新视图身份，保留旧输出。分组、可逆校验和目录不是语义复核或解除凭据，模型仍须实际解释每项变化对消费者的影响，具体未知继续保留；这些行是程序派生的复核义务，不是逐条用户原话。
 
 未决要求可能关联已经退休、未列在活跃对象索引的主体。沿既有 `scope=PUBLIC object.list(active=null)` 或 `conditions.due` 只发现稳定 kind/object_id，再用原运行的 as_of/版本取得原文；当前发现状态不替换原快照。工具显式保留 `subject_gaps`，不把缺原文当无义务，不自动 resolve。PERSONAL 查询仍须独立市场冻结，不能借读取视图提前进入。
 
