@@ -6,35 +6,18 @@ BTC、QQQ、VOO 的研究、嗅探、正式状态、报告判断和交付恢复�
 
 本仓库为源码仓库，默认分支 `main`。账户事实、市场数据库、策略状态、研究记录、报告正文、游标、投递记录和凭据留在执行节点。
 
-- `skill/btc-core-strategy/`：完整 Skill、模型方法、策略脚本、节点配置适配及 策略测试模块。
+- `skill/btc-core-strategy/`：完整 Skill、模型方法、策略脚本及节点配置适配。
 - `project-methods/`：项目职责与价值因子指引，随代码发布，供模型阅读。
 - `tasks/`：正式模型任务入口模板。
 - `scripts/release.py`：独立发布目录、每轮版本固定、上下文接续、运行间隙切换与回退。
-- `test_support/reader.lock.json`：固定来源与提交的 reader 依赖声明，`scripts/prepare_reader.py` 获取后导出到忽略的 `.local/reader/`；生产 reader 由 `market-roles` 维护和安装。
+- 生产 reader 由 `market-roles` 维护和安装，其来源及配置由所属节点持有。
 - `export-manifest.json`：本仓库拥有的导出清单，供 `market-roles` 组合 reader 与核心内容。
 
 ## 验证
 
-需要 Python 3.9 或更高版本，核心与离线测试使用标准库，无需模型或账户权限：
+源码使用 Python 3.9 或更高版本。针对当前有效要求和受影响行为，在仓库外或忽略的 `.local/` 下构造临时验证；案例、断言、mock、夹具、样本构造程序及验证依赖快照不进入 Git 或源码导出。需要原输入精确复现时保留原节点的有界归档，目的结束后删除或归档；历史测试不成为下一版本的业务契约或安装依赖。
 
-```sh
-python3 scripts/prepare_reader.py
-python3 scripts/run_tests.py
-```
-
-遵循共享 `codex-framework` 的源码与数据边界：合成、脱敏及测试用途不构成数据入库例外。测试准备在临时目录构造账户文件、历史报告和数据库，退出后清理，不读取旧仓库样本。
-
-本机已配置 GitHub SSH 时，使用 `python3 scripts/prepare_reader.py --ssh`，无需修改全局 Git 配置。
-
-测试锁定的 Reader、CI 快照、角色导出和节点实际安装分别绑定自己的来源版本。测试遵循本仓锁或明确传入的 `--reader`，角色组合遵循其所选提交及依赖；另一组合的通过结果不能替代本次输入。文档修正不更新锁文件、依赖或节点版本，Reader 候选也不自动成为核心升级方案。
-
-首次准备依赖需要能够读取 `market-roles` 的固定提交；只有准备阶段访问 Git，离线测试阶段禁止网络。Reader 与共享采集契约的来源按该固定版本的 `roles/source-map.json` 核对；若所选角色版本包含 `core/market-collector`，还须核其固定 gitlink，不能改取采集仓默认分支。Reader 导出不递归获取策略核心仓库。已有独立 reader 可继续通过 `--reader` 传入。覆盖公开材料、市场与个人适配的分离、正式状态、报告生成、UNKNOWN 投递及回读、研究接续、附件缺口、重复运行和发布恢复。测试中的发送与回读是模拟传输，不代表真实送达。
-
-与 `market-roles` 当前 reader 组合验证：
-
-```sh
-python3 scripts/run_tests.py --reader /path/to/exported-analysis/telegram_reader
-```
+验证覆盖实际变化的消费者及恢复路径；涉及 reader、Docker/MySQL 或模型时核对本次实际组合和资源，缺少依赖就明确该项未运行。源码结构、工程行为、独立验收、安装、自然运行和真实送达分别确认。CI 只检查声明源码的完整性及 Python 语法，不冒称业务回归；行为验收由本次临时验证和正常入口的实际结果提供。
 
 ## 节点运行
 
@@ -45,34 +28,24 @@ python3 scripts/release.py --node-config /path/to/node.json install --source /pa
 python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUAL_RUN_ID
 ```
 
-若节点的运行版 reader 不包含测试源码，安装时增加 `--reader /path/to/exported-reader`；可以传入前述 `.local/reader`。测试依赖与运行服务分开，安装不修改 reader 服务。
+安装从同一提交的 `export-manifest.json` 打包正式源码与方法，核对完整性及配置解释器的语法兼容；不要求测试文件或测试 reader 常驻。行为验证在发布前针对明确候选完成，安装记录不把语法检查表述为测试通过。安装不修改 reader 服务。
 
 通过 `status` 发现原在途运行和身份匹配的材料路径，再按真实触发身份进入；`enter` 返回同版的 `task`、Skill 和方法入口。相同已结束身份返回 `FINISHED/RETURN_FINISHED_RUN` 并保留原记录，恢复在途返回 `RESUME_ORIGINAL_RUN`。新轮才返回 `START_NEW_RUN`。重复 `finish` 保留原完成时间；旧记录缺少完成时间时仍为未知，不补造历史。研究请求和投递任务产生时绑定上下文，恢复使用原上下文。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
 
 调度只调用固定版本的 [任务入口](tasks/hourly.md)，项目方法和状态规则随源码维护；真实机器绑定与报告目的地留在节点。这个分工使用 OpenAI 的 [Scheduled tasks](https://learn.chatgpt.com/docs/automations) 与 [Skills](https://learn.chatgpt.com/docs/build-skills) 已有能力。投递沿现有 outbox、发送尝试和原生回读推进，重复触发不能复活已结束运行，UNKNOWN 不能自动重发；这对应 [outbox 与幂等消费](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) 的可靠性原则。原生工具的真实副作用及手机可见性仍分别验证。
 
-代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–9，新入口准备 revision 9；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；仓库只保存测试程序与样本构造逻辑。
+代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–9，新入口准备 revision 9；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；测试程序与样本构造逻辑按项目临时生命周期处理。
 
-完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 运行合成输入下的离线及隔离容器检查。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
+完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 仅检查正式源码结构及语法。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
 
-revision 7 的市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。全部回放材料由 scripts/build_synthetic_fixtures.py 和 scripts/build_reader_fixtures.py 在测试临时目录构造，源码导出不包含测试数据文件。
+revision 7 的市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。回放材料及构造程序在本次临时验证目录管理，源码导出不包含这些材料。
 
 ## Docker 持续分析
 
 [数据服务与迁移](service/README.md)包含 Compose、MySQL 8.4、内容寻址证据、CLI/MCP、宿主适配、恢复及生命周期入口。[持续分析契约](skill/btc-core-strategy/references/continuous-analysis.md)规定业务对象接续、个人事实视图与自主验收。
 
-GitHub Actions 执行本仓库可独立重建的真实 Docker 数据层与恢复测试，不依赖跨仓 Secret。完整核心、reader 和 collector 组合验证由已取得源码的 `market-roles` 执行 `roles/validate_repository.py --with-data-service`，云端准备和新任务均须实际运行。两者的覆盖分别报告。
+核心、reader 与 collector 的组合采用由对应项目固定版本及真实消费者决定；升级一个仓库不自动更新另一仓库的依赖。跨仓行为变化须按明确组合实际验证，临时验证程序由本次任务准备，不依赖上游保留历史案例。
 
-CI 的 reader 输入保存在 `test_support/ci_reader/`，仅供测试，不加入 `export-manifest.json`。`scripts/ci_reader.py` 先核对 `test_support/reader.lock.json` 固定的上游提交、完整 Git tree 和 `SNAPSHOT.json` 中逐文件 Git/SHA-256 摘要，再构建真实 reader 镜像并向原数据服务检查传入目录与镜像；缺项、改动或额外运行数据均明确失败。CI 不读取跨仓凭据，也不递归获取核心依赖。
+Docker 基础镜像由 `service/python_image.py` 与 `service/Dockerfile` 的固定来源确定，缺少实际环境时保留对应验证缺口。历史事故输入和失败在原节点按恢复需要管理，不作为新任务默认安装入口或永久资源保留要求。
 
-该目录是固定版本的生成快照，不手工维护第二套 reader。重建时从锁定的 `market-roles` 提交取得 `roles/source-map.json` 的 analysis 中所有 `telegram_reader/` 映射，再取同提交的 `requirements.txt`、`roles/containers/Dockerfile` 和 `roles/containers/entrypoint.py`；按 `SNAPSHOT.json` 保存的来源路径、模式与摘要逐一复核，生成仅排除 `.git` 的 `.dockerignore`。来源提交、来源 tree、映射 blob 和全部文件摘要随快照记录；版本变化时同步更新来源记录和锁中的快照 tree。源码可含测试程序与样本构造逻辑，运行状态、配置实例、凭据及生成的测试数据不得进入快照。
-
-当前开发入口准备内容 revision 9；原内容 1–8 保留读取与恢复，不补造其前瞻通过。新增条件首次注册、后续真实事实的值/时间/范围检验及后继依赖保护见判断生命周期与 v4 契约。锁定复测只验证接口、依赖和报告保护，不证明市场预期或策略有效。
-
-## 历史资源修复复现（已退出默认 CI）
-
-`a1577cc6a2c216d832959f5c0c09d84444484427` 的最小修复候选和 `test_support/minimal_candidate/` 补丁原地保留，用于原资源事故的精确复现。它们不属于当前版本的通过证据，不进入角色导出或默认 CI；现行回归直接运行本次提交的源码。历史材料只保留其原对象和输入，不能作为新任务的默认安装或验证入口。
-
-确需复核原事故时，从包含该历史提交的完整 Git 检出调用 `scripts/ci_minimal_candidate.py --output <新的本地目录> --manifest <本地结果路径>`。输出仅在本地保存；历史候选的运行环境、资源条件及其测试结果由原事故任务核验，不能以当前 CI 通过关闭本地事故。
-
-CI 镜像来源由 `service/Dockerfile` 的不可变摘要统一确定。准备步骤直接拉取该摘要，探针、清理容器和当前服务使用同一引用；缺少镜像时不回退到可变标签。锁定 reader 源码保持原字节，CI 仅在临时目录生成基础镜像固定为同一摘要的构建文件，不修改来源快照或其身份记录。
+当前开发入口准备内容 revision 9，内容 1–8 保留真实读取和恢复能力，不补造历史前瞻结果。判断生命周期、数据兼容和真实身份约束以有效业务契约及当前效果为据。

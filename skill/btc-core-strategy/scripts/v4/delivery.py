@@ -33,6 +33,24 @@ def same_display_text(source, displayed):
     return source == displayed or message_text(source) == message_text(displayed)
 
 
+def display_text_match(source, displayed):
+    """Compare actual report text, preserving native link labels and URLs.
+
+    Native readback can encode Markdown links as URL tokens. Convert only
+    that observed representation; every other character must still match.
+    Raw source, reply and their hashes remain unchanged in the journal.
+    """
+    if source == displayed:
+        return 'EXACT'
+    if same_display_text(source, displayed):
+        return 'TERMINAL_LF_ONLY'
+    restored = re.sub(r'\ue200url\ue202([^\ue200\ue201\ue202]+)\ue202(https?://[^\ue200\ue201\ue202]+)\ue201',
+                      lambda match: '[' + match[1] + '](' + match[2] + ')', displayed)
+    if restored != displayed and same_display_text(source, restored):
+        return 'PLATFORM_URL_MARKUP'
+    return 'MISMATCH'
+
+
 def _request_contains_source(artifact, request):
     body = message_text(artifact['body']) if verbatim(artifact) else artifact['body']
     return body in request
@@ -133,14 +151,27 @@ def _condition_coverage(root, decision, source):
                 'changed support or invalidation conditions need an explicit source assertion')
 
 
+def _same_chat_destination(first, second):
+    """Project metadata does not create another physical chat or retry budget."""
+    if isinstance(first, dict) and isinstance(second, dict):
+        thread = first.get('thread_id')
+        if isinstance(thread, str) and thread:
+            return thread == second.get('thread_id')
+    return first == second
+
+
 def enqueue(root, decision_id, destination, source=None):
     root = Path(root)
     with locked(root):
         decision = _decision(root, decision_id)
         if (decision.get('assessment') or {}).get('revision', 1) >= 3:
             require(source is not None, 'main revision 3 or later needs a frozen report source')
-            exact(destination, 'project_id thread_id', 'report destination')
-            text(destination['project_id'], 'cloud project')
+            # Native ChatGPT sends address a thread, not a Project. Retain the
+            # original mapping verbatim so old outbox identities never change.
+            exact(destination, 'project_id thread_id' if isinstance(destination, dict)
+                  and 'project_id' in destination else 'thread_id', 'report destination')
+            if 'project_id' in destination:
+                text(destination['project_id'], 'cloud project')
             text(destination['thread_id'], 'cloud thread')
             validate_source(source, decision)
             policy_path=root/'write-policy.json'
@@ -183,6 +214,13 @@ def enqueue(root, decision_id, destination, source=None):
         artifact['destination'] = destination
         identity = digest(artifact)[7:]
         outbox = root / 'outbox' / identity
+        if artifact.get('report_id') and not outbox.exists():
+            for path in (root / 'outbox').glob('*/artifact.json'):
+                prior = read(path)
+                require(not (prior.get('report_id') == artifact['report_id']
+                        and prior['destination'] != destination
+                        and _same_chat_destination(prior['destination'], destination)),
+                        'same frozen report already addresses this chat; preserve its original destination and delivery identity')
         if outbox.exists():
             require(read(outbox / 'artifact.json') == artifact, 'outbox artifact changed')
         else:
@@ -274,7 +312,7 @@ def presentation_errors(artifact, receipt, mode='EDIT_ONCE'):
         require(review['bindings'] == [] and review['checks'] == {}, 'verbatim readback uses no second content review')
         require(isinstance(review['unresolved_issues'], list), 'presentation issues must be recorded')
         errors = [str(issue) for issue in review['unresolved_issues']]
-        if not same_display_text(source['body'], body):
+        if display_text_match(source['body'], body) == 'MISMATCH':
             errors.append('VERBATIM_SOURCE_CHANGED')
         if receipt['assistant']['tool_calls'] != []:
             errors.append('CLOUD_USED_TOOLS')
@@ -389,7 +427,7 @@ def _check_recovery_budget(root, run_ref, destination):
     for pattern in ('*/retry-*.json', '*/recovery-send-*.json'):
         for path in (Path(root) / 'outbox').glob(pattern):
             prior = read(path)
-            require(not (prior['run_ref'] == run_ref and prior['destination'] == destination),
+            require(not (prior['run_ref'] == run_ref and _same_chat_destination(prior['destination'], destination)),
                     'one recovery resend per run and destination; delivery exception remains open')
 
 
@@ -696,7 +734,7 @@ def _edited_transition(root, outbox, artifact, status, action, receipt):
         if state == 'CORRECTION_REQUIRED':
             previous = read(outbox / status['receipt'])['assistant']
             actual = receipt['assistant']
-            require(verbatim(artifact) and same_display_text(artifact['body'], actual['body'])
+            require(verbatim(artifact) and display_text_match(artifact['body'], actual['body']) != 'MISMATCH'
                     and {k:v for k,v in previous.items() if k != 'completed_at'} ==
                         {k:v for k,v in actual.items() if k != 'completed_at'}
                     and previous.get('completed_at') == actual.get('completed_at'),
@@ -714,8 +752,7 @@ def _edited_transition(root, outbox, artifact, status, action, receipt):
                         'assistant': receipt['assistant'], 'request_ref': receipt['request_ref'], 'attempt_id': receipt['attempt_id'],
                         'review': receipt['review'], 'errors': errors}
         if verbatim(artifact):
-            presentation['text_match'] = ('EXACT' if artifact['body'] == receipt['assistant']['body']
-                                          else 'TERMINAL_LF_ONLY' if not errors else 'MISMATCH')
+            presentation['text_match'] = display_text_match(artifact['body'], receipt['assistant']['body'])
         status.update(presentation=_save(outbox, 'presentation', presentation), receipt=_save(outbox, 'receipt', receipt),
                       state='CORRECTION_REQUIRED' if errors else 'DELIVERED')
         if errors:
@@ -771,7 +808,7 @@ def validate_delivered(root, identity):
         saved = read(outbox / status['presentation'])
         require(saved['assistant'] == receipt['assistant'] and saved['review'] == receipt['review'] and saved['source_hash'] == artifact['body_hash'] and saved['display_hash'] == digest(receipt['assistant']['body'].encode()) and saved['errors'] == [], 'presentation journal differs from confirmed receipt')
         if 'text_match' in saved:
-            require(saved['text_match'] == ('EXACT' if artifact['body'] == receipt['assistant']['body'] else 'TERMINAL_LF_ONLY'),
+            require(saved['text_match'] == display_text_match(artifact['body'], receipt['assistant']['body']),
                     'presentation text comparison differs from actual source and reply')
     else:
         require(receipt['schema'] == 'BTC_CLOUD_READBACK_V4' and receipt['destination'] == artifact['destination'] and receipt['visible_report_text'] == artifact['body'] and receipt['assistant_responses'] == ['已收录'] and receipt['record_refs'] and receipt['absence_confirmed'] is False, 'legacy report readback mismatch')

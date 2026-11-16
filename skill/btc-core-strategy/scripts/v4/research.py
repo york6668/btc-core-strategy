@@ -44,6 +44,11 @@ def _save(root, kind, key, value):
     else:
         create(path, value)
     result = value.get('market_result')
+    if result is not None and kind == 'independent':
+        from .decision_design import public_case, register_case_source
+        case = public_case(result['outlook'])
+        if case is not None:
+            register_case_source(root, case, path)
     if result is not None:
         from .forward_lifecycle import register
         register(root, result['outlook']['market_assessment'], path, '/lifecycle_frozen_at')
@@ -203,6 +208,23 @@ def _candidate_free(value):
             _candidate_free(item)
 
 
+def _completed_prior_design(previous, original, *, manual, write_revision):
+    """A new explicit redesign may replace only its completed older study.
+
+    Never abandon active work, reuse an earlier completion for a later request,
+    or silently upgrade the original immutable output/author approval.
+    """
+    from .decision_design import REVISION
+    progress = (previous.get('latest_request') or {}).get('progress') or {}
+    return bool(manual and write_revision >= 9
+        and (original.get('decision_design_revision') or 0) < REVISION
+        and previous.get('completed_result') is not None
+        and (previous.get('latest_result') or {}).get('request_id') == original['request_id']
+        and previous['completed_result']['result_id'] == previous['latest_result']['result_id']
+        and progress.get('stage') == 'RESULT_RECORDED'
+        and progress.get('result_id') == previous['completed_result']['result_id'])
+
+
 def request(root, project, spec, workflow_revision=None):
     """Freeze a bounded independent input and an explicit new/reopened question."""
     from . import evidence
@@ -269,6 +291,7 @@ def request(root, project, spec, workflow_revision=None):
             require(same_initial or spec['change']['kind'] != 'INITIAL_QUESTION', 'existing issue needs new key evidence, not a renamed initial request')
         else:
             require(manual or spec['change']['kind'] == 'INITIAL_QUESTION', 'new issue must identify its initial unresolved question')
+        supersedes_request = None
         deadline_basis = cycle.deadline_reopen(root, pinned.get('assessment'), spec['change'])
         if spec['change']['kind'] == 'REOPEN_CONDITION_MET':
             conditions = ((previous or {}).get('latest_result') or (previous or {}).get('latest_request') or {}).get('reopen_conditions', [])
@@ -288,7 +311,13 @@ def request(root, project, spec, workflow_revision=None):
                 # New evidence belongs in the current study's supplement. Do
                 # not discard an independent answer/candidate at an hour edge.
                 original = _load(root, 'requests', latest_request['request_id'])
-                return reuse(original)
+                completed_old_design = _completed_prior_design(previous, original,
+                    manual=manual, write_revision=NEW_WRITE_REVISION)
+                if not completed_old_design:
+                    return reuse(original)
+                # A genuinely new explicit redesign may supersede a completed
+                # old study without adopting/deleting it or reopening its calls.
+                supersedes_request = original['request_id']
         # New timestamps/source aliases with identical cited values are not new
         # key evidence. The model must choose genuinely discriminating values.
         evidence_change_id = digest(sorted({r['value_hash'] for r in spec['change']['refs']}))
@@ -369,19 +398,28 @@ def request(root, project, spec, workflow_revision=None):
                     anchor.get('outlook', {}).get('market_assessment'), as_of=package['cutoff'],
                     source_owner={'kind': 'DECISION', 'id': pinned['decision_id']})
             public_instructions = market_state.INSTRUCTIONS
-            if workflow_revision >= 6:
+            if NEW_WRITE_REVISION >= 9:
+                from .decision_design import PUBLIC_INSTRUCTIONS, REVISION as DESIGN_REVISION
+                public_instructions = PUBLIC_INSTRUCTIONS + market_state.EVIDENCE_REASONING_REVIEW + market_state.PUBLIC_RESULT_REVIEW
+                packet['decision_design_revision'] = DESIGN_REVISION
+            elif workflow_revision >= 6:
                 from .closed_loop import MARKET_INSTRUCTIONS
                 public_instructions += MARKET_INSTRUCTIONS
             packet['market_result_contract'] = {
-                'output': 'Single JSON object: outlook, factor_assessment, market_report. outlook includes semantic/narrative/refs/market_assessment/dispute_zones. No portfolio or account analysis.',
+                'output': 'Single JSON object: outlook, factor_assessment, market_report. outlook.market_assessment includes cycle_case (BTC_CYCLE_DECISION_V2 for current requests, including path_comparison) as the primary argument; existing market fields carry consistent source-bound detail. No portfolio or account analysis.',
                 'instructions': public_instructions,
                 'schema_reference': str(Path(__file__).resolve().parents[2] / 'references/market-state.md'),
+                **({'decision_design_reference': str(Path(__file__).resolve().parents[2] / 'references/decision-design.md')} if 'decision_design_revision' in packet else {}),
             }
             if 'cycle_assignment' in packet:
                 # Share cumulative public duties; personal work stays after freezing.
                 packet['cycle_assignment']['instructions'] = public_instructions
                 packet['cycle_assignment']['required_coverage'] = [v for v in cycle.COVERAGE if v != 'portfolio_waiting']
                 packet['cycle_assignment']['method_references'].pop('recommendations', None)
+                if 'decision_design_revision' in packet:
+                    packet['cycle_assignment'] = {'role': 'Independent cycle argument and relative opportunity',
+                        'decision_design_revision': DESIGN_REVISION, 'instructions': public_instructions,
+                        'method_references': {'decision_design': packet['market_result_contract']['decision_design_reference']}}
             if workflow_revision >= 6:
                 packet['historical_hypotheses'] = {key: packet.pop(key) for key in ('historical_anchor', 'historical_dispute_zones')}
                 for row in packet['report_subjects'].values():
@@ -394,6 +432,8 @@ def request(root, project, spec, workflow_revision=None):
         if not input_path.exists():
             create(input_path, packet)
         return remember(_save(root, 'requests', 'request_id', {'schema': 'BTC_RESEARCH_REQUEST_V4', **spec, 'issue_id': issue_id,
+            **({'decision_design_revision': packet['decision_design_revision']} if 'decision_design_revision' in packet else {}),
+            **({'supersedes_request_id': supersedes_request} if supersedes_request else {}),
             'workflow_revision': workflow_revision, 'fact_version': fact_version, 'knowledge_cutoff': package['cutoff'], 'market_cutoff': market_raw['cutoff'], 'market_evidence_id': market_raw['evidence_id'],
             'independent_input_id': input_id, 'independent_input_path': str(input_path.relative_to(root)),
             'evidence_change_id': evidence_change_id, 'prior_result_id': (previous or {}).get('latest_result', {}).get('result_id') if (previous or {}).get('latest_result') else None,
@@ -427,7 +467,22 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
         if req.get('workflow_revision', 4) >= 6:
             from .closed_loop import INSTRUCTIONS, public_hash
             value['market_content_hash'] = public_hash(independent['market_result'])
-            value['instructions'] = INSTRUCTIONS
+            # The legacy outer hash identifies the whole research deliverable,
+            # including its narrative. Financial consumers bind only the pure
+            # public meaning. Expose that choice directly instead of asking
+            # authors to infer which of two similarly named hashes to copy.
+            value['portfolio_result_binding'] = {
+                'market_result_hash': value['market_content_hash'],
+                'research_phase_result_hash': independent['market_result_hash'],
+                'contract': 'allocation/risk/investment market_result_hash binds digest({outlook,factor_assessment}); the research phase hash also includes market_report and is not that binding.',
+            }
+            if req.get('decision_design_revision', 0) >= 1:
+                from .decision_design import PERSONAL_INSTRUCTIONS
+                value['instructions'] = PERSONAL_INSTRUCTIONS
+                value['decision_design_revision'] = req['decision_design_revision']
+                value['decision_contract'] = ('investment_decision.allocation_choice: BTC_ALLOCATION_CHOICE_V' + str(req['decision_design_revision']) + '; exact frozen cycle_case hash and current fact version; normal investment candidates/selection remain its decision source. V2 compares incumbent and incremental choices under explicit criteria and the same cycle paths; unresolved ranking is not a holding instruction.')
+            else:
+                value['instructions'] = INSTRUCTIONS
             if req.get('workflow_revision',4) >= 8:
                 from .storage import current
                 from .investment import decision as investment_decision, open_issues, policy_inputs
@@ -442,6 +497,8 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
                     value['account_constraints']=constraints(root, project, now())
         elif public_input.get('collector_observations'):
             value['collector_observations'] = deepcopy(public_input['collector_observations'])
+        from .position_analysis import author_view
+        value = author_view(value, root, project)
         identity = digest(value)
     else:
         require(phase == 'candidate' and candidate_id is not None, 'invalid research input phase')
@@ -683,6 +740,8 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
                 _companion_report=lambda: _candidate_companion_report(root, phase))
         from . import cycle
         if req['issue_key'] == cycle.ISSUE_KEY:
+            from .position_analysis import require_current_scope
+            require_current_scope(root, Path(root).parent.parent, candidate.get('assessment', {}))
             cycle.validate_candidate(candidate)
         supplement = _review_evidence(root, req, candidate, additional) if additional else None
         fact_context = _review_facts(root, req, candidate)
@@ -728,6 +787,11 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
         assignment = ({'review_assignment': {'instructions': cycle.MAPPING_REVIEW,
                        'method_references': cycle.method_references('mapping')}}
                       if req['issue_key'] == cycle.ISSUE_KEY else {})
+        if req.get('decision_design_revision', 0) >= 1:
+            from .decision_design import PUBLIC_INSTRUCTIONS, PERSONAL_INSTRUCTIONS, REPORT_INSTRUCTIONS
+            assignment = {'review_assignment': {'decision_design_revision': req['decision_design_revision'],
+                'instructions': PUBLIC_INSTRUCTIONS + PERSONAL_INSTRUCTIONS + REPORT_INSTRUCTIONS,
+                'method_references': {'decision_design': str(Path(__file__).resolve().parents[2] / 'references/decision-design.md')}}}
         return _save(root, 'candidates', 'candidate_id', {'schema': 'BTC_RESEARCH_CANDIDATE_V4', 'request_id': request_id,
             'independent_id': independent_id, 'agent_id': phase['agent_id'], 'candidate': candidate,
             **assignment,
@@ -893,6 +957,13 @@ def _same_orchestration_author(previous, current):
     if original:
         require(current.get('source_verification', {}).get('author_thread_id') == original,
                 'durable continuation must retain the original author thread')
+    source = current.get('source_verification', {})
+    if source.get('dispatch_method') == 'mcp__codex_app__send_message_to_thread':
+        expected = previous.get('trace_proof', previous)
+        require(source.get('original_public_trace') ==
+                {k: expected.get(k) for k in ('dispatch_hash', 'return_hash')}
+                and all(expected.get(k) for k in ('dispatch_hash', 'return_hash')),
+                'native continuation must anchor this exact original PUBLIC proof')
 
 
 def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None, additional=None):
@@ -1059,12 +1130,26 @@ def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
         require(rev>=9,'public result file references require revision 9')
         analysis=_referenced_public_result(root,reference)
     result = market_state.parse_result(analysis, rev)
+    if req.get('decision_design_revision', 0) >= 1:
+        from .decision_design import public_case
+        require(public_case(result['outlook']) is not None, 'new study requires its primary 1–3 month cycle argument')
+        require(instant(public_case(result['outlook'])['as_of']) <= instant(now()), 'cycle decision formation lies after actual registration')
+        if req['decision_design_revision'] >= 2:
+            from .decision_design import revision
+            require(revision(public_case(result['outlook'])) >= 2, 'current research requires active content and cycle-path decision contract V2')
     directory = Path(directory) if directory is not None else Path(root) / 'evidence' / req['evidence_id'][7:]
     package = evidence.validate(read(directory / 'evidence.json'), directory)
     resolve = evidence.forward_resolver(package, directory)
     packet = read(Path(root) / req['independent_input_path'])
     historical = packet.get('historical_hypotheses', packet)
     prior_result = (prior_phase or {}).get('market_result')
+    from .decision_design import public_case
+    case = public_case(result['outlook'])
+    prior_case = public_case((prior_result or {}).get('outlook'))
+    if case is not None:
+        require(req.get('decision_design_revision', 0) >= 1, 'new decision design needs its marked original research request')
+        if case != prior_case:
+            require(instant(case['knowledge_cutoff']) == instant(package['cutoff']), 'new PUBLIC argument must bind this exact frozen evidence cutoff')
     prior_market = (prior_result['outlook']['market_assessment'] if prior_result else
                     ((historical.get('historical_anchor') or {}).get('outlook') or {}).get('market_assessment'))
     original_cutoff = None
@@ -1088,6 +1173,17 @@ def _public_result(root, req, analysis, directory=None, *, prior_phase=None):
     for ref in result['outlook']['refs']:
         resolve(ref)
     value={'market_result':result,'market_result_hash':digest(result)}
+    if case is not None:
+        original_binding = (prior_phase or {}).get('cycle_case_evidence_id') if case == prior_case else None
+        if original_binding is not None:
+            value['cycle_case_evidence_id'] = original_binding
+        else:
+            # Retain the exact already validated public input, including a
+            # legitimate manifest union, for later independent batch reads.
+            from .storage import archive_evidence
+            require(archive_evidence(root, directory)['evidence_id'] == package['evidence_id'],
+                    'PUBLIC evidence changed before archival')
+            value['cycle_case_evidence_id'] = package['evidence_id']
     if reference is not None:value['public_result_reference']=reference
     return value
 

@@ -10,12 +10,13 @@ import subprocess
 import sys
 import uuid
 import stat
+import tempfile
 
 # Paths keep the native caller's meaning when the command crosses into Docker.
 PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--answers',
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
-                '--retained-source-bindings', '--file', '--read-set', '--receipt', '--runtime-schedule')
+                '--retained-source-bindings', '--main-provenance', '--draft', '--review', '--spec', '--prepared-context', '--file', '--read-set', '--receipt', '--runtime-schedule')
 
 # These host entries prepare/refresh model-facing material or advance the
 # protected workflow. Standalone report/research paths must not bypass the
@@ -23,7 +24,7 @@ PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--ans
 USAGE_GUARDED_COMMANDS = frozenset((
     'run-prepare', 'run-material', 'run-advance', 'context', 'observe',
     'research-independent', 'research-orchestrated-independent',
-    'report-context', 'report-review', 'research-read',
+    'report-context', 'report-review', 'report-preview', 'research-read',
 ))
 
 
@@ -116,12 +117,21 @@ def guard_stdout(argv, descriptor=1):
 
 def absolute_paths(argv, directory):
     result = list(argv)
-    for index, flag in enumerate(result[:-1]):
-        if flag in PATH_OPTIONS:
-            path = Path(result[index + 1]).expanduser()
-            # Template bindings use logical paths; resolving a symlink changes
-            # that identity even when it points to the same immutable bytes.
-            result[index + 1] = os.path.abspath(path if path.is_absolute() else Path(directory) / path)
+    # Other commands consume a review file; this command consumes the already
+    # registered immutable review identity. A Docker cwd must not alter it.
+    review_identity = subcommand(argv) == 'market-report-source'
+    def absolute(value):
+        path = Path(value).expanduser()
+        # Logical symlinks are part of the template identity.
+        return os.path.abspath(path if path.is_absolute() else Path(directory) / path)
+    for index, item in enumerate(result):
+        flag, equal, value = item.partition('=')
+        if flag not in PATH_OPTIONS or (flag == '--review' and review_identity):
+            continue
+        if equal:
+            result[index] = flag + '=' + absolute(value)
+        elif index + 1 < len(result):
+            result[index + 1] = absolute(result[index + 1])
     return result
 
 
@@ -203,6 +213,41 @@ def forward_if_enabled(argv, *, requested_release=None):
                     raise ValueError('frozen command input changed')
                 arguments[arguments.index(flag) + 1] = str(target)
                 inputs[str(target)] = digest
+    if '--main-provenance' in arguments:
+        # Durable MAIN proof has nested immutable source files. Bridge both the
+        # manifest and its bound official thread response, then rewrite only
+        # the container-visible path in a staged provenance input.
+        original = Path(arguments[arguments.index('--main-provenance') + 1]).resolve()
+        if not original.is_file() or original.is_symlink() or original.stat().st_size > 16384:
+            raise ValueError('MAIN provenance input is missing, linked, or oversized')
+        provenance = json.loads(original.read_bytes())
+        from v4.main_flow import validate_preview_provenance
+        validate_preview_provenance(provenance)
+        if 'execution_evidence' in provenance:
+            raise ValueError('preview execution evidence is bound to the local validation code; use its isolated local consumer, not business forwarding')
+        evidence = provenance.get('configuration_evidence')
+        if not evidence:
+            raise ValueError('native scheduled MAIN provenance does not require a durable proof bridge')
+        proof_path = Path(evidence['proof_path'])
+        proof_directory = Path(docker.get('native_proof_dir', ''))
+        container_proof_directory = docker.get('container_proof_dir')
+        if not proof_directory.is_absolute() or not container_proof_directory:
+            raise ValueError('durable MAIN proof bridge is not configured for this node')
+        copy_proof(proof_path, proof_directory)
+        evidence['proof_path'] = str(Path(container_proof_directory) / proof_path.name)
+        data = json.dumps(provenance, ensure_ascii=False, sort_keys=True).encode('utf-8')
+        digest_value = hashlib.sha256(data).hexdigest()
+        directory = Path(docker['fact_bridge_dir']).parent / 'native-inputs' / digest_value
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = directory / 'main-provenance.json'
+        if not target.exists():
+            with target.open('xb') as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+            target.chmod(0o600)
+        elif target.is_symlink() or target.read_bytes() != data:
+            raise ValueError('immutable MAIN provenance bridge collision')
+        arguments[arguments.index('--main-provenance') + 1] = str(target)
+        inputs[str(target)] = digest_value
     for flag in ('--rollout',):
         if flag in arguments:
             original = Path(arguments[arguments.index(flag) + 1]).resolve()
@@ -315,3 +360,94 @@ def copy_proof(source, directory, seen=None):
         if len(matches) != 1:
             raise ValueError('native parent proof missing or ambiguous')
         copy_proof(matches[0], directory, seen)
+
+
+def archive_proof_location(source, directory):
+    """Transport one existing durable proof closure, preserving its old path.
+
+    This is file availability, never approval. Publication is immutable and
+    the location marker is written last; retries can complete a safe prefix.
+    No research records, source bytes or author identities are changed.
+    """
+    from v4 import durable_proof
+    source, directory = Path(source), Path(directory)
+    original, key = durable_proof.location_key(source)
+    if source.name == 'location.json':
+        raise ValueError('native proof filename is reserved for its location record')
+    if (not source.is_file() or source.is_symlink() or source.stat().st_size > 16384
+            or not durable_proof.is_manifest(source)):
+        raise ValueError('original durable proof manifest required')
+    if not directory.is_absolute():
+        raise ValueError('native proof archive must be absolute')
+    parent = directory / 'locations' / key
+    if directory.is_symlink():
+        raise ValueError('native proof archive must not be linked')
+    directory.mkdir(exist_ok=True, parents=True, mode=0o700)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    try:
+        root_fd = os.open(directory, flags); descriptors.append(root_fd)
+        def child(fd, name):
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            result = os.open(name, flags, dir_fd=fd)
+            descriptors.append(result)
+            return result
+        locations_fd = child(root_fd, 'locations')
+        parent_fd = child(locations_fd, key)
+
+        def same_entry(fd, name, expected_fd):
+            actual = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            expected = os.fstat(expected_fd)
+            if (not stat.S_ISDIR(actual.st_mode) or
+                    (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)):
+                raise ValueError('native proof archive directory changed during publication')
+
+        def check_location():
+            same_entry(None, directory, root_fd)
+            same_entry(root_fd, 'locations', locations_fd)
+            same_entry(locations_fd, key, parent_fd)
+
+        def publish(name, raw):
+            temporary = '.proof-' + uuid.uuid4().hex
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent_fd)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                            follow_symlinks=False)
+                except FileExistsError:
+                    existing = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                       dir_fd=parent_fd)
+                    with os.fdopen(existing, 'rb') as stream:
+                        if (not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or
+                                stream.read(len(raw) + 1) != raw):
+                            raise ValueError('immutable native proof location collision')
+            finally:
+                os.unlink(temporary, dir_fd=parent_fd)
+
+        # Staging is private and separate from the configured publication path.
+        # All final reads/writes are anchored to opened no-follow directories.
+        with tempfile.TemporaryDirectory(prefix='.btc-proof-stage-') as folder:
+            staged = Path(folder)
+            copy_proof(source, staged)
+            manifest = staged / source.name
+            files = durable_proof.source_files(manifest)
+            check_location()
+            for item in [*files, manifest]:
+                publish(item.name, item.read_bytes())
+            marker = {'schema':'BTC_NATIVE_PROOF_LOCATION_V1', 'original_path':original,
+                      'proof_name':source.name,
+                      'proof_hash':'sha256:' + hashlib.sha256(manifest.read_bytes()).hexdigest()}
+            check_location()
+            publish('location.json', json.dumps(marker, sort_keys=True).encode())
+            os.fsync(parent_fd)
+            check_location()
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+    return parent / source.name

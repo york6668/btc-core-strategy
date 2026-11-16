@@ -1,6 +1,8 @@
 """Consume the shared native-usage interlock; never estimate account credits."""
 import json
+import os
 from pathlib import Path
+import sqlite3
 import subprocess
 
 
@@ -20,8 +22,16 @@ def require_admission(config, *, runner=None):
     if (not isinstance(command, list) or not command or any(not isinstance(x, str) or not x for x in command)
             or not Path(command[0]).is_absolute() or not isinstance(policy, str) or not Path(policy).is_absolute()):
         raise NativeUsageBlocked('explicit native usage guard command and policy paths required')
+    native = None
+    request = {'policy': policy}
+    if config.get('codex_automations_db') is not None:
+        from run_usage import current_native_scope
+        try:
+            native = current_native_scope(config, os.environ.get('CODEX_THREAD_ID'))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise NativeUsageBlocked('native automation coverage unavailable; new work blocked: ' + str(exc)) from None
     try:
-        result = (runner or subprocess.run)(command, input=json.dumps({'policy': policy}),
+        result = (runner or subprocess.run)(command, input=json.dumps(request),
                      text=True, capture_output=True, timeout=45, check=False)
         value = json.loads(result.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
@@ -33,5 +43,22 @@ def require_admission(config, *, runner=None):
         lock = value.get('lock')
         reason = (lock.get('reason') if isinstance(lock, dict) else None) or value.get('status') or 'INVALID_GUARD_RESPONSE'
         raise NativeUsageBlocked('native usage interlock blocked new work: ' + str(reason))
+    if native is not None:
+        source = value.get('source') or {}
+        measured = source.get('root_thread_ids') if isinstance(source, dict) else None
+        if (not isinstance(measured, list) or not all(isinstance(root, str) for root in measured)
+                or not set(native['root_thread_ids']) <= set(measured)):
+            raise NativeUsageBlocked('native usage interlock did not cover registered automation roots; new work blocked')
+        selectors = source.get('automation_scopes', [])
+        if not isinstance(selectors, list) or not any(
+                isinstance(item, dict) and item.get('automation_id') == config['automation_id']
+                and item.get('codex_automations_db') == str(Path(config['codex_automations_db']).expanduser().resolve())
+                and isinstance(item.get('root_thread_ids'), list)
+                and all(isinstance(root, str) for root in item['root_thread_ids'])
+                and set(native['automation_root_thread_ids']) <= set(item['root_thread_ids'])
+                for item in selectors):
+            raise NativeUsageBlocked('native usage interlock lacks the configured automation selector; new work blocked')
     return {'enforced': True, 'allowed': True, 'measurement': value.get('measurement'),
-            'assessment': value.get('assessment'), 'hard_account_spending_cap': False}
+            'assessment': value.get('assessment'), 'hard_account_spending_cap': False,
+            'native_context': ({key: native[key] for key in ('thread_id', 'root_thread_id', 'automation_id')}
+                               if native is not None else None)}

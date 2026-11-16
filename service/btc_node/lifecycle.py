@@ -91,6 +91,14 @@ def protected_documents(db):
                 queued.add(key)
                 pending.append(key)
     enqueue(r['document_key'] for r in by_key.values() if r['retention_class'] in {'ACTIVE', 'KEY', 'DAILY'})
+    # Archive-only documents can still carry a legacy RAW expiry. Pin their
+    # exact registered identity as well as their CAS bytes; GC is not adoption.
+    from .catalog import Catalog
+    for path, digest in Catalog(db)._dependency_archive().items():
+        key = identity('strategy', path)
+        row = by_key.get(key)
+        if row and row['kind'] == 'FILE' and row['digest'] == digest[7:]:
+            enqueue((key,))
     for paths in namespace_paths.values():
         paths.sort()
     for row in db.rows("SELECT DISTINCT target_key FROM dependencies WHERE target_type='BLOB'"):
@@ -320,6 +328,8 @@ def _maintain(db, *, apply, now):
                 db.execute('DELETE FROM document_recycling WHERE document_key=%s', (row['document_key'],))
                 db.execute('DELETE FROM documents WHERE document_key=%s', (row['document_key'],))
                 removed_documents += 1
+        from .reader_retention import expire_receipts
+        reader_expiry = expire_receipts(db, cutoff_ms=now_ms - RETENTION_DAYS['RAW'] * DAY, apply=apply)
         # Filesystem erasure happens after references are committed away. The
         # next sweep removes content only after a full recycling grace window.
         unused = db.rows('SELECT b.digest,b.byte_length,b.unreferenced_ms FROM blobs b WHERE '
@@ -332,6 +342,7 @@ def _maintain(db, *, apply, now):
                          'NOT EXISTS(SELECT 1 FROM operations o WHERE o.result_digest=b.digest OR o.request_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM legacy_databases l WHERE l.schema_digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM legacy_rows l WHERE l.digest=b.digest) AND '
+                         'NOT EXISTS(SELECT 1 FROM collector_blobs r WHERE r.digest=b.digest) AND '
                          'NOT EXISTS(SELECT 1 FROM legacy_row_blobs l WHERE l.digest=b.digest) AND '
                          "NOT EXISTS(SELECT 1 FROM mo_evidence m WHERE m.payload=CONCAT('@blob:',b.digest)) AND "
                          "NOT EXISTS(SELECT 1 FROM mo_retrieval m WHERE m.provenance=CONCAT('@blob:',b.digest)) AND "
@@ -350,7 +361,8 @@ def _maintain(db, *, apply, now):
                   'removed_documents': removed_documents,
                   'expired_observations': removed_observations,
                   'recyclable_objects': len(garbage),
-                  'recyclable_bytes': sum(r['byte_length'] for r in garbage)}
+                  'recyclable_bytes': sum(r['byte_length'] for r in garbage),
+                  'reader_expiry': reader_expiry}
         if apply:
             for row in garbage:
                 db.execute('DELETE FROM blobs WHERE digest=%s', (row['digest'],))

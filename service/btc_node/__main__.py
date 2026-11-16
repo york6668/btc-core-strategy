@@ -171,12 +171,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=os.environ.get('BTC_SERVICE_CONFIG'))
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop', 'scheduler-loop', 'capacity-audit'):
+    for name in ('init', 'serve', 'request', 'mcp', 'maintenance', 'maintenance-loop', 'scheduler-loop',
+                 'capacity-audit', 'reader-poll'):
         sub.add_parser(name)
+    p = sub.add_parser('reader-cutover')
+    p.add_argument('--checkpoint-ms', type=int, required=True)
     for name in ('import', 'compare', 'restore'):
         p = sub.add_parser(name)
         p.add_argument('--namespace', required=True)
         p.add_argument('--root', required=True)
+    p = sub.add_parser('append-dependencies')
+    p.add_argument('--root', required=True)
+    p.add_argument('--manifest', required=True)
+    p.add_argument('--check-only', action='store_true')
+    p = sub.add_parser('materialize-dependencies')
+    p.add_argument('--manifest', required=True)
+    p.add_argument('--check-only', action='store_true')
     p = sub.add_parser('writer'); p.add_argument('owner', choices=('HOST', 'DOCKER'))
     p = sub.add_parser('project'); p.add_argument('--release', required=True)
     for name in ('backup','restore-database'):
@@ -186,7 +196,26 @@ def main():
         parser.error('node-owned --config is required')
     settings = json.loads(Path(args.config).read_text())
     settings['_path'] = str(Path(args.config).resolve())
-    if args.command in {'import', 'compare', 'restore', 'writer', 'project', 'backup', 'restore-database'}:
+    if args.command == 'reader-poll':
+        from .reader_store import poll
+        token = sys.stdin.readline().strip()
+        if not token:
+            parser.error('reader credential must be supplied on stdin')
+        print(json.dumps(poll(settings, token), ensure_ascii=False))
+        return 0
+    if args.command == 'reader-cutover':
+        from .reader_store import seed
+        database = Database(settings)
+        try:
+            with database.writer(timeout=600), database.transaction():
+                if (database.metadata('writer') or {}).get('owner') != 'DOCKER':
+                    raise Conflict('reader cutover requires the active Docker writer')
+                result = seed(database, expected_checkpoint_ms=args.checkpoint_ms)
+        finally:
+            database.close()
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if args.command in {'import', 'compare', 'restore', 'append-dependencies', 'materialize-dependencies', 'writer', 'project', 'backup', 'restore-database'}:
         from .admin import run
         print(json.dumps(run(settings, args.command, args), ensure_ascii=False))
         return 0

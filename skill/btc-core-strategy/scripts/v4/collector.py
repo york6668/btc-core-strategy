@@ -1,13 +1,11 @@
 """Frozen multi-asset auxiliary measurements; no collector conclusion authority."""
 from copy import deepcopy
 from datetime import datetime, timezone
-import importlib.util
+import json
 import os
 from pathlib import Path
-import sys
 
 import collector_observation
-import node_config
 from .common import create, digest, instant, now, read, require
 
 SCHEMA = 'MULTI_ASSET_AUXILIARY_V1'
@@ -46,38 +44,28 @@ def provenance(item):
 
 
 def capture(project, export=None):
-    """Only the local reader/export is read. No Telegram connection or sync."""
-    reader_root = node_config.path('reader_code_dir', Path(project) / 'telegram_reader')
-    if export is None and not (reader_root / 'reader.py').is_file():
-        return None
-    failure = None
+    """Read Docker receipts or an explicitly supplied frozen export."""
     if export is not None:
         items = collector_observation.load_export(str(export))
+    elif os.environ.get('BTC_IN_CONTAINER') == '1':
+        from btc_node.reader_store import observations
+        config = Path(os.environ['BTC_SERVICE_CONFIG'])
+        items = observations(json.loads(config.read_bytes()))
     else:
-        try:
-            if str(reader_root) not in sys.path:
-                sys.path.insert(0, str(reader_root))
-            spec = importlib.util.spec_from_file_location('local_multi_asset_reader', reader_root / 'reader.py')
-            reader = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(reader)
-            data_root = Path(os.environ.get('BTC_READER_DATA_DIR', str(
-                node_config.path('reader_data_dir', reader_root / 'data')))).expanduser()
-            items = reader.collector_observations(data_root / 'messages.sqlite3', 'all')
-        except (OSError, ValueError, ImportError, RuntimeError):
-            items, failure = [], 'LOCAL_COLLECTOR_UNAVAILABLE'
+        return None
     review = collector_observation.review_exports(items)
     if 'assets' not in review:
         review = {'assets': {'BTC': ({'status': 'AUXILIARY', 'review': review}
                                     if review['accepted_observations'] else
-                                    {'status': 'UNAVAILABLE', 'reasons': [failure or 'NO_USABLE_AUXILIARY']})}}
+                                    {'status': 'UNAVAILABLE', 'reasons': ['NO_USABLE_AUXILIARY']})}}
     assets = {}
     for asset in ASSETS:
         value = review['assets'].get(asset, {})
         item = next((r for r in items if isinstance(r, dict) and r.get('asset_id', 'BTC') == asset), {})
         trace = provenance(item)
         if value.get('status') != 'AUXILIARY':
-            assets[asset] = {'status': 'UNAVAILABLE', 'reasons': [failure] if failure else
-                             value.get('reasons', ['LATEST_SNAPSHOT_UNAVAILABLE']), **trace}
+            assets[asset] = {'status': 'UNAVAILABLE',
+                             'reasons': value.get('reasons', ['LATEST_SNAPSHOT_UNAVAILABLE']), **trace}
             continue
         generated = item.get('generated_at')
         if generated is None or instant(generated) > instant(now()):

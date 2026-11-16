@@ -36,7 +36,8 @@ def source_refs(refs, project, version):
 
 
 def policy(value, version, at, project=None):
-    exact(value, 'version recorded_at fact_version objectives constraints baseline unknowns source_refs', 'investor policy')
+    extra = ' position_analysis' if 'position_analysis' in value else ''
+    exact(value, 'version recorded_at fact_version objectives constraints baseline unknowns source_refs' + extra, 'investor policy')
     require(value['version'] == digest({k:v for k,v in value.items() if k != 'version'}), 'policy version damaged')
     require(value['fact_version'] == version, 'policy binds different confirmed facts')
     require(instant(value['recorded_at']) <= instant(at), 'policy cannot be recorded after its decision')
@@ -53,6 +54,11 @@ def policy(value, version, at, project=None):
         require(recorded.is_file() and read(recorded)==value, 'policy must be recorded before candidate evaluation, not backfilled during publication')
     else:
         require(isinstance(value['source_refs'], list) and value['source_refs'], 'policy sources required')
+    if extra:
+        from .position_analysis import validate_spec
+        validate_spec(value['position_analysis'], project, version)
+        observed = value['position_analysis']['baseline']['observed_at']
+        require(observed is None or instant(observed) <= instant(value['recorded_at']), 'source snapshot cannot postdate its policy record')
 
 
 def decision(assessment):
@@ -60,10 +66,18 @@ def decision(assessment):
 
 
 def validate(value, cutoff, market_hash, version, project=None, revision=8):
-    exact(value, 'policy market_result_hash fact_version decided_at valid_until status summary candidates selected_ids priorities supported_judgements gaps issues evaluation_windows review_conditions' + (' account_constraints' if revision >= 9 else ''), 'investment decision')
+    from .position_analysis import directional, validate_decision
+    scoped = directional(value)
+    exact(value, 'policy market_result_hash fact_version decided_at valid_until status summary candidates selected_ids priorities supported_judgements gaps issues evaluation_windows review_conditions' + (' account_constraints' if revision >= 9 else '') + (' allocation_choice' if 'allocation_choice' in value else '') + (' analysis_scope' if 'analysis_scope' in value else ''), 'investment decision')
+    require('analysis_scope' not in value or scoped, 'unsupported investment analysis scope')
     require(value['market_result_hash'] == market_hash and value['fact_version'] == version, 'investment inputs changed')
     require(max(instant(cutoff), instant(value['decided_at'])) < instant(value['valid_until']), 'investment validity requires actual review')
-    policy(value['policy'], version, value['decided_at'], project)
+    if scoped:
+        validate_decision(value, project)
+        from .position_analysis import validate_personal_refs
+        validate_personal_refs(value, value['policy'])
+    else:
+        policy(value['policy'], version, value['decided_at'], project)
     require(value['status'] in ('DECIDED', 'PARTIAL', 'UNDETERMINED'), 'invalid investment decision status')
     text(value['summary'], 'whole portfolio trade-off')
     require(isinstance(value['candidates'], list) and len(value['candidates']) >= 2, 'compare current arrangement with a relevant alternative')
@@ -92,7 +106,7 @@ def validate(value, cutoff, market_hash, version, project=None, revision=8):
     require(isinstance(value['gaps'], list), 'bounded investment gaps required')
     gap_ids = set()
     for gap in value['gaps']:
-        exact(gap, 'id fact affected_candidates impact consequence required_evidence'+(' capabilities' if 'capabilities' in gap else ''), 'decision dependency gap')
+        exact(gap, 'id fact affected_candidates impact consequence required_evidence'+(' capabilities' if 'capabilities' in gap else '') + (' dimension' if scoped else ''), 'decision dependency gap')
         if 'capabilities' in gap:
             require(isinstance(gap['capabilities'],list) and gap['capabilities'] and all(isinstance(c,str) and c for c in gap['capabilities']), 'implementation gap capabilities required')
         for key in ('id', 'fact', 'consequence', 'required_evidence'):
@@ -138,6 +152,7 @@ def validate(value, cutoff, market_hash, version, project=None, revision=8):
 
 
 def validate_implementation(value, project=None):
+    from .position_analysis import directional
     for candidate in value['candidates']:
         info=candidate['validation']
         exact(info,'basis products record_ids required_capabilities limitations','candidate implementation evidence')
@@ -147,9 +162,10 @@ def validate_implementation(value, project=None):
         require(isinstance(info['limitations'],list),'implementation limitations required')
         for limitation in info['limitations']:text(limitation,'implementation limitation')
         required=set(info['required_capabilities'])
-        if set(info['products']) & {'LEVERAGED_DERIVATIVE','CROSS_MARGIN_DERIVATIVE'}:
+        analysis = directional(value)
+        if not analysis and set(info['products']) & {'LEVERAGED_DERIVATIVE','CROSS_MARGIN_DERIVATIVE'}:
             require({'MARGIN_SURVIVAL','FUNDING_COSTS'}<=required,'leveraged implementation must review margin survival and financing')
-        if 'CROSS_MARGIN_DERIVATIVE' in info['products']:
+        if not analysis and 'CROSS_MARGIN_DERIVATIVE' in info['products']:
             require('CROSS_MARGIN' in required,'cross-margin exposure cannot use isolated cash constraints')
         if info['basis']=='METHOD_CHECK' and set(info['products'])<={'CASH_SPOT'}:
             require({'CASH_FUNDING','DECLARED_EXECUTION_COSTS'}<=required, 'cash method check must retain implemented funding and cost capabilities')
@@ -186,6 +202,10 @@ def validate_implementation(value, project=None):
 
 def validate_outputs(value, recommendations):
     """Finished personal advice is constrained by the actual joint choice."""
+    from .position_analysis import directional, validate_outputs as analysis_outputs, ROLE
+    scoped = directional(value)
+    if scoped:
+        analysis_outputs(value, recommendations)
     selected={c['id']:c for c in value['candidates'] if c['id'] in value['selected_ids']}
     def bounded(ids, ready):
         require(isinstance(ids,list) and ids and set(ids)<=selected.keys(),'decided advice must reference selected whole-portfolio candidates')
@@ -207,7 +227,7 @@ def validate_outputs(value, recommendations):
             if action['decision'] in ('OPEN', 'INCREASE', 'REDUCE', 'EXIT', 'ADJUST') and not policy_only:
                 require(cited and all(roles.get(i) != 'POLICY' for i in cited), 'policy cannot authorize an executable inventory action')
             if action['decision'] == 'HOLD':
-                require(cited and all(roles.get(i) == 'INVENTORY_MAINTENANCE' for i in cited),
+                require(cited and all(roles.get(i) == (ROLE if scoped else 'INVENTORY_MAINTENANCE') for i in cited),
                         'policy use or unknown coverage cannot disguise actual HOLD')
     for side in ('upper_short','lower_spot'):
         rec=recommendations[side]
@@ -326,8 +346,31 @@ def validate_issue_review(items, assessment, main_required):
 def finished(value):
     if value is None:
         return None
+    comparisons = ('return_sources', 'risk_overlap', 'capital', 'liquidity',
+                   'net_cost', 'opportunity_cost', 'rationale')
+    candidates = value.get('candidates')
+    if (not isinstance(candidates, list) or len(candidates) < 2
+            or not isinstance(value.get('selected_ids'), list)
+            or any(not isinstance(item.get('comparison'), dict)
+                   or any(not isinstance(item['comparison'].get(key), str)
+                          or not item['comparison'][key].strip() for key in comparisons)
+                   for item in candidates)):
+        return None
     result = {k:deepcopy(value[k]) for k in ('status', 'summary', 'priorities', 'supported_judgements', 'gaps', 'issues', 'evaluation_windows', 'review_conditions', 'decided_at', 'valid_until')}
     result['validation_limits']=validation_limits(value)
+    from .position_analysis import directional
+    if directional(value):
+        result['analysis_scope'] = value['analysis_scope']
+        result['price_baseline'] = deepcopy(value['policy']['economic_inputs'])
+        result['analysis_limits'] = ['No position quantities, account total PnL, execution payload or leverage safety conclusion.']
+    if 'allocation_choice' in value:
+        result['allocation_choice'] = deepcopy(value['allocation_choice'])
+    # Report authors need the completed trade-offs, not only their headline.
+    result['selected_ids'] = deepcopy(value['selected_ids'])
+    result['candidates'] = [{k:deepcopy(item[k]) for k in
+        ('id', 'scope', 'purpose', 'is_current', 'arrangement', 'verdict', 'comparison',
+         'dependencies') + (('execution_role',) if 'execution_role' in item else ())}
+        for item in value['candidates']]
     return result
 
 
@@ -344,11 +387,14 @@ def policy_inputs(root, version):
 def record_policy(root, project, spec):
     """Record policy before candidate comparison; timestamp comes from execution."""
     from .common import create, locked, now
-    exact(spec, 'objectives constraints baseline unknowns source_refs', 'confirmed policy input')
+    exact(spec, 'objectives constraints baseline unknowns source_refs' + (' position_analysis' if 'position_analysis' in spec else ''), 'confirmed policy input')
     value={'recorded_at':now(),'fact_version':facts(project),**deepcopy(spec)}
     value['version']=digest(value)
     policy(value,value['fact_version'],value['recorded_at'])
     source_refs(value['source_refs'],project,value['fact_version'])
+    if 'position_analysis' in value:
+        from .position_analysis import validate_spec
+        validate_spec(value['position_analysis'], project, value['fact_version'])
     with locked(root):
         require(facts(project)==value['fact_version'],'confirmed policy facts changed before recording')
         path=Path(root)/'investment/policies'/(value['version'][7:]+'.json')
@@ -357,12 +403,17 @@ def record_policy(root, project, spec):
 
 
 def check_constraints(value, project):
+    from .position_analysis import directional, ROLE
+    scoped = directional(value)
     c = value['account_constraints']
     exact(c, 'fact_version record_id exposure_complete cross_margin_complete funding_complete', 'actual account constraints')
     require(c['fact_version'] == value['fact_version'], 'account constraints bind different confirmed facts')
     for k in ('exposure_complete','cross_margin_complete','funding_complete'):
         require(c[k] is None or type(c[k]) is bool, 'account constraint is unknown or confirmed')
-    if project is not None:
+    if scoped:
+        require(c['record_id'] is None and all(c[k] is None for k in ('exposure_complete','cross_margin_complete','funding_complete')),
+                'account coverage is outside directional analysis, not a safety claim')
+    elif project is not None:
         from .portfolio_ledger import constraints
         expected = constraints(Path(project)/'.strategy/v4', project, value['decided_at'])
         require(c == expected, 'account completeness cannot be self-certified from targets or partial old snapshots')
@@ -372,7 +423,7 @@ def check_constraints(value, project):
     selected = set(value['selected_ids'])
     for item in value['candidates']:
         role = item['execution_role']
-        require(role in ('INVENTORY_MAINTENANCE','INVENTORY_ADJUSTMENT','INCREMENTAL','POLICY','INDEPENDENT_RISK_RESPONSE'), 'candidate must distinguish use from actual inventory action')
+        require(role in ('INVENTORY_MAINTENANCE','INVENTORY_ADJUSTMENT','INCREMENTAL','POLICY','INDEPENDENT_RISK_RESPONSE') or (scoped and role == ROLE), 'candidate must distinguish use from actual inventory action')
         if role == 'POLICY':
             require(item['validation']['products'] == ['RESEARCH_OR_POLICY'], 'policy candidates cannot disguise inventory or funded execution')
         if item['id'] not in selected: continue

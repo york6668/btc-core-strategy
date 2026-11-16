@@ -1,6 +1,7 @@
 """Main strategy ownership. No market inference and no delivery side effects."""
 from copy import deepcopy
 from pathlib import Path
+import re
 import market_observation as market
 from .common import digest, exact, instant, pointer, read, require, text
 from . import semantics
@@ -36,6 +37,7 @@ def sections_for_revision(revision):
 
 
 def validate_provenance(p, *, historical=False):
+    require('execution_evidence' not in p, 'preview execution evidence cannot authorize formal MAIN adoption or report registration')
     extra = ' configuration_evidence' if 'configuration_evidence' in p else ''
     exact(p, 'role model effort agent_id run_ref' + extra, 'main provenance')
     require(p['role'] == 'MAIN', 'main role required')
@@ -51,14 +53,37 @@ def validate_provenance(p, *, historical=False):
         require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 16384,
                 'MAIN source manifest missing or invalid')
         require(digest(path.read_bytes()) == proof['proof_hash'], 'MAIN source manifest changed')
-        return durable_proof.main_identity(path, p['agent_id'], p['run_ref'])
+        return durable_proof.main_identity(path, p['agent_id'], p['run_ref'], historical=historical)
     models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {market.CURRENT_HOURLY_MODEL['name']}
     require(p['model'] in models and p['effort'] == 'high',
             'new main assessment requires actual '+market.CURRENT_HOURLY_MODEL['name']+'/high (Sol/high MAIN); historical completions retain their original model')
 
 
-def validate_contract(draft, *, historical=False):
-    validate_provenance(draft['provenance'], historical=historical)
+def validate_preview_provenance(p, *, project=None):
+    """Non-adopting execution evidence has no implied platform MAIN identity."""
+    if 'execution_evidence' not in p:
+        return validate_provenance(p)
+    exact(p, 'role model effort agent_id run_ref execution_evidence', 'preview provenance')
+    require(p['role'] == 'MAIN' and p['model'] is None and p['effort'] is None,
+            'preview author role is declared; runtime configuration must remain unknown')
+    for key in ('agent_id', 'run_ref'):
+        text(p[key], 'declared preview ' + key)
+    proof = p['execution_evidence']
+    exact(proof, 'scope proof_path proof_hash', 'preview execution evidence')
+    from . import durable_proof
+    require(proof['scope'] == durable_proof.PREVIEW_SCOPE, 'preview execution scope required')
+    path = Path(proof['proof_path'])
+    require(path.is_file() and not path.is_symlink() and digest(path.read_bytes()) == proof['proof_hash'],
+            'preview execution manifest changed')
+    return durable_proof.preview_identity(path, p['agent_id'], p['run_ref'], project=project)
+
+
+def validate_contract(draft, *, historical=False, purpose='ADOPTION'):
+    require(purpose in ('ADOPTION', 'ISOLATED_PREVIEW'), 'invalid assessment purpose')
+    if purpose == 'ISOLATED_PREVIEW':
+        validate_preview_provenance(draft['provenance'])
+    else:
+        validate_provenance(draft['provenance'], historical=historical)
     c = draft['conclusion']
     exact(c, 'business_meaning narrative', 'current core conclusion')
     require(isinstance(c['business_meaning'], dict) and c['business_meaning'], 'completed core conclusion needs reviewed business meaning')
@@ -82,14 +107,27 @@ def validate_contract(draft, *, historical=False):
             text(provenance['evidence_id'], 'reused evidence version')
 
 
+def _historical_version(root, identity):
+    require(isinstance(identity, str) and re.fullmatch(r'[a-f0-9]{64}', identity),
+            'invalid historical decision identity')
+    value = read(Path(root) / 'versions' / identity / 'decision.json')
+    require(value.get('decision_id') == identity
+            and digest({k: v for k, v in value.items() if k != 'decision_id'})[7:] == identity,
+            'historical domain ancestor content changed')
+    return value
+
+
 def validate_reuse(root, prior, draft):
     """Read exact ancestor fields under their original evidence identity."""
     for section, p in draft['section_provenance'].items():
         if p['mode'] != 'REUSED':
             continue
         node = prior
+        seen = set()
         while node and node['decision_id'] != p['decision_id']:
-            node = read(Path(root) / 'versions' / node['parent_id'] / 'decision.json') if node.get('parent_id') else None
+            require(node['decision_id'] not in seen, 'historical reuse ancestor cycle')
+            seen.add(node['decision_id'])
+            node = _historical_version(root, node['parent_id']) if node.get('parent_id') else None
         require(node and node.get('assessment'), 'reused section is not an actual ancestor assessment')
         original = node['assessment']
         require(original.get(section) == draft[section], 'reused section changed its original content: ' + section)
@@ -167,18 +205,29 @@ def domain_validation_baseline(root, prior, draft):
     final = next(e for e in cycle['events'] if e['event_id'] == cycle['final_expiry_event_id'])
     require(instant(final['due_at']) > max(instant(now()), instant(draft['temporal_scope']['knowledge_cutoff'])),
             'current final event requires a fresh main domain review, not historical reuse')
-    origin = read(Path(root) / 'versions' / p['decision_id'] / 'decision.json')
+    seen = set()
+    def verified_ancestor(identity):
+        require(identity not in seen, 'historical domain ancestor cycle')
+        seen.add(identity)
+        return _historical_version(root, identity)
+    origin = verified_ancestor(p['decision_id'])
     while origin['assessment'].get('section_provenance', {}).get('domain', {}).get('mode') == 'REUSED':
         identity = origin['assessment']['section_provenance']['domain']['decision_id']
-        origin = read(Path(root) / 'versions' / identity / 'decision.json')
+        origin = verified_ancestor(identity)
     require(origin.get('parent_id'), 'reused domain has no original transition baseline')
-    parent = read(Path(root) / 'versions' / origin['parent_id'] / 'decision.json')
+    parent = verified_ancestor(origin['parent_id'])
     baseline = dict(domain_baseline(root, parent))
     # Replay the actual original publication, not its older market/source
     # cutoff. A maintenance plan can honestly form after its locked inputs.
     # This clock is derived only from the immutable ancestor snapshot; it is
     # never supplied by the caller or used to publish a new domain.
     baseline['_verified_domain_replay_clock'] = instant(origin['created_at'])
+    from .assessment import personal_facts_reassessed
+    if (origin['assessment']['fact_version'] == draft['fact_version']
+            and personal_facts_reassessed(origin['assessment'])):
+        baseline['_verified_fact_reassessment'] = {
+            'decision_id': origin['decision_id'],
+            'fact_version': deepcopy(origin['assessment']['fact_version'])}
     return baseline
 
 
@@ -414,10 +463,17 @@ def assemble(root, project, components, evidence_dir, market, identity, checks, 
     sections = sections_for_revision(revision)
     require(set(components['updates']) <= set(sections) | {'research_absorptions'}, 'unknown main update section')
     exact(components['section_reviews'], ' '.join(sections), 'main section reviews')
+    current_facts = facts(project)
+    if current_facts != previous['fact_version']:
+        # An explanation of reuse cannot reassess a private section whose input
+        # changed.  Public research may still be reused without rerunning it.
+        private_sections = {'domain', 'robustness', 'portfolio_analysis', 'recommendations', 'conclusion'}
+        missing = sorted(private_sections - set(components['updates']))
+        require(not missing, 'changed account facts require explicit personal reassessment: ' + ', '.join(missing))
     package = read(Path(evidence_dir) / 'evidence.json')
     refs = current_market_references(package, evidence_dir, market, components.get('current_market_refs'))
     value = {'schema':'BTC_ASSESSMENT_DRAFT_V4', 'revision':revision, 'evidence_id':package['evidence_id'],
-             'evidence_bindings':components['evidence_bindings'], 'fact_version':facts(project),
+             'evidence_bindings':components['evidence_bindings'], 'fact_version':current_facts,
              'temporal_scope':{'market_cutoff':market['cutoff'], 'knowledge_cutoff':package['cutoff'],
                                'domain_market_cutoff':components['domain_market_cutoff'], 'current_market_refs':refs},
              'provenance':identity, 'stop_reason':components['stop_reason'], 'section_provenance':{}}

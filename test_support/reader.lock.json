@@ -1,9 +1,0 @@
-{
-  "repository": "https://github.com/york6668/market-roles.git",
-  "commit": "9b47d1eb58fdb3efc41b74ef8e1bacb269834c09",
-  "export_role": "analysis/telegram_reader",
-  "ci_snapshot": {
-    "path": "test_support/ci_reader",
-    "tree": "0f41c16e13a444eb387d6324ca14712029873fb3"
-  }
-}

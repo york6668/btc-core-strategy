@@ -109,16 +109,8 @@ def commit(root, project, draft, evidence_dir, review, expected, fault=None):
                     'fact_version': accepted['fact_version'], 'submitted_draft': draft, 'assessment': accepted, 'review': review}
         baseline['completion_hash'] = digest(baseline)
         dest = root / 'evidence' / accepted['evidence_id'][7:]
-        if not dest.exists():
-            stage = root / 'evidence' / ('.staging-' + uuid.uuid4().hex)
-            shutil.copytree(evidence_dir, stage)
-            from .evidence import validate as validate_evidence
-            validate_evidence(read(stage / 'evidence.json'), stage)
-            sync_tree(stage)
-            os.rename(stage, dest)
-            fsync_dir(dest.parent)
-        from .evidence import validate as validate_evidence
-        validate_evidence(read(dest / 'evidence.json'), dest)
+        require(archive_evidence(root, evidence_dir)['evidence_id'] == accepted['evidence_id'],
+                'evidence changed before archival')
         # Never discard a successful unchanged assessment or replace its first completion time.
         completion_path = root / 'deep' / (draft['draft_id'][7:] + '.json')
         if completion_path.exists():
@@ -195,6 +187,18 @@ def install_views(root, project, expected_hashes):
 
 
 def validate_main(root, project, draft, evidence_dir, review, prior=None):
+    return _validate_main(root, project, draft, evidence_dir, review, prior, purpose='ADOPTION')
+
+
+def validate_preview(root, project, draft, evidence_dir, review, prior=None):
+    """Same financial/approval checks, explicitly no formal author admission."""
+    from .main_flow import validate_preview_provenance
+    validate_preview_provenance(draft['provenance'], project=project)
+    require(Path(root).resolve() == (Path(project) / '.strategy/v4').resolve(), 'preview store belongs to another project')
+    return _validate_main(root, project, draft, evidence_dir, review, prior, purpose='ISOLATED_PREVIEW')
+
+
+def _validate_main(root, project, draft, evidence_dir, review, prior=None, *, purpose):
     """The same read-only checks serve preflight and the locked publication.
 
     Independent failures are collected in one response; dependent checks run
@@ -218,14 +222,41 @@ def validate_main(root, project, draft, evidence_dir, review, prior=None):
         for field in ('market_cutoff', 'knowledge_cutoff'):
             check(field, lambda field=field: require(instant(draft['temporal_scope'][field]) >= instant(previous['temporal_scope'][field]), 'older main assessment cannot replace current conclusion'))
     check('facts', lambda: require(facts(project) == draft['fact_version'], 'facts changed before main publication'))
+    from .position_analysis import require_current_scope
+    check('personal_analysis_scope', lambda: require_current_scope(root, project, draft))
     for side in ('upper_short', 'lower_spot'):
         if draft['recommendations'][side]['status'] == 'RECOMMENDED':
             check(side + '_expiry', lambda side=side: require(instant(draft['recommendations'][side]['validity']['until']) > instant(now()), 'recommendation expired during main assessment'))
     if draft.get('revision',0)>=8:
-        from .investment import decision as investment_decision
+        from .investment import decision as investment_decision, validate_issue_review
         check('investment_expiry',lambda: require(instant(investment_decision(draft)['valid_until'])>instant(now()), 'investment decision expired during main assessment; complete a current review before adoption'))
+        # Issue continuity does not depend on the future cycle approval. Check
+        # the original questions before that gate can suppress publication
+        # checks; explanations belong in their own mutable fields.
+        check('investment_issue_continuity', lambda: validate_issue_review(
+            investment_decision(draft)['issues'], previous, True))
     baseline = check('domain_baseline', lambda: main_flow.domain_validation_baseline(root, prior, draft))
-    accepted = check('assessment', lambda: assessment.validate(draft, evidence_dir, baseline, project, review)) if baseline else None
+    accepted = check('assessment', lambda: assessment.validate(draft, evidence_dir, baseline, project, review, purpose=purpose)) if baseline else None
+    if baseline is None:
+        # A pending exact cycle approval must not hide independent draft/fact/
+        # numeric errors until after an expensive author review. This diagnostic
+        # never yields an accepted value or clears the original approval error.
+        fallback = check('unapproved_domain_baseline', lambda: domain_baseline(root, prior))
+        if fallback is not None:
+            # A real earlier review may already own this identical legacy event
+            # carrier. Reuse only that event's proven deadline for diagnostics;
+            # the different candidate still fails the mandatory approval gate.
+            from . import cycle
+            def unchanged_event_deadline():
+                saved, disclosed = cycle.adopted(root, draft)
+                if (saved is not None and disclosed['candidate']['assessment']['domain']['event']
+                        == draft['domain']['event']):
+                    return saved['cycle_review']['recheck_at']
+            deadline = check('unapproved_event_context', unchanged_event_deadline)
+            if deadline is not None:
+                fallback = dict(fallback, _cycle_recheck_at=deadline)
+            check('assessment_without_cycle_approval',
+                  lambda: assessment.validate(draft, evidence_dir, fallback, project, review, purpose=purpose))
     if accepted:
         check('normalization', lambda: domain.validate_normalization(draft, accepted))
         check('publication', lambda: main_flow.validate_publication(root, prior, accepted))
@@ -237,7 +268,6 @@ def validate_main(root, project, draft, evidence_dir, review, prior=None):
 def _commit_main(root, project, draft, evidence_dir, review, prior, expected, fault=None):
     """Called under the shared writer lock. Main success never advances DEEP."""
     from . import main_flow
-    from .evidence import validate as validate_evidence
     previous = prior.get('assessment')
     accepted = validate_main(root, project, draft, evidence_dir, review, prior)
     comparison = main_flow.report_comparison(root, accepted, prior, review['material_new_outlook'])
@@ -245,14 +275,8 @@ def _commit_main(root, project, draft, evidence_dir, review, prior, expected, fa
     changed = main_flow.content(accepted) != main_flow.content(previous) or fresh_final
     # Finish all checks before saving any completion receipt.
     dest = root / 'evidence' / accepted['evidence_id'][7:]
-    if not dest.exists():
-        stage = root / 'evidence' / ('.staging-' + uuid.uuid4().hex)
-        shutil.copytree(evidence_dir, stage)
-        validate_evidence(read(stage / 'evidence.json'), stage)
-        sync_tree(stage)
-        os.rename(stage, dest)
-        fsync_dir(dest.parent)
-    validate_evidence(read(dest / 'evidence.json'), dest)
+    require(archive_evidence(root, evidence_dir)['evidence_id'] == accepted['evidence_id'],
+            'evidence changed before archival')
     completed_at = now()
     # Evidence archival may outlast preflight validity. Check the actual
     # completion time again before any decision or completion pointer advances.
@@ -332,14 +356,20 @@ def archive_evidence(root, directory):
     from .evidence import validate
     directory, root = Path(directory), Path(root)
     package = validate(read(directory / 'evidence.json'), directory)
-    with locked(root):
+    # Research and strategy writers may already hold the project writer lock.
+    # Archives have one narrower append-only resource and never acquire the
+    # project lock. All archive producers share this lock (project -> evidence
+    # when nested), so a standalone archive cannot race a publishing writer.
+    with locked(root / 'evidence'):
         dest = root / 'evidence' / package['evidence_id'][7:]
         if not dest.exists():
             stage = root / 'evidence' / ('.staging-' + uuid.uuid4().hex)
             shutil.copytree(directory, stage)
-            validate(read(stage / 'evidence.json'), stage)
+            require(validate(read(stage / 'evidence.json'), stage)['evidence_id'] == package['evidence_id'],
+                    'source evidence changed during archival')
             sync_tree(stage)
             os.rename(stage, dest)
             fsync_dir(dest.parent)
-        validate(read(dest / 'evidence.json'), dest)
+        require(validate(read(dest / 'evidence.json'), dest)['evidence_id'] == package['evidence_id'],
+                'archived evidence identity mismatch')
     return {'evidence_id':package['evidence_id'],'directory':str(dest),'status':'EVIDENCE_ARCHIVED_ONLY'}

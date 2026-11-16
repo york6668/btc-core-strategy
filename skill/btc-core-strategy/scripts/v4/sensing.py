@@ -221,6 +221,13 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
                 'legacy_hour': legacy['baselines'].get('HOUR'), 'fact_version': current_facts,
                 'market_evidence_id': current_market['evidence_id'], 'retrieval_id': current_market['retrieval_id'],
                 'history_ids': [p['evidence_id'] for p in history]}
+    if active_revision >= 9:
+        # Private stage identity only. market_projection's explicit public
+        # whitelist excludes it and is unchanged by a personal policy update.
+        from .position_analysis import latest as personal_policy
+        owner = personal_policy(root)
+        if owner is not None:
+            identity['position_analysis_policy_version'] = owner['version']
     if active_revision >= 6:
         identity['workflow_revision'] = min(9, active_revision)
     research_context = None
@@ -402,6 +409,11 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
     bundle = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
     resolve = evidence.forward_resolver(bundle, evidence_dir)
     rev = ctx.get('revision', 5)
+    from .decision_design import public_case
+    original_case = public_case((ctx.get('current_core') or {}).get('outlook'))
+    if original_case is not None:
+        require(authored['market_assessment'].get('cycle_case') == original_case,
+                'ordinary observation must preserve the original cycle argument and window; reconsider applicability or use normal research')
     market_state.validate_assessment(authored['market_assessment'], resolve, bundle['cutoff'], rev,
         ctx.get('market_baseline', {}).get('market_assessment'), lifecycle_root=root)
     market_state.validate_zones(authored['dispute_zones'], resolve,

@@ -19,7 +19,8 @@ class Blocked(RuntimeError):
 
 
 def sha256(path):
-    source = Path(path)
+    from v4.durable_proof import resolve_path
+    source = resolve_path(path)
     if not source.is_file() or source.is_symlink() or not source.stat().st_size:
         raise Blocked('nonempty regular proof file required')
     return 'sha256:' + hashlib.sha256(source.read_bytes()).hexdigest()
@@ -40,7 +41,9 @@ def request(method, params=None, operation_id=None):
             db.close()
     import node_config
     docker = node_config.load().get('docker_service') or {}
-    if not docker.get('enabled'):
+    guard_only = (docker.get('guard_enabled') is True and method in
+                  ('model.deep.status', 'model.deep.claim', 'model.deep.finish', 'model.defect.check'))
+    if not docker.get('enabled') and not guard_only:
         raise Blocked('shared BTC node service is unavailable; no local fallback')
     command = [docker['binary'], 'compose', '-p', docker['project'],
                '--env-file', docker['env_file'], '-f', docker['compose_file']]

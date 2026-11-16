@@ -1,6 +1,6 @@
 # BTC、QQQ、VOO 辅助采集输入
 
-沿用原采集频道、后台读取器和唯一核心策略任务。`run-prepare` 默认只读本地 `telegram_reader` 的三标的最新导出，不同步 Telegram；离线回放可用 `--collector-observations <JSON文件>` 冻结输入。同一运行重试复用冻结内容，不重新读取变化后的快照。读取器单独调用 `collector-observations` 默认 BTC，主流程明确读取 `--asset all`。
+沿用原采集频道、后台读取器和唯一核心策略任务。Docker 节点的 Reader 把收件、附件和游标持久化到本节点 MySQL/CAS，`run-prepare` 从该节点读取三标的最新记录，不触发 Telegram 轮询。离线回放可用 `--collector-observations <JSON文件>` 或 `--collector-snapshot <原冻结文件>`。同一运行重试复用冻结内容。独立运行的旧 Reader 导出默认 BTC，三标的用 `--asset all`。
 
 正文和附件按 BTC、QQQ、VOO 各自选择最新版本。最新正文无附件、附件待下载、校验失败或身份冲突时，只暴露该标的缺口，不回退旧值；其他标的仍可用。新版解析器读取已保存原始附件时重新校验，旧拒绝记录和原文不改写。旧 `BTC_COLLECTOR_EVIDENCE_V1` 与新 `MARKET_COLLECTOR_EVIDENCE_V1` 并存。
 

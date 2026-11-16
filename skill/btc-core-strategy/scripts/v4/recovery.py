@@ -6,9 +6,19 @@ from .common import digest, read, require, replace
 
 def public_inventory(value):
     """Construct a public contract, rather than subtracting known private fields."""
+    def count(key):
+        if key in value:
+            return len(value[key] or [])
+        # The CLI already projects its result before the node projects it again,
+        # including on cached operations. Preserve only valid public scalars;
+        # never copy private inventory entries or arbitrary nested values.
+        projected = value.get('counts', {}) if value.get('scope') == 'PUBLIC' else {}
+        number = projected.get(key) if isinstance(projected, dict) else None
+        return number if type(number) is int and number >= 0 else 0
+
     return {'scope': 'PUBLIC', 'current': value.get('current'),
             'report_review_required': bool(value.get('report_review_required')),
-            'counts': {key: len(value.get(key) or []) for key in (
+            'counts': {key: count(key) for key in (
                 'reports_not_enqueued', 'report_reviews_not_enqueued',
                 'report_delivery_obligations', 'delivery_recovery', 'outbox', 'staging')},
             'details_after': 'recover --run <original run.json> --run-ref <this execution reference>; requires its frozen independent market result'}

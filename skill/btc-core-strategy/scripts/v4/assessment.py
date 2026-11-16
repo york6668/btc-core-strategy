@@ -126,11 +126,15 @@ def validate_analysis_sections(draft, revision, resolve, lifecycle_root=None, fr
     if lifecycle_root is not None and public_revision >= 9 and origin.get('mode') != 'REUSED':
         from . import market_state
         prior_market = market_state.effective(lifecycle_root).get('market_assessment')
-    approved_origin = None
+    frozen_origin = None
     if lifecycle_root is not None and public_revision >= 9 and not frozen_public and origin.get('mode') != 'REUSED':
-        from .cycle import approved_frozen_public
-        approved_origin = approved_frozen_public(lifecycle_root, draft)
-    historical_read = public_revision >= 9 and (frozen_public or origin.get('mode') == 'REUSED' or approved_origin is not None)
+        from .cycle import approved_frozen_public, registered_frozen_public
+        frozen_origin = approved_frozen_public(lifecycle_root, draft)
+        if frozen_origin is None:
+            # Only public analysis retains its registered source validation.
+            # Private checks and exact candidate approval still run normally.
+            frozen_origin = registered_frozen_public(lifecycle_root, draft)
+    historical_read = public_revision >= 9 and (frozen_public or origin.get('mode') == 'REUSED' or frozen_origin is not None)
     if historical_read:
         if not frozen_public and origin.get('mode') == 'REUSED':
             # Reuse is only a read of the exact original ancestor and its
@@ -178,7 +182,41 @@ def validate_analysis_sections(draft, revision, resolve, lifecycle_root=None, fr
         text(value['narrative'], 'module rationale')
 
 
-def validate(draft, evidence_dir, prior, project, review):
+def personal_facts_reassessed(draft, prior=None):
+    """Called after normal decision validation; never an input-supplied waiver."""
+    from .investment import decision as investment_decision
+    personal = investment_decision(draft) if draft.get('revision', 1) >= 8 else None
+    if personal is None or personal.get('fact_version') != draft['fact_version']:
+        return False
+    if all(draft.get('section_provenance', {}).get(key, {}).get('mode') == 'ASSESSED'
+           for key in ('domain', 'robustness', 'portfolio_analysis', 'recommendations', 'conclusion')):
+        return True
+    # Only domain_validation_baseline can supply this qualification, after
+    # verifying the actual unchanged ancestor. REUSED by itself grants none.
+    verified = (prior or {}).get('_verified_fact_reassessment') or {}
+    return (draft.get('section_provenance', {}).get('domain', {}).get('mode') == 'REUSED'
+            and bool(verified.get('decision_id'))
+            and verified.get('fact_version') == draft['fact_version'])
+
+
+def recorded_baseline_reassessment(root, prior):
+    """Qualify only an actual immutable prior publication, never draft flags."""
+    if not prior.get('assessment') or prior['assessment'].get('revision', 1) < 8:
+        return False
+    from .main_flow import _historical_version
+    actual = _historical_version(root, prior['decision_id'])
+    require(actual['canonical_domain'] == prior['canonical_domain'], 'prior domain differs from its immutable publication')
+    seen = set()
+    while actual['assessment'].get('section_provenance', {}).get('domain', {}).get('mode') == 'REUSED':
+        identity = actual['assessment']['section_provenance']['domain']['decision_id']
+        require(identity not in seen, 'recorded fact baseline ancestor cycle')
+        seen.add(identity)
+        actual = _historical_version(root, identity)
+        require(actual['canonical_domain'] == prior['canonical_domain'], 'reused fact baseline differs from its actual origin')
+    return personal_facts_reassessed(actual['assessment'])
+
+
+def validate(draft, evidence_dir, prior, project, review, *, purpose='ADOPTION'):
     revision = draft.get('revision', 1)
     require(revision in (1, 2, 3, 4, 5, 6, 7, 8, 9), 'unsupported assessment revision')
     extra = ' revision recommendations maintenance_binding' if revision >= 2 else ''
@@ -214,7 +252,7 @@ def validate(draft, evidence_dir, prior, project, review):
         text(result, 'audit review finding')
     require(review['unresolved_issues'] == [], 'concrete review contradictions remain unresolved')
     if revision >= 3:
-        main_flow.validate_contract(draft)
+        main_flow.validate_contract(draft, purpose=purpose)
     else:
         exact(draft['provenance'], 'model effort agent_id independent_review candidate_review', 'evaluation provenance')
         require(draft['provenance']['model'] == 'gpt-6-astra' and draft['provenance']['effort'] == 'max', 'full assessment requires GPT-6 Astra/max')
@@ -235,6 +273,8 @@ def validate(draft, evidence_dir, prior, project, review):
         validate_recommendations(draft['recommendations'], scope['knowledge_cutoff'],
                                  lambda ref: evidence.resolve(package, evidence_dir, ref, verified=True), revision,
                                  public_hash(draft) if revision >= 6 else None, draft['fact_version'], project=project)
+    from .decision_design import validate_link
+    validate_link(draft, project)
     require(isinstance(draft['evidence_bindings'], dict), 'domain evidence bindings required')
     source_by_id = {s['id']: s for s in package['sources'] if s['trust'] == 'PUBLIC_RAW'}
     for dimension, entry in draft['domain']['evidence_matrix'].items():
@@ -267,8 +307,14 @@ def validate(draft, evidence_dir, prior, project, review):
         require(matched and _source_matches_raw(matched, source_by_id[refs[0]['source_id']], evidence_dir, refs[0]), 'quoted price bound to wrong venue')
     validated = deepcopy(draft)
     historical_clock = prior.get('_verified_domain_replay_clock') if revision >= 3 else None
+    # Facts already persisted and actually used in a new personal decision are
+    # different from an unprocessed Owner change. Keep the transition evidence,
+    # but do not ask for another fact sync after that work has been completed.
     validated['domain'] = domain.validate(draft['domain'], prior['canonical_domain'], project, historical_clock,
-                                         cycle_recheck_at=prior.get('_cycle_recheck_at'), model_market=revision >= 5)
+                                         cycle_recheck_at=prior.get('_cycle_recheck_at'), model_market=revision >= 5,
+                                         recorded_fact_reassessment=personal_facts_reassessed(draft, prior),
+                                         recorded_baseline_reassessment=revision >= 5 and recorded_baseline_reassessment(
+                                             Path(project) / '.strategy' / 'v4', prior))
     if revision < 3:
         report.render(validated)
     return validated

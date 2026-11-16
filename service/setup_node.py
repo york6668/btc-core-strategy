@@ -37,24 +37,24 @@ def prepare(node_path, data, docker, compose_project, source):
     # .strategy returns EXDEV even on a single host filesystem.
     native_project = data / 'objects'
     native_project.mkdir(exist_ok=True)
-    (data / 'reader-source/data').mkdir(parents=True, exist_ok=True)
-    (data / 'reader').mkdir(exist_ok=True)
+    (data / 'reader-source').mkdir(exist_ok=True)
     for name in ('资产配置.md', '操作记录.md', '纠正记录.md'):
         target = native_project / name
         if not target.is_symlink():
             target.symlink_to(Path('/run/btc/facts/current') / name)
     state_link = native_project / '.strategy'
     state_link.mkdir(exist_ok=True)
-    container_node = dict(node, python='/usr/local/bin/python', frozen_market_python='/usr/local/bin/python')
+    container_node = dict(node, python='/usr/local/bin/python', frozen_market_python='/usr/local/bin/python',
+                          native_proof_dir=str(data / 'native-proofs'))
     container_node.pop('frozen_market_python_version', None)
     container_node.pop('docker_service', None)
+    container_node.pop('reader_data_dir', None)
     write(data / 'container-node.json', container_node)
     settings = {'mysql': {'host': 'mysql', 'user': 'btc', 'database': 'btc', 'password_file': '/run/secrets/mysql_password'},
                 'objects': str(project), 'require_shared_evidence': True,
                 'socket': '/run/btc/btc.sock', 'journal': str(data / 'journal'),
                 'project': str(project), 'release_root': str(Path(node['release_root']) / 'releases'),
                 'container_node_config': str(data / 'container-node.json'),
-                'reader_data': node['reader_data_dir'],
                 'observation_db': node['observation_db'], 'maintenance_enabled': False,
                 'recycle_grace_hours': 48, 'compatibility_root': str(native_project / '.strategy'),
                 # Keep immutable backup content on the evidence mount. A sibling
@@ -62,20 +62,17 @@ def prepare(node_path, data, docker, compose_project, source):
                 'backup_directory': str(project / '.backups'), 'backup_retention_days': 7,
                 'auxiliary_namespaces': {name:str(data/path) for name,path in
                     (('native_inputs','native-inputs'),('native_proofs','native-proofs'),('facts','native-facts'))},
-                'capacity_paths': [str(data/name) for name in ('reader','native-proofs','native-inputs','native-facts','journal')],
+                'capacity_paths': [str(data/name) for name in ('native-proofs','native-inputs','native-facts','journal')],
                 'namespaces': {'strategy': str(project / '.strategy')}}
     write(settings_path, settings)
     environment = {'BTC_DATA_DIR': str(data), 'BTC_CONTAINER_DATA_DIR': str(data), 'BTC_SETTINGS_FILE': str(settings_path),
                    'BTC_MYSQL_PASSWORD_FILE': str(secret_dir / 'mysql'),
                    'BTC_MYSQL_ROOT_PASSWORD_FILE': str(secret_dir / 'mysql-root'),
-                   'BTC_READER_DATA_DIR': str(data / 'reader'), 'BTC_IMAGE_TAG': 'candidate'}
+                   'BTC_IMAGE_TAG': 'candidate'}
     (data / 'compose.env').write_text('\n'.join(k+'='+v for k,v in environment.items())+'\n')
     volumes = [str(data) + ':' + str(data),
                node['release_root'] + ':' + node['release_root'] + ':ro',
                str(data / 'reader-source') + ':' + node['reader_code_dir'] + ':ro',
-               # SQLite mode=ro still needs a writable directory for WAL's
-               # shared-memory coordination when the previous reader closed.
-               str(data / 'reader') + ':' + node['reader_data_dir'],
                str(native_project) + ':' + str(project),
                str(data / 'native-facts') + ':/run/btc/facts:ro']
     # Import runs on the native adapter through a localhost-only DB endpoint.

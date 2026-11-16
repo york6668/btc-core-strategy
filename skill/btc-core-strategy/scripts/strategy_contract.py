@@ -3615,11 +3615,15 @@ def _validate_hourly_integration(
 def _validate_account_fact_transition(
     bundle: Mapping[str, Any], previous_baseline: Revision3Baseline | None,
     actual_fact_fingerprints: Mapping[str, str] | None, errors: list[str],
+    *, allow_recorded_reassessment: bool = False,
 ) -> bool:
     """Shared live fact-version/confirmation gate, also used before public derivation."""
 
     account_facts = bundle.get("account_facts")
     preference_recorded = False
+    recorded_reassessment = (allow_recorded_reassessment and isinstance(account_facts, Mapping)
+        and account_facts.get("account_fact_changed_known") is True
+        and account_facts.get("local_record_status") == "FACTS_REASSESSED")
     if not isinstance(account_facts, Mapping):
         errors.append("account_facts must be an object")
         account_changed = False
@@ -3633,7 +3637,7 @@ def _validate_account_fact_transition(
                 account_facts.get("known_change_evidence")
             ):
                 errors.append("known account fact change requires explicit known_change_evidence")
-            if account_facts.get("local_record_status") != "FACT_SYNC_PENDING":
+            if account_facts.get("local_record_status") != "FACT_SYNC_PENDING" and not recorded_reassessment:
                 errors.append("known account fact change requires local_record_status=FACT_SYNC_PENDING")
         elif "known_change_evidence" in account_facts or "local_record_status" in account_facts:
             preference_recorded = account_facts.get("known_change_evidence") == [{
@@ -3687,7 +3691,9 @@ def _validate_account_fact_transition(
         errors.append("user_input_requirement must be NONE or FACT_SYNC")
     if requirement == "FACT_SYNC" and not account_changed:
         errors.append("FACT_SYNC requires account_fact_changed_known=true")
-    if account_changed and requirement != "FACT_SYNC":
+    if recorded_reassessment and requirement != "NONE":
+        errors.append("recorded fact reassessment requires user_input_requirement=NONE")
+    if account_changed and requirement != "FACT_SYNC" and not recorded_reassessment:
         errors.append("known account fact change requires FACT_SYNC")
     return account_changed
 
@@ -5377,6 +5383,8 @@ def _validate_bundle_internal(
     _event_replay_clock: datetime | None = None,
     _cycle_recheck_at: str | None = None,
     _model_market_assessment: bool = False,
+    _recorded_fact_reassessment: bool = False,
+    _recorded_baseline_reassessment: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(bundle, Mapping):
@@ -5491,6 +5499,7 @@ def _validate_bundle_internal(
                     bundle, previous_baseline,
                     require_owner_paths=require_owner_baseline,
                     model_market=_model_market_assessment,
+                    _recorded_fact_reassessment=_recorded_baseline_reassessment,
                 )
             )
 
@@ -6681,6 +6690,7 @@ def _validate_bundle_internal(
 
     account_changed = _validate_account_fact_transition(
         bundle, previous_baseline, actual_fact_fingerprints, errors,
+        allow_recorded_reassessment=_model_market_assessment and _recorded_fact_reassessment,
     )
     if bundle.get("projection_mode") not in {"CURRENT_DERIVATION", "LAST_VALID_ANCHOR"}:
         errors.append("projection_mode is invalid")
@@ -6710,12 +6720,33 @@ def _validate_bundle_internal(
         # review owner. Validate its complete structure and sources, without
         # claiming a missed review ran or inventing a replacement event chain.
         # Changed events and legacy callers retain the actual deadline gate.
+        event_hypothesis_ids = hypothesis_ids
+        historical_context = baseline_event if historical_event else None
+        if _baseline_semantics_mode and _model_market_assessment:
+            # Reading a persisted projection is not accepting a new event.
+            # Its expired carrier may predate the current causal assessment.
+            cycle = event.get("cycle")
+            chain = cycle.get("events") if isinstance(cycle, Mapping) else None
+            if isinstance(chain, list) and chain and isinstance(chain[-1], Mapping):
+                due = _parse_iso8601(chain[-1].get("due_at"), "historical event final due_at", errors)
+                if due is not None and due <= event_clock:
+                    historical_context = event
+        if historical_context is not None:
+            # Match event_contract's existing immutable-baseline read semantics:
+            # refs belong to the stored historical chain, not today's causal
+            # set. New/changed/active events never receive this context.
+            chain = historical_context["cycle"]["events"]
+            event_hypothesis_ids = {
+                ref for item in chain if isinstance(item, Mapping)
+                for ref in (item.get("hypothesis_refs") if isinstance(item.get("hypothesis_refs"), list) else [])
+                if isinstance(ref, str)
+            }
         errors.extend(validate_event_contract(
             event,
             pricing_as_of=runtime.get("pricing_as_of") if isinstance(runtime, Mapping) else None,
             observed_at=observation.get("observed_at") if isinstance(observation, Mapping) else None,
             now=event_clock,
-            hypothesis_ids=hypothesis_ids,
+            hypothesis_ids=event_hypothesis_ids,
             baseline_event=None if historical_event else baseline_event,
             migration=trigger_transition == "MIGRATION",
             baseline_mode=_baseline_semantics_mode or historical_event,
@@ -7581,7 +7612,8 @@ def _remove_projection_sidecar(document_text: str) -> str:
 
 
 def _derive_revision3_baseline_binding(
-    state_text: str, plan_text: str, *, model_market: bool = False
+    state_text: str, plan_text: str, *, model_market: bool = False,
+    _recorded_fact_reassessment: bool = False,
 ) -> tuple[dict[str, str] | None, list[str]]:
     """Derive the old decision/report identity from two actual rev3 projections."""
 
@@ -7678,6 +7710,7 @@ def _derive_revision3_baseline_binding(
                 require_fact_owner_paths=False,
                 _baseline_semantics_mode=True,
                 _model_market_assessment=model_market,
+                _recorded_fact_reassessment=model_market and _recorded_fact_reassessment,
             )
         )
         try:
@@ -7789,6 +7822,7 @@ def load_revision3_baseline(
 def validate_revision3_baseline(
     bundle: Mapping[str, Any], baseline: Revision3Baseline,
     *, require_owner_paths: bool = False, model_market: bool = False,
+    _recorded_fact_reassessment: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     state = baseline.state_path.resolve()
@@ -7803,7 +7837,8 @@ def validate_revision3_baseline(
     except OSError as exc:
         return [f"revision3 baseline cannot be reloaded: {exc}"]
     binding, binding_errors = _derive_revision3_baseline_binding(
-        actual_state, actual_plan, model_market=model_market
+        actual_state, actual_plan, model_market=model_market,
+        _recorded_fact_reassessment=model_market and _recorded_fact_reassessment,
     )
     errors.extend(binding_errors)
     if binding is None:

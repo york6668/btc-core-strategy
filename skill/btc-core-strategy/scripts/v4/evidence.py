@@ -7,9 +7,43 @@ import ipaddress
 import json
 import re
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from .common import create, digest, exact, fsync_dir, instant, now, numbered, pointer, read, require, text
+
+NATIVE_FINANCE_LOCATOR = 'tool://web.run/finance'
+NATIVE_FINANCE_ORIGIN = 'UNESTABLISHED:web.run.finance'
+
+
+def _native_finance(source, value):
+    """A saved tool observation, never an invented vendor URL or trade receipt."""
+    exact(value, 'schema capture native_response underlying_provider provenance_url semantics', 'native finance capture')
+    require(value['schema'] == 'BTC_NATIVE_FINANCE_CAPTURE_V1'
+            and value['underlying_provider'] is None and value['provenance_url'] is None,
+            'unexposed finance provider must remain unknown')
+    require(value['semantics'] == 'TOOL_REPORTED_QUOTES_NOT_EXECUTION_OR_INDEPENDENT_VENDOR_VERIFICATION',
+            'native finance scope must remain explicit')
+    capture = value['capture']
+    exact(capture, 'started ended results', 'actual native capture')
+    def clock(key):
+        exact(capture[key], 'current_time', 'native capture clock')
+        return datetime.strptime(capture[key]['current_time'], '%Y-%m-%d %H:%M:%S UTC').replace(tzinfo=timezone.utc)
+    began, ended = clock('started'), clock('ended')
+    require(began <= ended, 'native capture clocks reversed')
+    require(isinstance(capture['results'], list), 'native capture results missing')
+    quoted = [v['value']['result'] for v in capture['results'] if isinstance(v, dict)
+              and v.get('status') == 'fulfilled' and isinstance(v.get('value'), dict)
+              and v['value'].get('key') == 'quotes']
+    require(len(quoted) == 1 and isinstance(quoted[0], str) and quoted[0].strip()
+            and value['native_response'] == quoted[0], 'native finance response differs from the actual capture')
+    require(re.search(r'cite[^\s]*finance\d+', quoted[0]) is not None
+            and re.search(r'\([A-Z0-9.^-]+\) is a (?:fund|equity|index) in the [A-Z]+ market\. The price is ', quoted[0]) is not None
+            and 'The latest trade time is ' in quoted[0], 'successful native finance quote response required')
+    require(source['trust'] == 'PUBLIC_RAW' and source['origin'] == NATIVE_FINANCE_ORIGIN,
+            'native tool quotes cannot self-declare vendor independence')
+    require(source['published_at'] is None and instant(source['start']) == began
+            and instant(source['end']) == ended and instant(source['retrieved_at']) == ended,
+            'native source window must bind the actual query; trade times remain in the response')
 
 
 def _fields(value, fields, name, optional=()):
@@ -31,6 +65,8 @@ def _source_fields(sources):
 
 
 def canonical_origin(url):
+    if url == NATIVE_FINANCE_LOCATOR:
+        return NATIVE_FINANCE_ORIGIN
     host = urlsplit(url).hostname or ''
     registry = {'binance.com': 'BINANCE', 'binance.vision': 'BINANCE', 'coinbase.com': 'COINBASE',
                 'kraken.com': 'KRAKEN', 'bls.gov': 'BLS', 'federalreserve.gov': 'FED', 'treasury.gov': 'TREASURY',
@@ -58,19 +94,22 @@ def validate(bundle, directory):
         ids.add(source['id'])
         text(source['origin'], 'canonical origin')
         url = urlsplit(source['url'])
-        require(url.scheme == 'https' and url.hostname and not url.username and not url.password, 'public HTTPS provenance required')
+        native = source['url'] == NATIVE_FINANCE_LOCATOR
+        require(native or (url.scheme == 'https' and url.hostname and not url.username and not url.password),
+                'public HTTPS provenance or supported native finance capture required')
         # Registering a new official publisher cannot invalidate old frozen
         # sources or retrospectively upgrade their independence. FRED and other
         # redistributors remain UNESTABLISHED unless original provenance is known.
         historical_origin = 'UNESTABLISHED:' + (url.hostname or '')
         require(source['origin'] in (canonical_origin(source['url']), historical_origin), 'source cannot self-declare independence')
         require(not url.query or not any(x in url.query.lower() for x in ('token', 'key', 'auth', 'secret')), 'credential-like URL')
-        try:
-            ipaddress.ip_address(url.hostname)
-        except ValueError:
-            require('.' in url.hostname and not url.hostname.endswith(('.local', '.localhost')), 'nonpublic source')
-        else:
-            require(False, 'IP literal source forbidden')
+        if not native:
+            try:
+                ipaddress.ip_address(url.hostname)
+            except ValueError:
+                require('.' in url.hostname and not url.hostname.endswith(('.local', '.localhost')), 'nonpublic source')
+            else:
+                require(False, 'IP literal source forbidden')
         require(source['trust'] in ('PUBLIC_RAW', 'UNTRUSTED_LEAD'), 'invalid source trust')
         start, end, retrieved = [instant(source[k]) for k in ('start', 'end', 'retrieved_at')]
         published = instant(source['published_at']) if source['published_at'] is not None else None
@@ -78,7 +117,16 @@ def validate(bundle, directory):
                 'source exceeds assessment time boundary')
         raw_hash = source['raw_hash']
         payload = Path(directory) / 'raw' / (raw_hash[7:] + '.json')
-        require(payload.is_file() and digest(payload.read_bytes()) == raw_hash, 'missing or changed raw evidence')
+        require(payload.is_file(), 'missing or changed raw evidence')
+        raw_bytes = payload.read_bytes()
+        require(digest(raw_bytes) == raw_hash, 'missing or changed raw evidence')
+        if native:
+            _native_finance(source, read(payload))
+        else:
+            try: named_capture = json.loads(raw_bytes)
+            except (ValueError, UnicodeError): named_capture = None
+            require(not isinstance(named_capture, dict) or named_capture.get('schema') != 'BTC_NATIVE_FINANCE_CAPTURE_V1',
+                    'native finance capture must retain its tool locator; do not invent a website provenance')
     for group in ('measurements', 'verified_facts'):
         require(isinstance(bundle[group], list), group + ' must be a list')
         for claim in bundle[group]:
@@ -110,6 +158,15 @@ def resolve(bundle, directory, ref, verified=False):
     if verified:
         require(source['trust'] == 'PUBLIC_RAW', 'untrusted lead cannot support verified fact')
     data = read(Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json'))
+    if source.get('url') == NATIVE_FINANCE_LOCATOR or isinstance(data, dict) and data.get('schema') == 'BTC_NATIVE_FINANCE_CAPTURE_V1':
+        require(source.get('url') == NATIVE_FINANCE_LOCATOR, 'native finance capture cannot be relabelled as a website source')
+        _source_fields([source])
+        require(digest((Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json')).read_bytes()) == source['raw_hash'],
+                'native finance raw bytes changed')
+        _native_finance(source, data)
+        if verified:
+            require(ref['pointer'] == '/native_response',
+                    'native finance market evidence must cite the actual quote response, not capture metadata or other tools')
     from . import public_observations
     if ref['pointer'].startswith(public_observations.PREFIX):
         require(digest((Path(directory) / 'raw' / (source['raw_hash'][7:] + '.json')).read_bytes()) == source['raw_hash'],

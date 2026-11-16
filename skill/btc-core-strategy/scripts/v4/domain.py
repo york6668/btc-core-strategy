@@ -23,13 +23,26 @@ def load_old(state, plan):
     return deepcopy(legacy.extract_projection_sidecar(baseline.state_text)['canonical_semantics']), baseline.binding
 
 
-def validate(bundle, prior_canonical, project, historical_event_clock=None, *, cycle_recheck_at=None, model_market=False):
+def validate(bundle, prior_canonical, project, historical_event_clock=None, *, cycle_recheck_at=None, model_market=False,
+             recorded_fact_reassessment=False, recorded_baseline_reassessment=False):
     with tempfile.TemporaryDirectory(prefix='btc-v4-domain-') as directory:
         state, plan = Path(directory) / 'state.md', Path(directory) / 'plan.md'
         old = synthetic(prior_canonical)
         state.write_text(legacy.render_projection_document(old, 'STATE'))
         plan.write_text(legacy.render_projection_document(old, 'PLAN'))
-        baseline = legacy.load_revision3_baseline(str(state), str(plan), require_owner_paths=False, model_market=model_market)
+        if model_market and recorded_baseline_reassessment:
+            # The prior immutable v4 publication has already completed this
+            # factual reassessment. The ordinary legacy loader stays strict.
+            binding, errors = legacy._derive_revision3_baseline_binding(
+                state.read_text(), plan.read_text(), model_market=True,
+                _recorded_fact_reassessment=True)
+            require(not errors and binding is not None, 'domain baseline: ' + '; '.join(errors))
+            baseline = legacy.Revision3Baseline(state, plan, state.read_text(), plan.read_text(), binding)
+        else:
+            try:
+                baseline = legacy.load_revision3_baseline(str(state), str(plan), require_owner_paths=False, model_market=model_market)
+            except legacy.GuardError as exc:
+                require(False, 'domain baseline: ' + str(exc))
         value = deepcopy(bundle)
         value['previous_projection_baseline'] = baseline.binding
         value['previous_fingerprints'] = {k: baseline.binding[k] for k in ('decision_fingerprint', 'report_fingerprint')}
@@ -43,7 +56,9 @@ def validate(bundle, prior_canonical, project, historical_event_clock=None, *, c
         errors = legacy._validate_bundle_internal(value, previous_baseline=baseline, fact_owner_snapshot=snapshot,
                                         require_owner_baseline=False, require_fact_owner_paths=False,
                                         _event_replay_clock=historical_event_clock, _cycle_recheck_at=cycle_recheck_at,
-                                        _model_market_assessment=model_market)
+                                        _model_market_assessment=model_market,
+                                        _recorded_fact_reassessment=recorded_fact_reassessment,
+                                        _recorded_baseline_reassessment=recorded_baseline_reassessment)
         require(not errors, 'domain validation: ' + '; '.join(errors))
         return value
 

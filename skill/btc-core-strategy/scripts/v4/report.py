@@ -4,7 +4,7 @@ import decision_report
 from .common import digest, exact, pointer, require, text
 
 TOKEN = re.compile(r'\{\{(/[A-Za-z0-9_~/.-]+)\}\}')
-INTERNAL = re.compile(r'(?i)(?:gpt[-‑–]?\d|\b(?:Sol|Astra|Terra)/(?:high|max)|sha256:|fingerprint|report_required|DecisionSnapshot|EvidenceBundle|AssessmentDraft|A/D/E|::inbox|策略状态ID|内部控制面|BTC-[A-Z]|position_fact|validation_projection|\bV\d+\b|RETEST_PENDING|RETEST_CONFIRMED|CURRENT_CYCLE_VALIDATED)')
+INTERNAL = re.compile(r'(?i)(?:gpt[-‑–]?\d|\b(?:Sol|Astra|Terra)/(?:high|max)|sha256:|fingerprint|report_required|DecisionSnapshot|EvidenceBundle|AssessmentDraft|A/D/E|::inbox|策略状态ID|内部控制面|BTC-[A-Z]|position_fact|validation_projection|RETEST_PENDING|RETEST_CONFIRMED|CURRENT_CYCLE_VALIDATED)')
 MONEY = re.compile(r'\d[\d,.]*\s*(?:U\b|USDT|USD|美元)', re.I)
 COVERAGE = {'outlook', 'causes', 'alternatives', 'uncertainty', 'risk', 'next_evidence', *decision_report.MODULES}
 

@@ -70,6 +70,12 @@ def sequences(value):
 
 def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=None, project=None):
     exact(value, 'upper_short lower_spot portfolio', 'recommendations')
+    # The evidence cutoff is not the formation time of a later private decision.
+    # Use its existing, separately validated clock without moving public evidence
+    # or giving legacy callers an optional time override.
+    decision_clock = instant(cutoff)
+    if revision >= 8:
+        decision_clock = max(decision_clock, instant(value['portfolio']['investment_decision']['decided_at']))
     for key in SIDES:
         side = value[key]
         exact(side, 'status unit tiers validity purpose amount_basis allocation_percent rationale impact refs'+(' investment_candidates' if revision>=8 and 'investment_candidates' in side else ''), key)
@@ -105,9 +111,9 @@ def validate(value, cutoff, resolve, revision=5, market_hash=None, fact_version=
         exact(side['validity'], 'from until conditions invalidations', 'recommendation validity')
         validity = side['validity']
         start, end = instant(validity['from']), instant(validity['until'])
-        require(start <= instant(cutoff) and start < end, 'invalid or future-start recommendation validity')
+        require(start <= decision_clock and start < end, 'invalid or future-start recommendation validity')
         if side['status'] in ('RECOMMENDED', 'EXECUTION_LIMITED'):
-            require(instant(cutoff) < end, 'cannot publish already expired or future-start recommendation')
+            require(decision_clock < end, 'cannot publish already expired or future-start recommendation')
         atoms(validity['conditions'], 'recommendation support conditions')
         atoms(validity['invalidations'], 'recommendation invalidations')
         atoms(side['purpose'], 'recommendation protection purpose')
