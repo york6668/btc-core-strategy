@@ -63,7 +63,10 @@
         cmd:'exec ' + request.argv.map(quote).join(' '), workdir:request.workdir,
         login:false, yield_time_ms:request.yield_time_ms ?? 1000,
         max_output_tokens:request.max_output_tokens ?? 2000,
-        sandbox_permissions:request.sandbox_permissions || 'use_default',
+        // Omission uses the host's policy; some hosts reject even an explicit
+        // default override. Forward only a deliberately requested override.
+        ...(request.sandbox_permissions && request.sandbox_permissions !== 'use_default'
+          ? {sandbox_permissions:request.sandbox_permissions} : {}),
         ...(request.justification ? {justification:request.justification} : {})
       }));
     } catch (error) { return unknown(value, error); }
