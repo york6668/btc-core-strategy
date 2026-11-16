@@ -8,6 +8,7 @@ claim, clear a fault, launch a model, or execute a supplied command.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -104,6 +105,17 @@ def _code_sources(directory=None):
         # or execute caller-selected code from an old intent.
         current = Path(__file__).resolve().parent
         files = [Path(directory) / p.relative_to(current) for p in files]
+    scripts = Path(directory) if directory is not None else Path(__file__).resolve().parent
+    # Historical intents bind the dependencies their actual source used. Read
+    # that fixed file without importing old code; newer sources must also bind
+    # the loader and its shared service implementation across package roots.
+    syntax = ast.parse(_bytes(scripts / 'model_daily.py'))
+    uses_profile = any(isinstance(node, ast.ImportFrom) and node.module == 'model_identity'
+                       or isinstance(node, ast.Import) and any(item.name == 'model_identity' for item in node.names)
+                       for node in ast.walk(syntax))
+    if uses_profile:
+        files.extend((scripts / 'model_identity.py',
+                      scripts.parents[2] / 'service/btc_node/model_identity.py'))
     return {str(p): digest(_bytes(p)) for p in files}
 
 
@@ -144,7 +156,7 @@ def _authority(fault_id, original_claim_id, action=ACTION):
     require(claim.get('state') == 'FAILED' and claim.get('phase') == phase
             and claim.get('failure_kind') == kind, 'original failed phase/kind is not diagnostic eligible')
     if action == PORTFOLIO_ACTION:
-        require(claim.get('model') == 'gpt-6-astra', 'original portfolio model admission required')
+        require(model_daily.astra_max(claim.get('model')), 'original portfolio model admission required')
     require(fault.get('state') == 'OPEN' and fault.get('kind') == kind
             and fault.get('fault_digest') == claim.get('input_digest')
             and fault.get('scope') == claim.get('scope'), 'original open fault/input/scope mismatch')

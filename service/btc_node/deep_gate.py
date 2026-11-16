@@ -13,6 +13,7 @@ import json
 from zoneinfo import ZoneInfo
 
 from .codec import Conflict, millis
+from .model_identity import profile
 
 
 STATE_NAME = 'model.deep.BTC'
@@ -140,8 +141,11 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     if not isinstance(phase, str) or not phase:
         raise ValueError('original research phase required')
     scope, input_digest = _scope(scope), _digest(input_digest)
-    if not isinstance(model, str) or not model or model in {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'}:
+    requested_model = profile(model)
+    if requested_model[0] in {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'}:
         raise ValueError('this admission is for high-grade deep analysis only')
+    if requested_model[0] == 'gpt-6-astra' and requested_model[1] != 'max':
+        raise ValueError('BTC Astra research requires the max effort profile')
     now_ms = millis()
     day = tokyo_day(now_ms)
     state = _state(db)
@@ -152,8 +156,12 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     existing = records(state)
     identity = dict(issue_id=issue_id, scope=scope, phase=phase,
                     input_digest=input_digest, model=model)
+    def same_identity(record):
+        # Formatting cannot create another call or rewrite an original record.
+        return (all(record[key] == value for key, value in identity.items() if key != 'model')
+                and profile(record['model']) == requested_model)
     old = existing.get(claim_id)
-    if old and any(old[key] != value for key, value in identity.items()):
+    if old and not same_identity(old):
         raise Conflict('claim_id already belongs to another call identity')
     if old:
         if old['state'] == 'COMPLETE' and old.get('result_ref'):
@@ -161,7 +169,7 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
         raise Conflict('original claim already reserved or settled; inspect original call')
     for record in existing.values():
         if (record['state'] == 'COMPLETE' and record.get('result_ref')
-                and all(record[key] == value for key, value in identity.items())):
+                and same_identity(record)):
             return {'action': 'REUSE', 'day': record['day'], 'claim': record}
     if any(item['state'] in ('CLAIMED', 'UNKNOWN') for item in existing.values()):
         raise Conflict('earlier in-flight or unknown deep call needs reconciliation')
