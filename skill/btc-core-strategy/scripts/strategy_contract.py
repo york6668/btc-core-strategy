@@ -3621,6 +3621,7 @@ def _validate_account_fact_transition(
 
     account_facts = bundle.get("account_facts")
     preference_recorded = False
+    preference_owner_ids: set[str] = set()
     recorded_reassessment = (allow_recorded_reassessment and isinstance(account_facts, Mapping)
         and account_facts.get("account_fact_changed_known") is True
         and account_facts.get("local_record_status") == "FACTS_REASSESSED")
@@ -3640,12 +3641,28 @@ def _validate_account_fact_transition(
             if account_facts.get("local_record_status") != "FACT_SYNC_PENDING" and not recorded_reassessment:
                 errors.append("known account fact change requires local_record_status=FACT_SYNC_PENDING")
         elif "known_change_evidence" in account_facts or "local_record_status" in account_facts:
-            preference_recorded = account_facts.get("known_change_evidence") == [{
-                "confirmation_type": PREFERENCE_CONFIRMATION_TYPE,
-                "owner_id": "ASSET_CONFIGURATION",
-            }] and account_facts.get("local_record_status") == "PREFERENCE_RECORDED"
+            confirmations = account_facts.get("known_change_evidence")
+            if (
+                account_facts.get("local_record_status") == "PREFERENCE_RECORDED"
+                and isinstance(confirmations, list)
+                and all(
+                    isinstance(item, Mapping)
+                    and set(item) == FACT_CONFIRMATION_KEYS
+                    and item["confirmation_type"] == PREFERENCE_CONFIRMATION_TYPE
+                    and item["owner_id"] in ("ASSET_CONFIGURATION", "CORRECTION_LOG")
+                    for item in confirmations
+                )
+            ):
+                preference_owner_ids = {item["owner_id"] for item in confirmations}
+                preference_recorded = (
+                    "ASSET_CONFIGURATION" in preference_owner_ids
+                    and len(preference_owner_ids) == len(confirmations)
+                )
             if not preference_recorded:
-                errors.append("unchanged account facts may only acknowledge a recorded ASSET_CONFIGURATION preference change")
+                errors.append(
+                    "recorded preference changes require unique confirmations for "
+                    "ASSET_CONFIGURATION and any accompanying CORRECTION_LOG"
+                )
         declared = account_facts.get("fact_owner_fingerprints")
         if actual_fact_fingerprints is not None and declared != dict(actual_fact_fingerprints):
             errors.append("account_facts.fact_owner_fingerprints must equal the actual local fact Owners")
@@ -3682,8 +3699,8 @@ def _validate_account_fact_transition(
                 if changed_owner_ids != confirmed_owner_ids:
                     errors.append("FACT_SYNC confirmations must exactly identify changed fact Owners")
             elif preference_recorded:
-                if changed_owner_ids != {"ASSET_CONFIGURATION"}:
-                    errors.append("recorded preference change requires only ASSET_CONFIGURATION to actually change")
+                if changed_owner_ids != preference_owner_ids:
+                    errors.append("recorded preference confirmations must exactly identify changed fact Owners")
             elif changed_owner_ids:
                 errors.append("changed local fact Owner versions require account_fact_changed_known=true and FACT_SYNC")
     requirement = bundle.get("user_input_requirement")
