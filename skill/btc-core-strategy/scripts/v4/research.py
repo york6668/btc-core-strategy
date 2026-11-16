@@ -1166,8 +1166,19 @@ PUBLIC_RESULT_REF_SCHEMA='BTC_RESEARCH_PUBLIC_RESULT_REF_V1'
 
 def _public_result_reference(analysis):
     from .cycle import parse_review
-    value=parse_review(analysis)
-    if value.get('schema')!=PUBLIC_RESULT_REF_SCHEMA:
+    text(analysis, 'actual cycle response')
+    body = analysis.strip()
+    summary, separator, fenced_result = body.partition('\n\n```json\n')
+    if separator:
+        # PUBLIC finals may place a summary before their one fenced file reference.
+        require(not any(line.lstrip().startswith(('```', '~~~', '{')) for line in summary.splitlines()),
+                'public result has more than one possible machine payload')
+        value = parse_review('```json\n' + fenced_result)
+        require(value.get('schema') == PUBLIC_RESULT_REF_SCHEMA,
+                'public response with a summary requires a fenced file reference')
+    else:
+        value = parse_review(body)
+    if value.get('schema') != PUBLIC_RESULT_REF_SCHEMA:
         return None
     exact(value,'schema path content_hash','public result file reference')
     require(isinstance(value['content_hash'],str) and
