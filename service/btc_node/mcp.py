@@ -23,7 +23,7 @@ DESCRIPTIONS = {
     'task.repair': 'Explicitly rebase a stopped task after changed input or release and verified repair evidence; retains prior attempts.',
     'model.deep.status': 'Read BTC-wide original deep-call claims, legacy day history and open defect state from the authoritative node.',
     'model.defect.check': 'Check whether an open authoritative defect blocks an ordinary affected model stage before work begins.',
-    'model.deep.claim': 'Atomically reserve one identity-bound high-grade BTC call before launch; no project calendar cap. Replays never authorize launch.',
+    'model.deep.claim': 'Atomically reserve one identity-bound research BTC call before launch; no project calendar cap. Replays never authorize launch.',
     'model.deep.finish': 'Record the actual original deep-call outcome; failure and unknown retain their original identity and recovery requirements.',
     'model.deep.reconcile': 'Verify the original in-flight or unknown call outcome without launching a replacement.',
     'model.defect.open': 'Stop the affected scope for a known deterministic, semantic, service, permission or unknown fault.',

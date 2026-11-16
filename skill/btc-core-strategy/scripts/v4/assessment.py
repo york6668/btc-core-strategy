@@ -255,7 +255,8 @@ def validate(draft, evidence_dir, prior, project, review, *, purpose='ADOPTION')
         main_flow.validate_contract(draft, purpose=purpose)
     else:
         exact(draft['provenance'], 'model effort agent_id independent_review candidate_review', 'evaluation provenance')
-        require(draft['provenance']['model'] == 'gpt-6-astra' and draft['provenance']['effort'] == 'max', 'full assessment requires GPT-6 Astra/max')
+        from model_identity import runtime_profile
+        runtime_profile(draft['provenance']['model'], draft['provenance']['effort'])
         for key in ('agent_id', 'independent_review', 'candidate_review'):
             text(draft['provenance'][key], 'actual evaluation ' + key)
     require(draft['stop_reason'] in ('SUFFICIENT_FOR_CHOICE', 'INSUFFICIENT_CONSERVATIVE_COMPLETE'), 'evaluation stopping reason required')

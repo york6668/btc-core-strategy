@@ -132,7 +132,7 @@ def _related_claims(fault, claims):
     return sorted(related, key=lambda item: item['claim_id'])
 
 
-def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
+def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model=None):
     """Reserve one actual call identity; calendar dates are historical metadata."""
     if not isinstance(claim_id, str) or not 8 <= len(claim_id) <= 191:
         raise ValueError('stable claim_id required')
@@ -141,11 +141,7 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     if not isinstance(phase, str) or not phase:
         raise ValueError('original research phase required')
     scope, input_digest = _scope(scope), _digest(input_digest)
-    requested_model = profile(model)
-    if requested_model[0] in {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'}:
-        raise ValueError('this admission is for high-grade deep analysis only')
-    if requested_model[0] == 'gpt-6-astra' and requested_model[1] != 'max':
-        raise ValueError('BTC Astra research requires the max effort profile')
+    profile(model)
     now_ms = millis()
     day = tokyo_day(now_ms)
     state = _state(db)
@@ -157,9 +153,9 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     identity = dict(issue_id=issue_id, scope=scope, phase=phase,
                     input_digest=input_digest, model=model)
     def same_identity(record):
-        # Formatting cannot create another call or rewrite an original record.
-        return (all(record[key] == value for key, value in identity.items() if key != 'model')
-                and profile(record['model']) == requested_model)
+        # A model choice is not a new business input or another research phase.
+        # Preserve the original selection and result rather than launching twice.
+        return all(record[key] == value for key, value in identity.items() if key != 'model')
     old = existing.get(claim_id)
     if old and not same_identity(old):
         raise Conflict('claim_id already belongs to another call identity')
@@ -173,8 +169,8 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
             return {'action': 'REUSE', 'day': record['day'], 'claim': record}
     if any(item['state'] in ('CLAIMED', 'UNKNOWN') for item in existing.values()):
         raise Conflict('earlier in-flight or unknown deep call needs reconciliation')
-    # Only a new high-grade launch needs the execution interlock. Exact
-    # completed-result REUSE above is read-only; ordinary Sol work may proceed
+    # Only a new research launch needs the execution interlock. Exact
+    # completed-result REUSE above is read-only; ordinary MAIN work may proceed
     # alongside independent research in either admission order.
     from . import tasks
     if tasks.same_execution_lane_running(tasks.status(db)['tasks'], 'DEEP'):

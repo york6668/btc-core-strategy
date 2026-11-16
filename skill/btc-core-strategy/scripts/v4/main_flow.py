@@ -47,16 +47,19 @@ def validate_provenance(p, *, historical=False):
         from . import durable_proof
         proof = p['configuration_evidence']
         exact(proof, 'scope proof_path proof_hash runtime_configuration_verified', 'MAIN configuration evidence')
-        require(p['model'] is None and p['effort'] is None and proof['runtime_configuration_verified'] is False
-                and proof['scope'] == durable_proof.MAIN_SCOPE, 'unverified MAIN configuration must remain null')
+        require(type(proof['runtime_configuration_verified']) is bool
+                and proof['scope'] == durable_proof.MAIN_SCOPE, 'MAIN configuration evidence scope invalid')
         path = Path(proof['proof_path'])
         require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 16384,
                 'MAIN source manifest missing or invalid')
         require(digest(path.read_bytes()) == proof['proof_hash'], 'MAIN source manifest changed')
-        return durable_proof.main_identity(path, p['agent_id'], p['run_ref'], historical=historical)
-    models = {'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'} if historical else {market.CURRENT_HOURLY_MODEL['name']}
-    require(p['model'] in models and p['effort'] == 'high',
-            'new main assessment requires actual '+market.CURRENT_HOURLY_MODEL['name']+'/high (Sol/high MAIN); historical completions retain their original model')
+        actual = durable_proof.main_identity(path, p['agent_id'], p['run_ref'], historical=historical)
+        require((p['model'], p['effort'], proof['runtime_configuration_verified']) ==
+                (actual['runtime_model'], actual['runtime_effort'], actual['runtime_configuration_verified']),
+                'MAIN configuration must preserve exposed runtime facts and unknowns')
+        return actual
+    from model_identity import runtime_profile
+    runtime_profile(p['model'], p['effort'])
 
 
 def validate_preview_provenance(p, *, project=None):
@@ -193,7 +196,7 @@ def domain_validation_baseline(root, prior, draft):
         baseline = domain_baseline(root, prior)
         from . import cycle
         if cycle.enabled(root):
-            # The actual adopted Astra mapping replaces legacy hourly-pattern
+            # The actual adopted research author mapping replaces legacy hourly-pattern
             # authority, and can shorten an outstanding event review deadline.
             cycle.validate_publication(root, prior, draft)
             saved, _ = cycle.adopted(root, draft)

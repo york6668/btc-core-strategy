@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
-from model_identity import astra_max
+from model_identity import valid_selection
 
 
 class Blocked(RuntimeError):
@@ -77,13 +77,14 @@ def status():
     return request('model.deep.status')
 
 
-def claim(issue_id, scope, phase, input_digest, model='gpt-6-astra', claim_id=None):
+def claim(issue_id, scope, phase, input_digest, model=None, claim_id=None):
     import node_config
     from native_usage import require_admission
     require_admission(node_config.load())
     claim_id = claim_id or 'btc-deep-' + uuid.uuid4().hex
     result = request('model.deep.claim', dict(claim_id=claim_id, issue_id=issue_id,
-                     scope=scope, phase=phase, input_digest=input_digest, model=model),
+                     scope=scope, phase=phase, input_digest=input_digest,
+                     **({'model': model} if model is not None else {})),
                      'deep-claim-' + claim_id)
     if result['action'] != 'CLAIMED_NEW':
         raise Blocked('completed result reused or claim response replayed; do not launch')
@@ -117,9 +118,9 @@ def _completed_source(current, issue_id, scope, phase, claim_id, rollout_path):
     record = current.get('claims', {v['claim_id']: v for v in current['days'].values()}).get(claim_id)
     if (not record or record['state'] != 'COMPLETE' or not record.get('result_ref')
             or record['issue_id'] != issue_id or record['scope'] != scope
-            or record['phase'] != phase or not astra_max(record['model'])
+            or record['phase'] != phase or not valid_selection(record['model'])
             or record['result_ref'] != sha256(rollout_path)):
-        raise Blocked('completed original Astra claim for issue and phase required')
+        raise Blocked('completed original research claim for issue and phase required')
     return record
 
 
@@ -141,8 +142,7 @@ def launch_native(issue_id, scope, phase, input_digest, prompt, codex_binary, ou
     errors = destination.with_suffix(destination.suffix + '.stderr.log')
     command = [str(binary), 'exec']
     if resume: command.append('resume')
-    command += ['--skip-git-repo-check', '--json', '-m', 'gpt-6-astra',
-                '-c', 'model_reasoning_effort="max"', '-c', 'approval_policy="never"',
+    command += ['--skip-git-repo-check', '--json', '-c', 'approval_policy="never"',
                 '-o', str(destination)]
     if resume: command.append(resume)
     command.append('-')
@@ -174,7 +174,7 @@ def main(argv=None):
     p = sub.add_parser('claim')
     for name in ('issue-id','scope','phase','input-digest','claim-id'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--model', default='gpt-6-astra')
+    p.add_argument('--model')
     p = sub.add_parser('finish')
     p.add_argument('--claim-id', required=True)
     p.add_argument('--outcome', required=True, choices=('COMPLETE','FAILED','UNKNOWN','CANCELED'))

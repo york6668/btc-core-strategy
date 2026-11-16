@@ -296,7 +296,7 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
         value['research'] = research_context
         if cycle_workflow:
             value['cycle_baseline'] = cycle_basis
-            value['accumulation']['baseline_role'] = 'ADOPTED_ASTRA_CYCLE'
+            value['accumulation']['baseline_role'] = 'ADOPTED_RESEARCH_CYCLE'
             value['current_core']['market_cutoff'] = core.get('temporal_scope', {}).get('market_cutoff')
         for issue in research_context['issues']:
             records = _history(db, issue['accumulation_start'])
@@ -423,7 +423,7 @@ def validate_public(root, ctx, raw, authored, evidence_dir):
         cycle.validate_applicability(authored['applicability_review'], ctx, bundle, evidence_dir, root=root)
     candidate = deepcopy(authored['market_review'])
     candidate.update(schema=market.REVIEW_SCHEMA, evidence_id=raw['evidence_id'], observed_hour=raw['observed_hour'],
-                     context_id=ctx['context_id'], model=dict(market.CURRENT_HOURLY_MODEL))
+                     context_id=ctx['context_id'], model={'name': None, 'reasoning_effort': None})
     completed = ctx.get('cycle_baseline') if ctx.get('cycle_baseline', {}).get('result_id') else ctx.get('current_core')
     validation = {'context_id': ctx['context_id'], 'baselines': {}, 'successful_deep': None}
     if ctx.get('previous_hour'):
@@ -479,7 +479,6 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             from .cycle import validate_applicability
             validate_applicability(review['applicability_review'], ctx, factor_package, evidence_dir, root=root)
         candidate = review['market_review']
-        require(candidate['model'] == market.CURRENT_HOURLY_MODEL, 'hourly sensing requires '+market.CURRENT_HOURLY_MODEL['name']+'/high')
         completed = (ctx['cycle_baseline'] if ctx['cycle_baseline']['result_id'] else None) if cycle_workflow else (ctx['current_core'] if workflow else ctx['successful_deep'])
         validation_context = {'context_id': ctx['context_id'], 'baselines': {}, 'successful_deep': None}
         if ctx['previous_hour']:
@@ -539,7 +538,7 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
             if cycle_workflow:
                 from .cycle import review_gate
                 cycle_gate = review_gate(root, ctx, review, research_issues)
-                gate.update(cycle_review=cycle_gate, baseline_comparison='ADOPTED_ASTRA_CYCLE',
+                gate.update(cycle_review=cycle_gate, baseline_comparison='ADOPTED_RESEARCH_CYCLE',
                     initialization_review_due=ctx['cycle_baseline']['result_id'] is None,
                     periodic_review_due=ctx['cycle_baseline']['status'] == 'REVIEW_DUE',
                     # These clocks/touches require the observation just made,

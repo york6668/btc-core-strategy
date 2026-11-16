@@ -144,6 +144,24 @@ def _one(values, label):
     return values[0]
 
 
+def runtime_configuration(thread, turn):
+    """Preserve exposed configuration without making it an eligibility rule."""
+    from model_identity import runtime_profile
+    observed = {}
+    for target, aliases in (('runtime_model', ('model', 'modelName')),
+                            ('runtime_effort', ('effort', 'reasoningEffort', 'reasoning_effort'))):
+        values = []
+        for source in (thread, turn):
+            fields = [source[k] for k in aliases if source.get(k) is not None]
+            require(not fields or all(v == fields[0] for v in fields), 'conflicting runtime configuration aliases')
+            if fields:
+                values = fields
+        observed[target] = values[0] if values else None
+    runtime_profile(observed['runtime_model'], observed['runtime_effort'])
+    observed['runtime_configuration_verified'] = all(observed[k] is not None for k in ('runtime_model', 'runtime_effort'))
+    return observed
+
+
 def _main_source(path, manifest, *, historical=False):
     exact(manifest, 'schema provider thread thread_id turn_id entry_item_id run_ref', 'durable MAIN proof')
     require(manifest['schema'] == MAIN_SCHEMA and manifest['provider'] == 'mcp__codex_app__read_thread',
@@ -154,12 +172,7 @@ def _main_source(path, manifest, *, historical=False):
                     if t.get('id') == manifest['turn_id']], 'MAIN turn')
     require(turn.get('status') in ('inProgress', 'completed') and turn.get('error') is None,
             'MAIN turn must be active or successfully completed')
-    # Missing fields remain missing. A source that exposes configuration must
-    # use the ordinary known-configuration branch, never hide a conflict here.
-    for value in (source['thread'], turn):
-        require(all(value.get(k) is None for k in
-                    ('model', 'modelName', 'effort', 'reasoningEffort', 'reasoning_effort')),
-                'known runtime configuration cannot be recorded as unknown')
+    runtime_configuration(source['thread'], turn)
     items = turn.get('items')
     require(isinstance(items, list), 'MAIN source items missing')
     if not any(item.get('type') == 'commandExecution' for item in items):
@@ -231,11 +244,11 @@ def main_identity(path, agent_id, run_ref, *, historical=False):
     require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 16384,
             'durable MAIN proof manifest invalid')
     manifest = json.loads(path.read_bytes())
-    _main_source(path, manifest, historical=historical)
+    source, turn = _main_source(path, manifest, historical=historical)
     require(manifest['run_ref'] == run_ref, 'durable MAIN proof belongs to another run')
     require(manifest['thread_id'] == agent_id, 'durable MAIN agent identity must be its actual thread id')
     return {'thread_id': manifest['thread_id'], 'turn_id': manifest['turn_id'],
-            'runtime_configuration_verified': False}
+            **runtime_configuration(source['thread'], turn)}
 
 
 def code_fingerprint(directory):
@@ -379,8 +392,8 @@ def turn(path, dispatch_id, return_id, method, agent_id=None):
     # limitations explicit; the guard claim is admission, not runtime telemetry.
     verification = {'provider': manifest['provider'], 'host_id': 'durable',
                     'parent_thread_id': parent['thread']['id'], 'author_thread_id': child['thread']['id'],
-                    'author_turn_id': ct['id'], 'runtime_model': None, 'runtime_effort': None,
-                    'runtime_fork_turns': None, 'runtime_configuration_verified': False,
+                    'author_turn_id': ct['id'], **runtime_configuration(child['thread'], ct),
+                    'runtime_fork_turns': None,
                     'inbound_messages_verified': False,
                     'dispatch_pointer': f'/turns/{parent_index}/items/{start_index}',
                     'return_pointer': f'/turns/{child_index}/items/{final_index}',

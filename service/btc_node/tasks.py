@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .codec import Conflict, encode, fingerprint, millis
 from . import deep_gate
-from .model_identity import astra_max
+from .model_identity import valid_selection
 
 
 NAME = 'tasks.BTC'
@@ -46,8 +46,8 @@ def _save(db, value):
 def same_execution_lane_running(rows, kind):
     """Serialize ordinary work with ordinary work, and deep with deep.
 
-    Independent Astra research may overlap an hourly Sol obligation. The
-    shared deep call gate separately prevents duplicate or unresolved high-grade starts.
+    Independent research author research may overlap an hourly MAIN obligation. The
+    shared deep call gate separately prevents duplicate or unresolved research starts.
     """
     deep = kind == 'DEEP'
     return any(row['state'] == 'RUNNING' and (row['kind'] == 'DEEP') == deep
@@ -212,7 +212,7 @@ def start(db, *, task_id, attempt_id, release_id, claim_id=None, model=None):
     # Every entrypoint, including client task.start, reaches this boundary
     # inside the same writer transaction. READY is not a reservation against
     # a new fault or another execution in the same lane. Research may remain
-    # in flight while a separate hourly Sol obligation runs.
+    # in flight while a separate hourly MAIN obligation runs.
     if same_execution_lane_running(state['tasks'].values(), task['kind']):
         raise Conflict('another original task attempt is running in this execution lane')
     if task['due_ms'] > millis():
@@ -242,14 +242,14 @@ def start(db, *, task_id, attempt_id, release_id, claim_id=None, model=None):
     if task['attempts'] >= 2:
         raise Conflict('attempt limit reached; repair and register a changed input')
     if task['kind'] == 'DEEP':
-        if not astra_max(model):
-            raise Conflict('BTC cycle deep research requires the approved Astra model')
+        if not valid_selection(model):
+            raise Conflict('valid research model selection required')
         _text(claim_id, 'claim_id')
         claim = deep_gate.claim(db, claim_id=claim_id, issue_id=task['issue_id'],
             scope=task['scope'], phase=task['phase'], input_digest=task['input_digest'],
             model=model)
         if claim['action'] != 'CLAIMED_NEW':
-            raise Conflict('existing deep result needs Sol continuation, not another model launch')
+            raise Conflict('existing deep result needs MAIN continuation, not another model launch')
         task['claim_id'] = claim_id
     elif claim_id is not None or model is not None:
         raise ValueError('only deep research accepts a model claim')

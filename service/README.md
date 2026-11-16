@@ -10,7 +10,7 @@ core 计算解释器固定为 Python 3.12.14，与节点保留的冻结行情生
 
 承接旧研究时，不可变登记中的原生证明可能仍引用宿主临时路径。可用既有适配层的 `node_bridge.archive_proof_location(source, native_proof_dir)` 将原证明及其摘要绑定的来源文件完整保存，按原路径的词法摘要区分位置；同名不同路径不会互相覆盖，同一路径内容冲突明确失败。消费者仅在原文件缺失时，从节点明确配置的 `native_proof_dir` 查询已完成归档，校验原字节后仍执行原作者、回合、事件及来源摘要检查。位置记录不授予批准、不改写研究身份或正式策略；已有损坏原件不会被归档副本掩盖。新容器配置由 `setup_node.py` 显式写入该目录，既有节点需单独完成配置及程序的正常更新；本机文件归档成功不等于服务已能消费。
 
-`model.deep.status/claim/finish/reconcile` 复用 MySQL 写入锁和 `node_metadata`，按原 issue/scope/phase/input/model 和稳定 claim_id 原子防重复调用，项目不设东京自然日次数上限。旧 `model.deep.BTC.days` 及全部旧票据保留原样；新调用写同一状态的 `claims[claim_id]`，status.claims 合并两者，V1 可直接读取，旧 timezone/日期仅为历史兼容；首个新调用把顶层 schema 标为 V2，使旧服务写入器明确拒绝而非忽略新在途记录。只有 CLAIMED_NEW 可启动，精确完成结果跨日 REUSE；原 claim_id 不能换身份，在途和 UNKNOWN 先核清，丢失同 operation 响应只返回核查提示。新阶段可在同日合法预留，但不得冒用旧阶段证明或绕过真实故障、平台容量/用量/安全限制；本规则不宣称任何官方额度。客户端、tasks 和登记消费者须组合采用新 claims 视图；V2 状态不降级或丢弃；旧服务回退将明确拒绝，需保留支持 V2 的 gate/证明消费者或恢复已验证的新版本，不能让旧写入器忽略新记录，旧版固定研究仍可验证旧 days 票据。`model.defect.open/resolve` 保留受影响范围的故障及修复证据。平台代理启动不经过本服务，调用者仍须预留，服务不能技术拦截外部未经它发起的调用。
+`model.deep.status/claim/finish/reconcile` 复用 MySQL 写入锁和 `node_metadata`，按原 issue/scope/phase/input 和稳定 claim_id 原子防重复调用，项目不设东京自然日次数上限。旧 `model.deep.BTC.days` 及全部旧票据保留原样；新调用写同一状态的 `claims[claim_id]`，status.claims 合并两者，V1 可直接读取，旧 timezone/日期仅为历史兼容；首个新调用把顶层 schema 标为 V2，使旧服务写入器明确拒绝而非忽略新在途记录。只有 CLAIMED_NEW 可启动，精确完成结果跨日 REUSE；原 claim_id 不能换身份，在途和 UNKNOWN 先核清，丢失同 operation 响应只返回核查提示。新阶段可在同日合法预留，但不得冒用旧阶段证明或绕过真实故障、平台容量/用量/安全限制；本规则不宣称任何官方额度。客户端、tasks 和登记消费者须组合采用新 claims 视图；V2 状态不降级或丢弃；旧服务回退将明确拒绝，需保留支持 V2 的 gate/证明消费者或恢复已验证的新版本，不能让旧写入器忽略新记录，旧版固定研究仍可验证旧 days 票据。`model.defect.open/resolve` 保留受影响范围的故障及修复证据。平台代理启动不经过本服务，调用者仍须预留，服务不能技术拦截外部未经它发起的调用。
 
 研究登记的完成凭据使用不可变实际模型轨迹的 SHA256，不以完成说明文件路径代替。已完成票据若误存了非摘要引用，可在同一 `model.deep.reconcile` 中明确提供原 `claim_id`、`outcome=COMPLETE`、`expected_result_ref`、经核实的摘要 `result_ref` 和实际纠错 `evidence_ref`。它只纠正该非摘要引用并追加原值及证据；结果、原完成时间、issue/phase/input 与历史日记录均不变，已有摘要绑定不能替换。登记仍须核验原模型、阶段及真实轨迹，引用纠正不授予后继阶段批准。
 
@@ -98,4 +98,4 @@ Reader 原附件沿同一次日维护退出。按接收与已知成功取回时�
 
 `prices.query` 的投影 `provenance.retrieval.raw_ref` 对应 `original_digest` 保存的实际原件：reader 附件使用 `/measurements/seller_exhaustion_daily`，冻结快照使用 `/assets/BTC/datasets/seller_exhaustion_daily`。引用哈希绑定该位置的原值，不能用规范化后的结构替代原件。已存错误引用通过显式写操作 `prices.repair_seller_references`（`limit`、`after` 分页）追加修正；原观测、原获知时间和原引用不变，不增加数值修订。查询仅在 `as_of` 不早于修正获知时间时提供附加 `reference_correction`，其中 `corrected_ref` 可按 `original_digest` 解析。缺原件或原料不一致明确返回 `gaps`，不猜测修正，也不阻断正常市场分析。
 
-研究 claim 的 model 字符串与实际作者证明分别处理：共享 model_identity 按型号及 effort 解释裸型号或组合表示，Astra 裸型号沿本项目既有 Astra/max 请求契约；不会由 claim 推定实际运行。原字符串和身份保留，等价表示只用于相同请求去重及准入，不能产生第二次调用；真实原生派发、完成作者、effort、scope、phase、input 与结果哈希仍各自校验。宿主发布包和 Docker service 都消费这份源码，必须分别安装并核对实际字节。
+研究 claim 的可选 model 字段记录当次请求选择，不是执行资格或实际型号证明。源码不指定研究或主执行者的型号、推理档位；真实作者、输入、阶段、完成和结果摘要分别核验。按 issue/scope/phase/input 防重复，型号表示或选择变化不会重开已完成研究；保留原 claim 字节和历史用量。原生证据已暴露的运行配置如实记录，未暴露的保持未知。宿主发布包和 Docker service 都消费这份源码，必须分别安装并核对实际字节。

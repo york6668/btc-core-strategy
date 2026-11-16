@@ -2,13 +2,13 @@
 
 # 连续公共市场观察与价值发现
 
-生产小时主任务为 Sol/high，负责嗅探、取证、研究编排、映射核验、正式写入和报告；完整周期形态、价值归因、下行路径与市场方案由 Astra/max 深评确定。取数、窗口和公共存储复用 market_observation.py，观察与上下文使用 v4/sensing.py。按已采纳深评累计支持与反证；首次缺少完整基线、实质变化、重要遗漏或原市场判断无法继续支持时，发起或恢复 BTC_CYCLE。recheck_at 到期仅要求 Sol 以真实新观察核验适用性，不自动完整深评或延长建议有效期。旧 v1/v2 门仅供历史兼容，不按单个因子波动或固定24小时时钟改变周期。
+生产小时主任务为 主执行者，负责嗅探、取证、研究编排、映射核验、正式写入和报告；完整周期形态、价值归因、下行路径与市场方案由研究作者深评确定。取数、窗口和公共存储复用 market_observation.py，观察与上下文使用 v4/sensing.py。按已采纳深评累计支持与反证；首次缺少完整基线、实质变化、重要遗漏或原市场判断无法继续支持时，发起或恢复 BTC_CYCLE。recheck_at 到期仅要求主执行者以真实新观察核验适用性，不自动完整深评或延长建议有效期。旧 v1/v2 门仅供历史兼容，不按单个因子波动或固定24小时时钟改变周期。
 
 ## 取数
 
 `$BTC_PYTHON <Skill>/scripts/market_observation.py collect --output <唯一原始JSON> [--deep]`。
 
-匿名来源包括 Binance 现货/永续/标记/指数/OI/资金费、Coinbase 与 Kraken 现货；正常取数包含90日日线及52周周线，deep 参数强制刷新以核验数据修订，不代表调用 Astra。普通240闭合小时有4/24/72/240小时窗口；重叠窗口不能叠加计量。按canonical origin去重，区分USD/USDT、现货/合约、量/金额、OI数量/名义额。辅助采集仅UNTRUSTED_LEAD，不当作行情事实。
+匿名来源包括 Binance 现货/永续/标记/指数/OI/资金费、Coinbase 与 Kraken 现货；正常取数包含90日日线及52周周线，deep 参数强制刷新以核验数据修订，不代表调用 研究作者。普通240闭合小时有4/24/72/240小时窗口；重叠窗口不能叠加计量。按canonical origin去重，区分USD/USDT、现货/合约、量/金额、OI数量/名义额。辅助采集仅UNTRUSTED_LEAD，不当作行情事实。
 
 collect只写独占输出，不覆盖原包或正式状态。完整性、闭合时间、缺失、同源、修订、冲突和未闭合行沿用原验证器。缺失不是零，主动买卖不证明参与者身份，OI下降不独立证明强平。
 
@@ -41,15 +41,15 @@ revision 5 可按分析需要省略旧形态或只填写相关子集；它们不
 `observe --market <原始包> --evidence <本次冻结证据目录> --review <审阅JSON>`保存实际观察与本轮选用因子的判断。review沿用revision 3字段并增加factor_checks：
 
 - `schema=BTC_SENSING_REVIEW_V4, revision=4, context_id`。
-- `market_review`保留旧 BTC_HOURLY_REVIEW_V1 结构和真实 Sol/high 身份、五形态、变化摘要、deep_review；其 required/reasons 仅兼容市场变化判断，不能单独打开专项门。
+- `market_review`保留旧 BTC_HOURLY_REVIEW_V1 结构和真实主执行者身份、五形态、变化摘要、deep_review；其 required/reasons 仅兼容市场变化判断，不能单独打开专项门。
 - `recommendation_checks`每侧 `{side,findings,refs,explanation}`，findings为NO_MATERIAL_CHANGE、SUPPORT_WEAKENED、COUNTEREVIDENCE、AMOUNT_BASIS_CHANGED、GAP、OTHER_MATERIAL。逐项判断当前依据与适用性，保留尚需主评估的事项。
 - `extra_findings:[{summary,refs,material}]`保持分类外发现。
 - `factor_checks={items:[{id,name,assessment,change_reason,refs,counter_refs}],summary}`与正式factor_assessment使用同一结构，详见[v4契约](v4-contract.md#动态因子评估)。items是本轮模型实际选用的因子，可为空；id为自由稳定文本，不校验固定名单。assessment由模型说明周期、作用与不确定性，change_reason说明沿用或变化依据，summary可说明退出因素及整体影响。refs/counter_refs使用现有原始值引用；没有引用时如实说明受限，不伪造证据或阻断完整保守判断。
-- `main_evaluation:{required,reasons}`由Sol判断是否需要发布新的完整/补充结论；普通取数并不强制每小时写正式版本。
+- `main_evaluation:{required,reasons}`由主执行者判断是否需要发布新的完整/补充结论；普通取数并不强制每小时写正式版本。
 - 启用周期报告的新观察必须填写 `applicability_review={basis_result_id,outcome,explanation,refs,limitations}`。basis_result_id绑定当前cycle_baseline.result_id；outcome为VALID、EVIDENCE_LIMITED或REVISE；refs为本轮EvidenceBundle中真实原始引用。VALID须有已采纳基线及实际引用，由模型解释完整论点与累计证据为何仍适用；不能由没有深评理由自动生成。REVISE恢复同一周期研究，EVIDENCE_LIMITED保留受限及影响但不机械重跑深评。历史未填此项不补造通过，也不用于刷新适用性。
 - `research_findings:[{issue_key,scope,question,material_change,change_kind,change_reason,refs,reopen_condition}]`。没有需要专项的疑问则[]。change_kind为INITIAL_QUESTION、NEW_KEY_EVIDENCE、MATERIAL_COUNTEREVIDENCE、REOPEN_CONDITION_MET、NO_NEW_KEY_EVIDENCE；已有问题的reopen_condition对应此前保存的具体重研条件，新问题为null。首次重要未知问题可用当前鉴别证据进入INITIAL_QUESTION，不要求此前研究基线。引用可使用既有市场地址或本次冻结因子原始值引用；相同机制持续不是鉴别性变化。
 
-工具记录发布以来未检查小时的高低/收盘关系、PARTIAL_ISSUE_HOUR、缺口、事实变化及到期。到价及普通事件进入条件核验；cycle_review.verification_due 表示适用性核验到期，required 仅由事实影响、实质反证、重大遗漏等研究理由决定。普通数值变化、到期或观察完成不自动决定发布、深评或报告。`deep_eligible`兼容投影 research_eligible；风险提示不等待 Astra，新周期判断和重新定价须经深评。
+工具记录发布以来未检查小时的高低/收盘关系、PARTIAL_ISSUE_HOUR、缺口、事实变化及到期。到价及普通事件进入条件核验；cycle_review.verification_due 表示适用性核验到期，required 仅由事实影响、实质反证、重大遗漏等研究理由决定。普通数值变化、到期或观察完成不自动决定发布、深评或报告。`deep_eligible`兼容投影 research_eligible；风险提示不等待 研究作者，新周期判断和重新定价须经深评。
 
 `sensing-gate --observation <真实ID>`回读不可变观察，检查当前结论及研究上下文仍匹配。观察后重新取得context再装配主评估；绑定过期时先读差异并处理，而非仅改hash。新增专项结果由主任务吸收，后续普通观察消费同一结论。
 
@@ -57,12 +57,12 @@ revision 5 可按分析需要省略旧形态或只填写相关子集；它们不
 
 ## 每轮报告判断
 
-有效观察及必要主评估完成后，必须执行[独立行情汇报](market-reporting.md)，包括OBSERVATION_ONLY和main_eligible=false。不因策略、金额或档位未变提前结束报告判断；报告不机械触发Astra。现货、永续及USD/USDT指标保持分列。
+有效观察及必要主评估完成后，必须执行[独立行情汇报](market-reporting.md)，包括OBSERVATION_ONLY和main_eligible=false。不因策略、金额或档位未变提前结束报告判断；报告不机械触发研究作者。现货、永续及USD/USDT指标保持分列。
 
 ## 周期观察接续
 
 正常 collect 始终包含已收盘日线与周线；可传入最近有效公共行情包作为 cycle_cache。同一完整日/周窗口保留原始数据与实际 retrieved_at，新收盘窗口重新获取，--deep 强制核验修订/事件影响。历史无日/周数据的包仍可读取，缺口不伪装成完整周期证据。日/周历史与慢变量不随小时主评估或报告重新计时。
 
-新策略嗅探按当前 DecisionSnapshot 已采纳的 Astra 结果派生 cycle_baseline；累计窗口从其原市场截止开始。主评估完成、最新未采纳研究或发送报告不重置该基线。周期识别和具体下行方案由深评确定，Sol 记录支持增强/减弱、反证、事件进展和缺口，重大风险可先报告。
+新策略嗅探按当前 DecisionSnapshot 已采纳的研究作者结果派生 cycle_baseline；累计窗口从其原市场截止开始。主评估完成、最新未采纳研究或发送报告不重置该基线。周期识别和具体下行方案由深评确定，主执行者 记录支持增强/减弱、反证、事件进展和缺口，重大风险可先报告。
 
 当前市场变化先独立判断，再分别判断是否深评、是否报告。标普500、纳指100和BTC分别检查评级、周期、当前结构、原结构→当前结构、依据与确认程度；小时承接、波段形态、中期趋势不能混为一个状态。revision 5 市场阶段只沿用独立 outlook、factor_assessment 及后续有效市场观察；完整正文与 conclusion.business_meaning 在市场冻结后的仓位阶段核验，不能作为市场输入。评级或历史锚不变不能抹掉当期结构变化。重要结构变化、背离或波段风险不以中期反转、仓位建议改变或当天未报告为前提；当前依据与适用期限由模型核验，已披露风险的重复和普通反弹不机械重发。四小时仅是缺陷回放窗口。账户与偏好只参与最后组合应对，不能改变公开市场评级、结构和价格风险；成员研究服务动态组合判断，重要例外单列。

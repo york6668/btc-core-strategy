@@ -1,4 +1,4 @@
-"""Independent Astra research; Sol alone persists approved cycle assessments."""
+"""Independent research author research; MAIN alone persists approved cycle assessments."""
 from . import market_state
 from copy import deepcopy
 from pathlib import Path
@@ -163,7 +163,7 @@ def context(root):
 
 
 def findings(root, values, known_refs, bundle=None, evidence_dir=None):
-    """Materiality remains Sol's judgement; labels and clocks are not research triggers."""
+    """Materiality remains MAIN's judgement; labels and clocks are not research triggers."""
     require(isinstance(values, list), 'research findings must be a list')
     known = {v['issue_id']: v for v in context(root)['issues']}
     result, seen = [], set()
@@ -195,7 +195,7 @@ def findings(root, values, known_refs, bundle=None, evidence_dir=None):
             require(finding['reopen_condition'] in conditions, 'reopen finding does not match a recorded discriminator')
         else:
             require(finding['reopen_condition'] is None, 'reopen condition is only for a matching condition trigger')
-        # A legacy assessment is never fabricated into a researched issue. Sol
+        # A legacy assessment is never fabricated into a researched issue. MAIN
         # must still identify an unresolved question and actual materiality.
         result.append({'issue_id': identity, 'eligible': finding['material_change'],
                        'prior_result_id': (previous or {}).get('latest_result', {}).get('result_id') if (previous or {}).get('latest_result') else None,
@@ -273,7 +273,7 @@ def request(root, project, spec, workflow_revision=None):
                            if progress and progress['stage'] != 'RESULT_RECORDED'
                            else 'READ_ORIGINAL_STUDY_AND_CURRENT_APPLICABILITY')
             if progress and progress.get('cycle_approved') is False:
-                next_action = 'RESUME_ORIGINAL_ASTRA_CANDIDATE_REVISION'
+                next_action = 'CONTINUE_PENDING_CANDIDATE_REVISION'
             return remember(dict(request_value, reused=True,
                 **({'progress': progress} if progress else {}),
                 next_action=next_action))
@@ -385,7 +385,7 @@ def request(root, project, spec, workflow_revision=None):
                     section:{key:value for key,value in record.items()
                              if key in {'mode','assessed_at','decision_id','evidence_id'}}
                     for section,record in packet['historical_anchor']['section_provenance'].items()}
-            packet['cycle_assignment'] = {'role': 'Astra/max cycle analysis', 'required_coverage': list(cycle.COVERAGE),
+            packet['cycle_assignment'] = {'role': 'research author cycle analysis', 'required_coverage': list(cycle.COVERAGE),
                 'instructions': cycle.CORE_REPORT_REVIEW + cycle.ANALYSIS_FOCUS_REVIEW,
                 'method_references': cycle.method_references('research', project)}
         policy_path = Path(root) / 'write-policy.json'
@@ -636,10 +636,13 @@ def _completed_turn(path, agent_id, turn_id):
             completed = payload
             model, effort = contexts.get(turn_id, (None, None))
     require(session_id == agent_id and completed is not None, 'research phase needs an actual completed agent turn')
-    require((model, effort) == ('gpt-6-astra', 'max'), 'research must actually run Astra/max')
+    require(turn_id in contexts, 'research completion needs its actual turn context')
+    from model_identity import runtime_profile
+    runtime_profile(model, effort)
     text(completed.get('last_agent_message'), 'completed research output')
     require(isinstance(completed.get('started_at'), (int, float)) and isinstance(completed.get('completed_at'), (int, float)), 'research runtime phase timestamps required')
-    return dict(completed, proof_reads=proof_reads, prior_personal_reads=prior_personal_reads)
+    return dict(completed, proof_reads=proof_reads, prior_personal_reads=prior_personal_reads,
+                runtime_model=model, runtime_effort=effort)
 
 
 def independent(root, request_id, agent_id, rollout_path, turn_id, additional=None, guard_attempt=None):
@@ -776,7 +779,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
                         for k in ('market_cutoff', 'knowledge_cutoff')),
                     'later candidate evidence requires --additional disclosure')
         if req['issue_key'] == cycle.ISSUE_KEY:
-            # Resolve every mapping reference before spending a final Astra
+            # Resolve every mapping reference before spending a final research author
             # turn on it. The same check runs on actual disclosure.
             from . import evidence, factors
             from .storage import current
@@ -809,7 +812,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             require(not errors, 'candidate preflight failed: ' + json.dumps(errors, ensure_ascii=False))
         if check_only:
             return {'valid': True, 'candidate_hash': digest(candidate), 'scope': 'structure_and_bindings_only',
-                    'next_action': 'DISCLOSE_EXACT_CANDIDATE_FOR_ACTUAL_ASTRA_REVIEW'}
+                    'next_action': 'DISCLOSE_EXACT_CANDIDATE_FOR_ACTUAL_REVIEW'}
         assignment = ({'review_assignment': {'instructions': cycle.MAPPING_REVIEW,
                        'method_references': cycle.method_references('mapping')}}
                       if req['issue_key'] == cycle.ISSUE_KEY else {})
@@ -929,7 +932,6 @@ def _orchestration_turn(path, dispatch_id, return_id, method, agent_id=None):
     require(isinstance(author, str) and author.startswith('/'), 'orchestration final return has no agent identity')
     if method == 'spawn_agent':
         require(args.get('fork_turns') == 'none', 'independent research must be dispatched without inherited conversation')
-        require((args.get('model'), args.get('reasoning_effort')) == ('gpt-6-astra', 'max'), 'orchestration must dispatch Astra/max')
         require(args.get('task_name') == author.rsplit('/', 1)[-1], 'spawned agent differs from the actual final author')
     else:
         require(method == 'followup_task' and agent_id == author, 'candidate research must return from the same agent')

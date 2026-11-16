@@ -4329,7 +4329,7 @@ def validate_unavailable_receipt(
     require_owner_baseline: bool = True,
     require_fact_owner_paths: bool = True,
 ) -> list[str]:
-    """Validate the only allowed silent fallback when Sol/max is unavailable."""
+    """Validate the limited observation path when research execution is unavailable."""
 
     errors: list[str] = []
     if not isinstance(receipt, Mapping):
