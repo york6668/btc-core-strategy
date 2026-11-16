@@ -22,7 +22,7 @@ COVERAGE = ('cycle_structure', 'value_pricing', 'downside_paths',
 REPORT_CHECKS = {'cycle_basis', 'downside_and_levels'}
 SUMMARY_CHECKS = {'deep_report_summary'}
 CORE_REPORT_REVIEW = (
-    '先按 method_references 阅读方法，仅依据公开证据完成市场结论与价格风险，再由同一代理读取本地事实完成个人应对。'
+    '先按 method_references 阅读方法，仅依据公开证据完成市场结论与价格风险，再由当前阶段 Astra 读取本地事实完成个人应对，保留各阶段真实来源。'
     'report_boundary 统一研判与报告职责：先在内部完成因子取舍及反证影响判断，正文明确呈现综合方向、周期、依据和安排，不把冲突交给用户裁决。'
     '报告已采用的来源按发布节奏核验是否有新原件；包内缺件不等于客观不可得，可取得先补入同一研究，失败说明实际尝试及影响，不以旧行情缺口充当最终结论。'
     '用户希望报告覆盖BTC及拟核对的币安QQQ、VOO产品；SPX/NDX继续作为底层研究。report_subjects的BINANCE目标场所不等于产品身份已核验，具体产品断言与报价须分别有公开原证及正文绑定；身份未核验时以SPX/NDX底层市场判断说明盈利影响，不把它写成已核验币安产品的判断，缺产品价不抹去市场结论。方向、周期、结构变化、依据和确认程度自然表达且对象明确；未知不写中性。'
