@@ -50,7 +50,7 @@
 
 正常采集的 `BTC_MARKET_EVIDENCE_V1` 将多个逻辑来源保存在同一 `datasets` / `retrievals` 容器。此时 domain 报价的 `source_id` 使用真实 `dataset_id`，RawRef 的 `source_id` 仍指向冻结容器，两者不互换。消费者复用采集契约核注册的 source/group/market/instrument/quote_unit、完整请求及取得状态，逐项绑定对应 `/datasets/<dataset_id>/rows/<index>/close`、实际数值散列和收盘/取得时间；不接受任意同容器字段或自造来源名。多所独立性仍按真实注册场所核验，不因共用文件否认不同场所，也不以改名制造独立性。
 
-完整周期修正获同一 Astra 实际批准并由 Sol 正式采纳后，v4 兼容层允许用获批复核期限提前现有事件链的最后期限，更新其研究假设引用；周期身份及开启时间保留，不伪造原事件已完成或延后承诺。旧版可选 material_pattern 投影若已过时，可由这次完整研究整体替代，不强迫把旧解释写成已证伪或补造旧小时研究绑定；仍保留该投影时继续执行原绑定及保留校验。此权限来自实际获批的完整候选，普通观察、未批准候选和直接旧版入口均不具备。事实、原始证据、事件时间及最终审阅一致性检查继续执行。
+完整周期修正获 Astra 实际批准并由 Sol 正式采纳后，v4 兼容层允许用获批复核期限提前现有事件链的最后期限，更新其研究假设引用；周期身份及开启时间保留，不伪造原事件已完成或延后承诺。旧版可选 material_pattern 投影若已过时，可由这次完整研究整体替代，不强迫把旧解释写成已证伪或补造旧小时研究绑定；仍保留该投影时继续执行原绑定及保留校验。此权限来自实际获批的完整候选，普通观察、未批准候选和直接旧版入口均不具备。事实、原始证据、事件时间及最终审阅一致性检查继续执行。
 
 若旧事件已到期，v4 模型评估中的 event 与真实 D/E 不变量祖先的载体逐值未变，且有完整周期 review 的复核上下文，兼容层仅核验该历史结构和来源；不从当前时钟补造旧复核完成或要求开启新链。正式消费仍须由真实完成并获批的完整周期 review 提供上下文，未批准候选的只读预检没有采纳效力。更改的事件及普通 legacy 入口继续执行原到期门。
 
@@ -132,23 +132,35 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 专项不得写正式结论。以下命令仅本地存储和校验，不自动调用模型：
 
 - `research-request --spec`：{issue_key,scope,question,decision_id,evidence_id,change,reopen_conditions}；change={kind,reason,refs,reopen_condition}。kind为INITIAL_QUESTION、NEW_KEY_EVIDENCE、MATERIAL_COUNTEREVIDENCE、REOPEN_CONDITION_MET；明确用户重评另见下节 USER_REQUESTED_REVIEW。首次重要未知问题可由当前有鉴别力的证据进入INITIAL_QUESTION，不要求已有专项基线；Sol 发现问题，完整周期的因子取舍与最终归因由 Astra 深评确定。发起专项的原始证据须为PUBLIC_RAW；factor_checks可保留UNTRUSTED_LEAD并说明限制，线索不独立取得专项资格。问题identity不因scope调整或小时后缀换新；NEW_KEY_EVIDENCE 或 MATERIAL_COUNTEREVIDENCE 使用有鉴别价值的新原始值，reopen_condition=null；只有 REOPEN_CONDITION_MET 填此前已记录的具体条件。不能改source名称绕重复，未完成请求继续恢复。
-- `research.context` 的 `latest_request.progress` 从既有不可变 independent/candidate/result 派生，保留阶段、同一代理及其实际运行记录路径；最新候选有对应结果才显示 RESULT_RECORDED，历史结果仍供原基线参考，不能冒充新请求完成。阶段是完成证据，不是运行锁或存活判断；Sol 先核对实际运行/返回再恢复原阶段，已有候选不重建独立深评。精简运行上下文保留同一字段，无第二份研究状态。
-- 生成不可变受控input及request。独立Astra子代理从`research-read --request <id> --phase independent`实际读入，按需回读其中原始路径。input仅问题、原始证据及带日期的历史锚，不含当前候选；事实路径保留为后续组合适配来源，Astra 先完成公开市场结论与价格风险，再由同一代理读取事实完成个人应对。
+- `research.context` 的 `latest_request.progress` 从既有不可变 independent/candidate/result 派生，保留阶段及各实际来源记录路径；public_source 定位原 PUBLIC 作者，review_source 定位已完成审阅者，均不声明其仍在运行；最新候选有对应结果才显示 RESULT_RECORDED，历史结果仍供原基线参考，不能冒充新请求完成。阶段是完成证据，不是运行锁或存活判断；Sol 先核对实际运行/返回再恢复原阶段，已有候选不重建独立深评。精简运行上下文保留同一字段，无第二份研究状态。
+- 生成不可变受控input及request。独立Astra子代理从`research-read --request <id> --phase independent`实际读入，按需回读其中原始路径。input仅问题、原始证据及带日期的历史锚，不含当前候选；事实路径保留为后续组合适配来源，Astra 先完成公开市场结论与价格风险，再由当前阶段 Astra 读取事实完成个人应对。
 - 等真实独立回答完成，`research-independent --request --agent --rollout --turn`校验实际Astra/max、读入实物和完成turn；`research-reveal --request --independent --candidate`此后冻结候选。
 - 独立公开阶段自行补证后，先归档合并的完整EvidenceBundle，再对`research-independent`增加`--additional <合并证据目录>`。登记仍核验原冻结输入的真实读取、同一作者和实际完成回答，补证时钟不得晚于该回答完成；补证不得改写同名原来源。登记保留原request/input身份，并记录实际补证身份与时钟，候选仍显式绑定同一补证，不重开研究或将补证写回初始输入。
-- 同一研究中途补证时保留原 request 和独立输入，先将包含最终完整行情与新增官方原文的合并 EvidenceBundle 归档，再对 `research-reveal` 加 `--additional <合并证据目录>`。候选阶段的实际输入同时携带新增来源路径及真实证据时钟，同一 Astra 必须据此修正并审阅。最终结果沿用该证据身份、行情截止和知识截止，不把新资料写回旧请求的时间；不可改写同名旧来源。BTC_CYCLE 候选时钟必须与绑定包一致，不能省略补证参数却使用较晚资料。历史无补证的候选与结果保持原样。
-- 同一Astra读取`research-read --request --phase candidate --candidate-id`并审阅候选。`research-result --spec`保存request_id、candidate_id、agent_id、rollout_path、turn_id、coverage、counterevidence、unresolved、reopen_conditions、analysis，analysis必须对应实际第二阶段回答。结果校验相同代理、顺序、输入绑定及证据截止；普通专题按 scope，BTC_CYCLE 必须覆盖完整周期与组合，均不负责报告投递。
+- 同一研究中途补证时保留原 request 和独立输入，先将包含最终完整行情与新增官方原文的合并 EvidenceBundle 归档，再对 `research-reveal` 加 `--additional <合并证据目录>`。候选阶段的实际输入同时携带新增来源路径及真实证据时钟，本次实际 Astra 必须据此修正并审阅。最终结果沿用该证据身份、行情截止和知识截止，不把新资料写回旧请求的时间；不可改写同名旧来源。BTC_CYCLE 候选时钟必须与绑定包一致，不能省略补证参数却使用较晚资料。历史无补证的候选与结果保持原样。
+- 本次实际 Astra 读取`research-read --request --phase candidate --candidate-id`并审阅候选。`research-result --spec`保存request_id、candidate_id、agent_id、rollout_path、turn_id、coverage、counterevidence、unresolved、reopen_conditions、analysis，analysis必须对应实际第二阶段回答。结果分别校验原公开来源与本次实际作者、阶段顺序、输入绑定及证据截止；普通专题按 scope，BTC_CYCLE 必须覆盖完整周期与组合，均不负责报告投递。
 - 主任务阅读结果并取舍，写research_absorptions和受影响结论，重新取得context绑定后发布；结果完成不要求再做一次观察才可吸收。不同问题保留独立累计窗口；历史缺结构化覆盖维持UNKNOWN，不补造记录或批量研究。
 
-若运行环境使用collaboration编排且没有本机子任务inner-tool日志，使用`research-orchestrated-independent --request --rollout --dispatch --returned --input-review`及`research-orchestrated-result --spec`。它们从亲本真实spawn/followup、工具回执和FINAL_ANSWER校验模型、forknone、同代理、先后及实际摘要；输入由MAIN具体审阅。结果登记从 independent 自身的 rollout_path 重验原 PUBLIC dispatch、FINAL、哈希及续接关系；结果 spec 的 rollout_path 只承接原 COMPLETE/APPROVAL 票据绑定的真实候选审阅证明。不要求将两个已冻结阶段拼成一个文件，也不改原票据或补造历史。input_review={reviewer_role:MAIN,request_id,input_id,dispatch_call_id,material_review,phase_order_review,evidence_refs}。原研究补证可用 `--additional <已归档证据目录>`，保留原 request/input 身份；补证不能改写或遗漏原来源，knowledge_cutoff 不得晚于实际 FINAL 返回。PUBLIC_RESULT_REF 及 revision 9 引用按补证 cutoff 校验，independent 保存 evidence_context；不传时保持原证据。结果spec={request_id,candidate_id,rollout_path,dispatch_call_id,return_message_id,input_review,coverage,counterevidence,unresolved,reopen_conditions}，不手写analysis。明确记作ORCHESTRATION_DISPATCH_RETURN_AND_MAIN_INPUT_REVIEW，inner_tool_trace_verified=false、os_input_isolation_verified=false；不得伪造native task_complete或宣称完整进程隔离。
+若运行环境使用collaboration编排且没有本机子任务inner-tool日志，使用`research-orchestrated-independent --request --rollout --dispatch --returned --input-review`及`research-orchestrated-result --spec`。它们从亲本真实spawn/followup、工具回执和FINAL_ANSWER校验实际可得的模型、forknone、各阶段作者、先后及实际摘要；输入由MAIN具体审阅。结果登记从 independent 自身的 rollout_path 重验原 PUBLIC dispatch、FINAL、哈希及续接关系；结果 spec 的 rollout_path 只承接原 COMPLETE/APPROVAL 票据绑定的真实候选审阅证明。不要求将两个已冻结阶段拼成一个文件，也不改原票据或补造历史。input_review={reviewer_role:MAIN,request_id,input_id,dispatch_call_id,material_review,phase_order_review,evidence_refs}。原研究补证可用 `--additional <已归档证据目录>`，保留原 request/input 身份；补证不能改写或遗漏原来源，knowledge_cutoff 不得晚于实际 FINAL 返回。PUBLIC_RESULT_REF 及 revision 9 引用按补证 cutoff 校验，independent 保存 evidence_context；不传时保持原证据。结果spec={request_id,candidate_id,rollout_path,dispatch_call_id,return_message_id,input_review,coverage,counterevidence,unresolved,reopen_conditions}，不手写analysis。明确记作ORCHESTRATION_DISPATCH_RETURN_AND_MAIN_INPUT_REVIEW，inner_tool_trace_verified=false、os_input_isolation_verified=false；不得伪造native task_complete或宣称完整进程隔离。
 
 桌面同一会话的日志分段按实际 `history_base` 及其字节截止读取，来源仍是原始日志。未完成阶段的暂停后续接保留实际 followup，MAIN 审阅其输入范围；已有完成返回须先登记，不能把后续修订改称首次独立结果。后续审阅允许使用包含原始来源链的新日志段，不要求同一个文件路径。
+
+## 研究阶段承接
+
+原请求、公开成果和真实作者证明继续拥有各自来源语义；执行者并不永久占有后续职责。`progress.resume_required` 表示仍有工作，`runtime_status=NOT_CHECKED` 表示尚未核运行，均不是恢复某个旧线程的指令。候选中的历史 `agent_id` 只绑定其 PUBLIC 来源；实际批准的作者来自本次结果证明。原作者可合法继续时沿用，当前合格 Astra 也可承接未完成阶段，不以先尝试唤醒旧作者为条件。仍有效的具体拒绝、UNKNOWN、在途效果及本次准入继续按原对象处理，换作者不能解除它们。
+
+新作者通过 `research-read --request <id> --phase public-result --independent-id <id>` 读取已验证的公开结果投影：原 market_result、哈希、形成时钟、证据条件与来源定位。它不返回任意摘要、MAIN 解释、个人材料或候选正文，不把旧结果当当前事实。个人阶段另用 `--phase portfolio` 取得实际事实版本和输入，批准阶段另读确切 `--phase candidate`。原成果不适用时说明所缺证据并完成必要续研；不能把阅读、保存或测试通过写成新的业务要求或批准。
+
+`research-orchestrated-result` 的 spec 可带 `dispatch_method=spawn_agent`，表示本次候选审阅由新作者实际完成；默认 `followup_task` 保留原作者续接。新 spawn 的 `input_review.evidence_refs` 必须包含确切 `independent_id`，`input_id` 仍为本次 `candidate_id`。JSONL 分支核实际 Astra/max 与 fork none；durable 分支只核宿主实际暴露的来源，未暴露型号、effort、fork 或内部读操作继续标记未知。MAIN 绑定声明不升级为作者实际内读证明，也不将后继 spawn 记作新独立 PUBLIC。
+
+新作者已完成 PORTFOLIO，但未生成公开 amendment 时，其后续 followup 可在 spec 带 `author_source={phase,guard_attempt,rollout_path,dispatch_call_id,return_message_id,input_review}`，指向该作者实际完成的首次后继 spawn。phase 只能为 PORTFOLIO、PUBLIC_CORRECTION 或 APPROVAL；原节点核该 issue/scope/phase 的 COMPLETE claim 及证明字节。该来源的 MAIN input_review.input_id 绑定原 claim.input_digest，evidence_refs 绑定本研究的原公开结果或其祖先；个人材料及事实版本按实际输入审阅。当前 followup 核该新作者的实际身份及先后，原 PUBLIC 证明独立重验。没有另一份作者台账；旧公开作者不被覆盖，后继完成不代签先前未完成阶段。
+
+公开续研的 `research-market-amendment` 同样可用 `--dispatch-method spawn_agent --input-review <MAIN审阅>`；本次 input_id 为原 independent_id。后继作者继续 followup 时用 `--author-source <上述来源JSON>`。原生完整运行日志分支使用 `--agent <本次实际作者> --turn <完成回合>`，新作者须在该实际回合读取确切 public-result；原生 `research-result` 同时核其 public-result 和候选读取。所有分支保留 parent_independent_id、原 PUBLIC 来源及真实新阶段来源，公开修订属于续研，不能冒称新盲评或回填旧形成时间。来源回读、候选披露、实际批准与正式采用继续分别验证。旧原生消息 continuation 适配器仍核其确切收件线程，不成为其他合法后继执行的必经入口。
 
 ## 周期深评与嗅探
 
 用户明确要求完整重评时，`research-request` 另支持 `change.kind=USER_REQUESTED_REVIEW`，并在顶层增加 `user_request={reference,reason}`：reference 是实际用户消息或任务中的请求引用，reason 说明本次重评目的。该入口只用于既有 BTC_CYCLE，scope 仍覆盖全部七部分，refs 仍绑定实际已归档 PUBLIC_RAW；可以复用已核验原始值，不伪装成新的行情变化。没有该 kind 的历史请求结构和普通小时触发条件不变。
 
-同一 issue 与 user_request.reference 幂等：重复调用返回原研究；有未采纳的在办研究时返回其真实进度并绑定这个用户请求，接续同一研究和同一 Astra。`research/user_requests` 只保存用户请求到研究的去重引用，不拥有策略或代理运行状态。调用方核对实际进度与运行，不从到期、小时任务或旧计划自动生成用户请求。
+同一 issue 与 user_request.reference 幂等：重复调用返回原研究；有未采纳的在办研究时返回其真实进度并绑定这个用户请求，接续同一研究的有效成果与未完成职责。`research/user_requests` 只保存用户请求到研究的去重引用，不拥有策略或代理运行状态。调用方核对实际进度与运行，不从到期、小时任务或旧计划自动生成用户请求。
 
 独立输入的 `cycle_assignment.method_references` 提供核心方法、建议维护和项目价值因子的阅读入口；披露候选的 `review_assignment` 提供映射契约及输出要求。新输入的 historical_anchor 只保留旧版本身份、创建时间、temporal_scope 与 section_provenance 的原始时间、模式和版本/证据身份（不含 explanation）；旧七个作者分析章节可能混入个人内容，不进入初始市场输入。历史市场依据通过公开原始 sources 回读，旧建议在市场分析后再披露。版本创建时间不冒充各部分原评估时间，历史缺项不补造。程序组织路径和材料，模型实际阅读并完成论证；文档内容不被解析为行情规则或评分。
 
@@ -156,11 +168,11 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 
 若实际发现先前误填适用性outcome，在新的真实核查身份下复用原冻结输入并走正常market预检、全文回读/冻结及observe，可在applicability_review显式追加correction={field:"/applicability_review/outcome",prior_outcome:"REVISE",observation_ids:[原不可变observation_id...],reason:实际错误与纠正依据}。必须完整引用当前同一已采纳基线仍在继承的全部REVISE登记，保留旧输入、enum、证据与时钟；新VALID/EVIDENCE_LIMITED及其refs、limitations由模型按实际范围实审，不把未知改为已验证。新观察的created_at才是纠正钟，不回填原期限或检索钟。程序只撤回这些误填字段衍生的适用性修订原因，真实重大原因、未采纳请求和建议失效不被清除；普通后继VALID没有这个纠正效果。原recheck之后的实际检索/观察要求保持，旧证据不能靠纠正时间刷新有效性。
 
-同一研究期间本地已确认事实或策略偏好变化时，继续原请求与同一Astra，不改写初始独立输入。最终cycle候选的fact_version使用实际最新文件版本；reveal校验并在同一候选的可选fact_context冻结三份文件正文供最终审阅，结果绑定实际审阅的版本。它只保存该次输入证据，不成为事实Owner。未变候选及历史结果保持原结构；披露时版本不实、批准后事实再变或未获实际Astra审阅仍不得发布。新增研究范围先由同一Astra补充分析再审阅最终映射，不能只换fact_version。
+同一研究期间本地已确认事实或策略偏好变化时，继续原请求与有效冻结成果，不改写初始独立输入。最终cycle候选的fact_version使用实际最新文件版本；reveal校验并在同一候选的可选fact_context冻结三份文件正文供最终审阅，结果绑定实际审阅的版本。它只保存该次输入证据，不成为事实Owner。未变候选及历史结果保持原结构；披露时版本不实、批准后事实再变或未获实际Astra审阅仍不得发布。新增研究范围先由当前阶段 Astra 补充分析再审阅最终映射，不能只换fact_version。
 
 仅已确认偏好修订、账户事实未变时，domain.account_facts使用account_fact_changed_known=false、实际最新fact_owner_fingerprints，以及known_change_evidence=[{confirmation_type: USER_CONFIRMED_PREFERENCE_CHANGE, owner_id: ASSET_CONFIGURATION}]、local_record_status=PREFERENCE_RECORDED，user_input_requirement=NONE。该兼容分支只允许资产配置文件实际变更且操作/纠正记录未变；模型与最终Astra审阅负责确认内容确为偏好变化，不得隐藏成交、账户事实纠正或缺失事实。真实账户变更继续原FACT_SYNC契约；下一轮文件未变时不重复携带此次偏好变更标记。不得为满足旧校验把已记录偏好伪装成待用户同步的账户事实。
 
-revision8及以上已完成事实重评时，可使用account_fact_changed_known=true、local_record_status=FACTS_REASSESSED、user_input_requirement=NONE：这表示相对前一策略版本的事实Owner确实改变，且已记录并进入新的个人决策，并非要求用户再次提供同一资料。known_change_evidence仍须逐项等于真实变化的Owner，当前文件指纹、个人决策事实版本及domain/robustness/portfolio_analysis/recommendations/conclusion的实际ASSESSED来源必须一致。缺少新个人决定、沿用私人章节或指纹不符时不启用此分支；未完成处理的变化仍走FACT_SYNC_PENDING。原Astra确切候选批准及正式写入检查保持必要，旧v3接口不启用这一分支。
+revision8及以上已完成事实重评时，可使用account_fact_changed_known=true、local_record_status=FACTS_REASSESSED、user_input_requirement=NONE：这表示相对前一策略版本的事实Owner确实改变，且已记录并进入新的个人决策，并非要求用户再次提供同一资料。known_change_evidence仍须逐项等于真实变化的Owner，当前文件指纹、个人决策事实版本及domain/robustness/portfolio_analysis/recommendations/conclusion的实际ASSESSED来源必须一致。缺少新个人决定、沿用私人章节或指纹不符时不启用此分支；未完成处理的变化仍走FACT_SYNC_PENDING。Astra 对确切候选的实际批准及正式写入检查保持必要，旧v3接口不启用这一分支。
 
 下一轮须相对实际当前版本核对Owner：文件未变时不重复携带上一轮known-change、confirmation或local_record_status转换标记；最后已知配置及原确认保存在事实Owner和不可变历史，不因此清空。v4兼容层读取旧FACTS_REASSESSED基线时，须先核验真实历史版本内容身份、对应canonical domain及完成个人重评的原版本；此资格只用于解释旧基线，当前变化仍独立验证。旧v3加载入口默认保持严格；任何当前候选自报标志不得替代历史资格。
 
@@ -194,9 +206,9 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 }
 ```
 
-同一 Astra 已撰写完整报告并在本次实际读取冻结候选后，最终 JSON 可用 `report_hash` 代替 `report_narrative`，避免每次映射复核重复输出全文。值必须是 `v4.common.digest(candidate.assessment.conclusion.narrative)`，不是文件字节哈希；两字段二选一。程序保留真实最终回答，并仅从同一 `candidate_hash` 绑定的冻结候选恢复逐字相同正文用于后续发布；不从任意文件或主任务补写正文。候选、真实运行身份、批准及映射一致性校验均不省略。旧全文回执继续兼容。
+Astra 已形成完整报告，本次实际 Astra 审阅者读取原成果、完整正文及确切冻结候选后，最终 JSON 可用 `report_hash` 代替 `report_narrative`，避免每次映射复核重复输出全文。值必须是 `v4.common.digest(candidate.assessment.conclusion.narrative)`，不是文件字节哈希；两字段二选一。程序保留真实最终回答，并仅从同一 `candidate_hash` 绑定的冻结候选恢复逐字相同正文用于后续发布；不从任意文件或主任务补写正文。候选、真实运行身份、批准及映射一致性校验均不省略。旧全文回执继续兼容。
 
-`approved=false` 保留真实研究结果，修正映射后向同一代理再次揭示、审阅。保存 result 的 coverage 数组按上述六项顺序取实际回答，其他三组发现与实际回答完全一致；工具从真实第二阶段输出提取 cycle_review，拒绝由 Sol 手写批准或补造覆盖。
+`approved=false` 保留真实研究结果，修正映射后向当前实际 Astra 审阅者再次揭示、审阅。保存 result 的 coverage 数组按上述六项顺序取实际回答，其他三组发现与实际回答完全一致；工具从真实第二阶段输出提取 cycle_review，拒绝由 Sol 手写批准或补造覆盖。
 
 两类已成交现货的减仓判断复用现有组合字段、`conclusion.business_meaning` 与正文，不新增当前策略或自动卖出条件。`coverage.portfolio_waiting` 由 Astra 实际审阅其事实分类、减仓或不减仓理由、条件、数量口径和保护空单影响；代码校验来源与映射，不用关键词或价格阈值替代判断。独立研究输入的 `cycle_assignment.instructions` 及 run-prepare/report 摘要中的 `spot_risk_review_instructions` 只提供方法提示，不承载资产事实或评估结果，旧冻结输入不回填。
 
@@ -262,9 +274,9 @@ AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及�
 
 ## 完整深评报告来源与摘要绑定
 
-`write-policy.json.deep_report_required=true` 仅约束新发布和新报告审阅。Astra 先独立撰写完整中文报告，Sol 原文映射到 `conclusion.narrative`；第二阶段实际 JSON 以 `report_narrative` 逐字返回同一正文，或按前述 `report_hash` 接口精确绑定本人已写且已读的冻结正文。返回全文时，仅末尾 LF 换行数量不同属于文本封装差异：真实回复完整保留在 `analysis`，校验后按已批准候选正文保存映射和报告哈希，不为此重新研究；内部换行、空格或正文改动均不适用此兼容。正文需修改时返回同一 Astra，重新形成候选并审阅。新发布必须具备该真实来源，旧冻结结果缺失时不补造；仍可读取，派生为 `REPORT_AUTHORSHIP_PENDING` 并恢复周期研究。
+`write-policy.json.deep_report_required=true` 仅约束新发布和新报告审阅。Astra 先独立撰写完整中文报告，Sol 原文映射到 `conclusion.narrative`；第二阶段实际 JSON 以 `report_narrative` 逐字返回同一正文，或按前述 `report_hash` 接口精确绑定本次实际读完并审阅的冻结正文；后继审阅者不能冒称原作者。返回全文时，仅末尾 LF 换行数量不同属于文本封装差异：真实回复完整保留在 `analysis`，校验后按已批准候选正文保存映射和报告哈希，不为此重新研究；内部换行、空格或正文改动均不适用此兼容。正文需修改时由当前阶段 Astra 处理，重新形成候选并审阅。新发布必须具备该真实来源，旧冻结结果缺失时不补造；仍可读取，派生为 `REPORT_AUTHORSHIP_PENDING` 并恢复周期研究。
 
-周期结果保留实际助手全文。解析只接受单个完整 JSON 对象或完整 `json` 代码块；其后仅兼容一条已确认的 `::inbox-item{title="..." summary="..."}` 通知标记。不扫描任意段落内的 JSON，不忽略其他说明、其他指令、多对象或重复字段。通知标记不作为判断、审批或工具指令执行。原代理、模型、阶段、候选哈希、覆盖与期限校验保持。
+周期结果保留实际助手全文。解析只接受单个完整 JSON 对象或完整 `json` 代码块；其后仅兼容一条已确认的 `::inbox-item{title="..." summary="..."}` 通知标记。不扫描任意段落内的 JSON，不忽略其他说明、其他指令、多对象或重复字段。通知标记不作为判断、审批或工具指令执行。原来源、本次实际作者、模型、阶段、候选哈希、覆盖与期限校验保持。
 
 `cycle_baseline.report_narrative/report_hash` 从唯一当前策略所采纳的真实深评派生，无独立指针。报告上下文增加 `deep_report_policy_revision=1`，其身份绑定正文哈希。每份新 report-review（包括静默核对）增加：
 
@@ -330,7 +342,7 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 
 此路径的`verification_scope=DURABLE_AUTHOR_FINAL_AND_MAIN_INPUT_REVIEW`只证明所列范围。`source_verification`明确保留`runtime_model/runtime_effort/runtime_fork_turns=null`、`runtime_configuration_verified=false`及`inbound_messages_verified=false`；不以claim型号、提示语或作者自述补为平台事实。实际派发仍依项目Astra/max分工，MAIN按可得原输入、公开文件、读取轨迹及实际阶段审阅，说明未暴露部分；原独立性只能按这份证据强度表达。平台未导出历史配置不使真实完成成果失效，也不授权伪造来源、另跑研究、绕过锁或权限。
 
-这调整的是项目的来源消费契约，保留作者与证据可追溯、公开先于个人、同作者完整候选审阅、内容实质验收和用户事实边界。任何明确要求逐字段运行配置证明的未来任务，应选能提供该证明的正常入口；不能把本适配范围写成已满足更强证明。
+这调整的是项目的来源消费契约，保留作者与证据可追溯、公开先于个人、实际 Astra 对确切完整候选的审阅、内容实质验收和用户事实边界。任何明确要求逐字段运行配置证明的未来任务，应选能提供该证明的正常入口；不能把本适配范围写成已满足更强证明。
 
 同知识截止的纯正文纠错若仅改变 market_report、horizon.basis 或 factor.assessment，其他字段（包括全部 forward/lifecycle、方向与引用）逐值未变，则按原请求输入重新核验原冻结前瞻，不要求作者补造一次后验观察。原 claim 首次登记保持原样；截止时间变化或任一其他字段变化仍走正常后继校验，正文修正不构成预测兑现或续期。
 
@@ -340,11 +352,11 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 
 新完整链验收必须实际经过原 `research.request/read_input/_public_result` 的市场、前景和完整 `factor_assessment={items,summary}` 合同，冻结公开阶段后才读取个人事实并完成同一原研究的候选审阅、主Owner映射与报告消费。只把已有散文填成固定 semantic、旁路 factors 或造空 legacy Owner 的消费者回放，不能代替原链完成。事实、后续反馈和成稿须分别保留原身份及实际时钟；无新形成后市场事实时说明尚无自然后验。合成支持/部分/证伪/未知及范围测试单独标记，验收模型是否维持、降级、替代或撤回对应命题，不能只验反馈进入payload。独立语义审阅对照实际主因形成、一步前瞻、反证影响、原入口/消费者和正文；失败全文与实质正例均需判定，字段、关键词、测试通过不提供语义评分。
 
-同作者已完成的 PORTFOLIO 回合若在真实 FINAL 中明确声明后来公开更新、原公开未改且尚未登记，可沿既有 `research-market-amendment --source-phase PORTFOLIO` 消费该公开子产物。程序核同作者实际 followup/FINAL、原 COMPLETE/PORTFOLIO claim 与同一不可变 creator proof，核 FINAL 的 manifest/path/hash 与 active public 条目、root 内原件及不可变公开副本；不读取或登记个人提案为批准。公开 review 绑定的原 canonical EvidenceBundle 及原知识钟联合形成临时校验视图，视图创建不代表作者曾读取一个后来新包，不能传后造 Sol merge 倒填。后继公共验证以实际原公开 Owner 为 prior，保留既有 claim/data_cutoff/lifecycle；记录 `DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_PORTFOLIO`，不称新盲评。默认 PUBLIC_CORRECTION 及其原票据标准保留，没有相位 fallback；完整候选仍须真实 reveal 后由原作者实际审阅，PORTFOLIO 更新不等于 APPROVAL 或正式采纳。 后继真实 APPROVAL 结果可沿原 orchestrated-result 消费这个已验真的公开 Owner，先重验原 PORTFOLIO amendment/manifest，再核原 PUBLIC spawn、同作者候选 followup/FINAL 与独立 APPROVAL 票据；不把该公开后继标签当 native input-read 证明，也不混用旧票据。
+实际作者已完成的 PORTFOLIO 回合若在真实 FINAL 中明确声明后来公开更新、原公开未改且尚未登记，可沿既有 `research-market-amendment --source-phase PORTFOLIO` 消费该公开子产物。程序分别核原 PUBLIC 来源、本次实际 spawn 或 followup/FINAL、原 COMPLETE/PORTFOLIO claim 与同一不可变 creator proof，核 FINAL 的 manifest/path/hash 与 active public 条目、root 内原件及不可变公开副本；不读取或登记个人提案为批准。公开 review 绑定的原 canonical EvidenceBundle 及原知识钟联合形成临时校验视图，视图创建不代表作者曾读取一个后来新包，不能传后造 Sol merge 倒填。后继公共验证以实际原公开 Owner 为 prior，保留既有 claim/data_cutoff/lifecycle；新结果记录 `DISCLOSED_PUBLIC_UPDATE_FROM_PORTFOLIO`（历史 SAME_AUTHOR 标签按其原来源读取），不称新盲评。默认 PUBLIC_CORRECTION 及其原票据标准保留，没有相位 fallback；完整候选仍须真实 reveal 后由当前合格 Astra 实际审阅，PORTFOLIO 更新不等于 APPROVAL 或正式采纳。 后继真实 APPROVAL 结果可沿原 orchestrated-result 消费这个已验真的公开 Owner，先重验原 PORTFOLIO amendment/manifest，再分别核原 PUBLIC 证明、当前实际候选审阅的 spawn 或 followup/FINAL 与独立 APPROVAL 票据；不把该公开后继标签当 native input-read 证明，也不混用旧票据。
 
-上述 PORTFOLIO 公开后继的候选阶段，可从已保存的真实 FINAL proof 与 immutable manifest 验证同作者 companion 全稿的摘要/字节数和 root 内来源关系。公开阶段不读取、复制或归档私有全稿；候选已持有的 narrative 若不是原 public market_report 前缀，只有原始 UTF-8 字节摘要和长度精确匹配该实际签定全文才允许继续结构揭示，不能 trim、改段或接受 MAIN 自报 hash。outlook/factor 仍先逐值匹配冻结公开语义；无此真实 companion 的旧 prefix 行为不变。此验证不改旧公开 Owner、lifecycle 或完成钟，不重放 amend，也不提供语义合格、APPROVAL 或采用；完整候选仍须原作者实际审阅。 正式结果通过原批准与采纳核验后，cycle baseline 读取同一映射时仍核这份真实 companion 关系；不退回旧 prefix 限制，也不跳过已批准全文的精确字节绑定或读取私有原稿。
+上述 PORTFOLIO 公开后继的候选阶段，可从已保存的真实 FINAL proof 与 immutable manifest 验证同作者 companion 全稿的摘要/字节数和 root 内来源关系。公开阶段不读取、复制或归档私有全稿；候选已持有的 narrative 若不是原 public market_report 前缀，只有原始 UTF-8 字节摘要和长度精确匹配该实际签定全文才允许继续结构揭示，不能 trim、改段或接受 MAIN 自报 hash。outlook/factor 仍先逐值匹配冻结公开语义；无此真实 companion 的旧 prefix 行为不变。此验证不改旧公开 Owner、lifecycle 或完成钟，不重放 amend，也不提供语义合格、APPROVAL 或采用；完整候选仍须当前合格 Astra 实际审阅。 正式结果通过原批准与采纳核验后，cycle baseline 读取同一映射时仍核这份真实 companion 关系；不退回旧 prefix 限制，也不跳过已批准全文的精确字节绑定或读取私有原稿。
 
-同作者实际 APPROVAL 若拒绝确切已揭示候选，并在 FINAL 中以路径和字节摘要绑定完整修订 manifest，可显式用 `--source-phase APPROVAL` 消费其中的后来公开子产物；不改旧票据相位，也不把拒绝变成新稿批准。程序核被拒候选/原公开 Owner/原全文摘要、实际 FINAL 与 manifest、公开稿和补充审阅的不可变副本，以及作者确实已读的匿名 raw 原字节和各自检索/读取时钟。只把这些公开 raw 加入原有效公开来源校验视图，不把新包创建或成稿时刻倒填成作者知识。`public_update_content_hash` 使用既有 `closed_loop.public_hash`（outlook/factor）；完整 JSON Owner 摘要另由正常接口计算。候选阶段复用同一可信 companion 验证，不在公开阶段读取私有全稿。新 Owner 标为 `DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_APPROVAL`，结果登记、reveal、baseline/report-context 一致验证原来源关系；完整新候选仍需新的实际揭示、适用性核对和同作者真实审阅。重复同一实际 amend 返回原 Owner/首次冻结，不新造 lifecycle 或调用；普通 PUBLIC_CORRECTION 默认、native input-read 边界与正式批准要求保持。
+实际 APPROVAL 作者若拒绝确切已揭示候选，并在 FINAL 中以路径和字节摘要绑定完整修订 manifest，可显式用 `--source-phase APPROVAL` 消费其中的后来公开子产物；不改旧票据相位，也不把拒绝变成新稿批准。程序核被拒候选/原公开 Owner/原全文摘要、实际 FINAL 与 manifest、公开稿和补充审阅的不可变副本，以及作者确实已读的匿名 raw 原字节和各自检索/读取时钟。只把这些公开 raw 加入原有效公开来源校验视图，不把新包创建或成稿时刻倒填成作者知识。`public_update_content_hash` 使用既有 `closed_loop.public_hash`（outlook/factor）；完整 JSON Owner 摘要另由正常接口计算。候选阶段复用同一可信 companion 验证，不在公开阶段读取私有全稿。新 Owner 标为 `DISCLOSED_PUBLIC_UPDATE_FROM_APPROVAL`（历史 SAME_AUTHOR 标签保留原语义），结果登记、reveal、baseline/report-context 一致验证原来源关系；完整新候选仍需新的实际揭示、适用性核对和当前合格 Astra 的真实审阅。重复同一实际 amend 返回原 Owner/首次冻结，不新造 lifecycle 或调用；普通 PUBLIC_CORRECTION 默认、native input-read 边界与正式批准要求保持。
 
 MAIN 的 ASSESSED 时点记录本次映射审阅，不重写已冻结研究的命题形成或输入时钟。正常采用可从既有 research_absorptions 反查实际已批准结果、完整候选及不可变公开 Owner：已审含义/正文、事实、候选时间范围和证据身份均匹配，并重验公开来源与 companion 后，assessment 和 publication 共用冻结公开读取语义。不得将研究 Owner 冒充 REUSED 的 DecisionSnapshot 祖先；新写或改动的命题仍校验自身当时冻结输入。程序通过不代替实际批准，运行记账和规范化也不能改变已审业务含义或延长有效期。
 

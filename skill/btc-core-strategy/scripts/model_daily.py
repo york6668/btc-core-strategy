@@ -99,12 +99,21 @@ def finish(claim_id, outcome, result_ref=None, failure_kind=None, failure_ref=No
 
 
 def require_success(issue_id, scope, phase, claim_id, rollout_path):
-    if not claim_id:
-        raise Blocked('completed original deep claim required')
     current = status()
     if any(v['state'] == 'OPEN' and (v['scope'] == scope or scope.startswith(v['scope'] + '/'))
            for v in current['faults'].values()):
         raise Blocked('open defect blocks affected research registration')
+    return _completed_source(current, issue_id, scope, phase, claim_id, rollout_path)
+
+
+def completed_source(issue_id, scope, phase, claim_id, rollout_path):
+    """Verify historical completion; this does not grant new phase admission."""
+    return _completed_source(status(), issue_id, scope, phase, claim_id, rollout_path)
+
+
+def _completed_source(current, issue_id, scope, phase, claim_id, rollout_path):
+    if not claim_id:
+        raise Blocked('completed original deep claim required')
     record = current.get('claims', {v['claim_id']: v for v in current['days'].values()}).get(claim_id)
     if (not record or record['state'] != 'COMPLETE' or not record.get('result_ref')
             or record['issue_id'] != issue_id or record['scope'] != scope

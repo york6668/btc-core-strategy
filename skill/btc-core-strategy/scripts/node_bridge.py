@@ -16,7 +16,7 @@ import tempfile
 PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--answers',
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
-                '--retained-source-bindings', '--main-provenance', '--draft', '--review', '--spec', '--prepared-context', '--file', '--read-set', '--receipt', '--runtime-schedule')
+                '--retained-source-bindings', '--main-provenance', '--draft', '--review', '--spec', '--prepared-context', '--file', '--read-set', '--receipt', '--runtime-schedule', '--input-review', '--author-source', '--rollout')
 
 # These host entries prepare/refresh model-facing material or advance the
 # protected workflow. Standalone report/research paths must not bypass the
@@ -116,7 +116,8 @@ def guard_stdout(argv, descriptor=1):
 
 
 def absolute_paths(argv, directory):
-    result = list(argv)
+    result = []
+    seen = set()
     # Other commands consume a review file; this command consumes the already
     # registered immutable review identity. A Docker cwd must not alter it.
     review_identity = subcommand(argv) == 'market-report-source'
@@ -124,14 +125,29 @@ def absolute_paths(argv, directory):
         path = Path(value).expanduser()
         # Logical symlinks are part of the template identity.
         return os.path.abspath(path if path.is_absolute() else Path(directory) / path)
-    for index, item in enumerate(result):
+    index = 0
+    while index < len(argv):
+        item = argv[index]
         flag, equal, value = item.partition('=')
+        if flag.startswith('--') and flag not in PATH_OPTIONS and any(name.startswith(flag) for name in PATH_OPTIONS):
+            raise ValueError('use the full path option spelling: ' + flag)
+        if flag in PATH_OPTIONS:
+            if flag in seen:
+                raise ValueError('one value required for ' + flag)
+            seen.add(flag)
         if flag not in PATH_OPTIONS or (flag == '--review' and review_identity):
+            result.append(item)
+            index += 1
             continue
         if equal:
-            result[index] = flag + '=' + absolute(value)
-        elif index + 1 < len(result):
-            result[index + 1] = absolute(result[index + 1])
+            result.extend((flag, absolute(value)))
+            index += 1
+        elif index + 1 < len(argv):
+            result.extend((flag, absolute(argv[index + 1])))
+            index += 2
+        else:
+            result.append(item)
+            index += 1
     return result
 
 
@@ -152,6 +168,9 @@ def forward_if_enabled(argv, *, requested_release=None):
         return
     if os.environ.get('BTC_IN_CONTAINER') == '1':
         return
+    # Normalize supported path spellings before every safety/transport
+    # consumer. --spec=value and --spec value must bind the same input.
+    argv = absolute_paths(argv, Path.cwd())
     if subcommand(argv) == 'run-read':
         # Reading already materialized immutable files stays on the native
         # node. No facts sync, service writer admission or projection rebuild.
@@ -172,7 +191,7 @@ def forward_if_enabled(argv, *, requested_release=None):
     sync_facts(Path(config['project_dir']), Path(docker['fact_bridge_dir']))
     release = Path(requested_release).resolve() if requested_release else Path(__file__).resolve().parents[3]
     operation = os.environ.get('BTC_OPERATION_ID') or 'core-' + uuid.uuid4().hex
-    arguments = absolute_paths(argv, Path.cwd())
+    arguments = list(argv)
     inputs = {}
     # Reuse the existing immutable native-input bridge; no scheduler or service
     # process is added and older service images pass these CLI arguments through.
@@ -192,8 +211,10 @@ def forward_if_enabled(argv, *, requested_release=None):
         inputs[str(target)] = digest
         arguments = ['--runtime-schedule', str(target), *arguments]
     for flag in ('--input', '--answers', '--template', '--market', '--collector-observations',
-                 '--collector-snapshot', '--retained-source-bindings'):
+                 '--collector-snapshot', '--retained-source-bindings', '--input-review'):
         if flag in arguments:
+            if arguments.count(flag) != 1:
+                raise ValueError('one value required for ' + flag)
             original = Path(arguments[arguments.index(flag) + 1]).resolve()
             if original.is_file():
                 data = original.read_bytes()
@@ -213,6 +234,32 @@ def forward_if_enabled(argv, *, requested_release=None):
                     raise ValueError('frozen command input changed')
                 arguments[arguments.index(flag) + 1] = str(target)
                 inputs[str(target)] = digest
+    research_inputs = ('--spec',) if subcommand(arguments) in ('research-result', 'research-orchestrated-result') else ()
+    if subcommand(arguments) == 'research-market-amendment':
+        research_inputs = ('--author-source',)
+    for flag in research_inputs:
+        if flag not in arguments:
+            continue
+        if arguments.count(flag) != 1:
+            raise ValueError('one value required for ' + flag)
+        original = Path(arguments[arguments.index(flag) + 1])
+        if not original.is_file() or original.is_symlink():
+            raise ValueError('research source input must be an ordinary file')
+        original = original.resolve()
+        value = bridge_research_source(json.loads(original.read_bytes()), docker)
+        data = json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
+        digest_value = hashlib.sha256(data).hexdigest()
+        directory = Path(docker['fact_bridge_dir']).parent / 'native-inputs' / digest_value
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = directory / original.name
+        if target.exists():
+            if target.is_symlink() or target.read_bytes() != data:
+                raise ValueError('immutable research source input changed')
+        else:
+            with target.open('xb') as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+        arguments[arguments.index(flag) + 1] = str(target)
+        inputs[str(target)] = digest_value
     if '--main-provenance' in arguments:
         # Durable MAIN proof has nested immutable source files. Bridge both the
         # manifest and its bound official thread response, then rewrite only
@@ -317,6 +364,23 @@ def sync_facts(project, directory):
     temporary.symlink_to(generation, target_is_directory=True)
     os.replace(temporary, directory / 'current')
     return hashes
+
+
+def bridge_research_source(value, docker):
+    """Transport only explicit proof references, preserving their source bytes."""
+    value = dict(value)
+    if 'rollout_path' in value:
+        source = Path(value['rollout_path'])
+        if not source.is_file() or source.is_symlink():
+            raise ValueError('research proof source must be an ordinary file')
+        source = source.resolve()
+        identity = hashlib.sha256(source.read_bytes()).hexdigest()
+        directory = Path(docker['native_proof_dir']) / identity
+        copy_proof(source, directory)
+        value['rollout_path'] = str(Path(docker['container_proof_dir']) / identity / source.name)
+    if 'author_source' in value:
+        value['author_source'] = bridge_research_source(value['author_source'], docker)
+    return value
 
 
 def copy_proof(source, directory, seen=None):

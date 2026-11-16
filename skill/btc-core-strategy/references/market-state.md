@@ -55,7 +55,7 @@ summary 给已经完成取舍的综合方向、适用周期及主导理由，说
 
 revision 5 及以后的 run-prepare 首先返回纯市场 context、market_template 和原始引用入口。填写后先用 `run-advance --stage market --check-only` 导出实际合成候选，使用返回的 review_read 和 `run-read`，沿 next_cursor 输出 read_set.market_review 的全部 required，完整理解后再按证据审阅所有公开字段。去重只复用精确相同内容；对象身份、不同条件和末段均保留。输出截断则在同cursor缩小max-characters重读；只抽取字段或文件解析不算完整回读。assessment_summary、changes_since_hour/deep 及适用性等摘要按真实消费边界核验：同一完整对象内明确且唯一的交易所、产品、单位和窗口可共享，不要求每句重复。脱离对象的摘录必须保留或明确承接必要限定，不能依靠消费者未获得的旁文或refs，也不能将多所价格主语延伸到单所成交。历史摘要对照原证据核验；范围含混时在本轮结果澄清，保留旧记录及原研究身份，不据含混输入形成无条件规划。修正后重新预检并回读；完成模型审阅后另行用 `run-advance --stage market --input <market_candidate>` 冻结同一候选，才返回 portfolio_context。预检仅检查结构与绑定，不证明语义通过，不增加关键词判断或已审阅标签。按原 observation_template 填仓位 recommendation_checks 与 main_evaluation，再 `--stage observe`；市场字段由冻结结果承接，不重新生成。完整 sensing-context 仅供确定性校验，不作为市场阶段模型材料。
 
-独立 Astra 通过 `research-read --phase independent` 读取公开包并先完成上述 JSON；登记真实独立结果后，通过 `--phase portfolio --independent-id <id>` 读取事实，追加个人应对。Sol 映射的 outlook、factor_assessment 和市场正文必须与冻结结果一致，再交同一 Astra 审阅完整候选。公开证据需要修正时，在同一研究中由同一 Astra 返回修正后的纯市场 JSON，用 `research-market-amendment --independent <id> --rollout <真实父运行> --dispatch <followup调用> --returned <真实返回> [--additional <冻结补证目录>]` 记录为续研修正；保留原独立来源，不能把已见过仓位的续研重标为全新独立研究。原生代理运行用 `--rollout <代理真实运行> --turn <已完成轮次>` 替代 `--dispatch/--returned`，同样校验实际 Astra/max 回复。随后重新映射并审阅。
+独立 Astra 通过 `research-read --phase independent` 读取公开包并先完成上述 JSON；登记真实独立结果后，通过 `--phase portfolio --independent-id <id>` 读取事实，追加个人应对。Sol 映射的 outlook、factor_assessment 和市场正文必须与冻结结果一致，再交当前合格 Astra 审阅完整候选。公开证据需要修正时，在同一研究中由当前阶段 Astra 返回修正后的纯市场 JSON，用 `research-market-amendment --independent <id> --rollout <真实父运行> --dispatch <followup调用> --returned <真实返回> [--additional <冻结补证目录>]` 记录为续研修正；保留原独立来源，不能把已见过仓位的续研重标为全新独立研究。原生代理运行用 `--rollout <代理真实运行> --turn <已完成轮次>` 替代 `--dispatch/--returned`，同样校验实际 Astra/max 回复。随后重新映射并审阅。
 
 ## 报告与兼容
 
@@ -72,3 +72,5 @@ revision 6 每个 horizon 增加 forward 的三个时间窗口与兑现核验，
 非价格外部事实继续使用原冻结 RawRef。`evidence.observation_refs(bundle,directory,source_id)` 返回由原字节确定性解析的 `/$facts/<id>` 引用；解析能力不存在或原件不足时没有可授予记录。记录保留实际数值、主体、产品、口径、单位、经济期次，以及事件、披露和获知时间；预测、作者解读和缺原件的文本不能变成已发生经济事实。`period_kind` 支持未知下一日期的过程命题；原预期明确指定的期次或 as_of 仍严格匹配。整段形成前或跨形成时点的汇总，不能用后日披露倒算形成后的经济支持。Yahoo指数点、ETF每股价与黄金实物不互换，明确实际完整bar收盘时钟才供后验验证。
 
 锁定输入回放通过原 `market_observation.normalize_locked` 重算数据与窗口，保留真实原取数URL、字节hash和retrieved_at，并明示 `FROZEN_RAW_REPLAY`；未锁维度为 `NOT_IN_LOCK`，部分覆盖继续是缺口。派生容器是 `UNTRUSTED_LEAD`，原PUBLIC_RAW才支持初判与事实验证；回放、归档和合同通过均不授予市场兑现。
+
+后继作者与原公开来源分别核验，原作者不活跃不要求恢复旧线程。新作者读取确切公开投影再处理个人或候选；新 spawn、后继 followup 的来源参数和实际验证范围见 [研究阶段承接](v4-contract.md#研究阶段承接)。

@@ -61,7 +61,7 @@ def _guard_completed(root, req, phase, attempt_id, rollout_path):
     import model_guard
     require(req.get('issue_id'), 'guarded research needs original issue identity')
     try:
-        model_guard.require_success(req['issue_id'], 'btc/research', phase, attempt_id, rollout_path)
+        return model_guard.require_success(req['issue_id'], 'btc/research', phase, attempt_id, rollout_path)
     except model_guard.Blocked as exc:
         require(False, str(exc))
 
@@ -140,8 +140,12 @@ def context(root):
         if independent:
             require(independent['request_id'] == slot['latest_request']['request_id'], 'research phase belongs to another request')
             progress.update(stage='INDEPENDENT_COMPLETED', independent_id=independent['independent_id'],
-                            agent_id=independent['agent_id'], rollout_path=independent['rollout_path'],
+                            public_source={k: independent[k] for k in ('agent_id', 'rollout_path')},
                             independent_completed_at=independent['completed_at'])
+            if independent.get('market_amendment'):
+                progress['public_amendment_source'] = {k: independent['market_amendment'][k]
+                    for k in ('agent_id', 'rollout_path', 'dispatch_call_id', 'return_message_id', 'dispatch_method', 'turn_id')
+                    if k in independent['market_amendment']}
         if candidate:
             require(candidate['agent_id'] == independent['agent_id'], 'research candidate belongs to another agent')
             progress.update(stage='CANDIDATE_REVEALED', candidate_id=candidate['candidate_id'],
@@ -149,6 +153,7 @@ def context(root):
         if result and candidate and result['candidate_id'] == candidate['candidate_id']:
             progress.update(stage='RESULT_RECORDED', result_id=result['result_id'],
                             result_completed_at=result['completed_at'],
+                            review_source={k: result[k] for k in ('agent_id', 'rollout_path')},
                             cycle_approved=(result.get('cycle_review') or {}).get('approved'))
         slot['latest_request']['progress'] = progress
         slot['status'] = 'RESEARCHED' if progress['stage'] == 'RESULT_RECORDED' else 'REQUESTED'
@@ -449,6 +454,27 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
         identity = req['independent_input_id']
         require(digest(value) == identity, 'independent input changed')
         _candidate_free(value)
+    elif phase == 'public-result':
+        require(candidate_id is None and independent_id is not None, 'public result needs its original identity')
+        independent = _load(root, 'independent', independent_id)
+        require(independent['request_id'] == request_id and independent.get('market_result') is not None,
+                'public result belongs to another request or is not frozen')
+        _verify_market_amendment(independent, root)
+        # Explicit public projection: free-text summaries, MAIN reviews and
+        # personal/candidate artifacts are not part of this input boundary.
+        value = {k: independent[k] for k in ('independent_id', 'request_id', 'market_result',
+                 'market_result_hash', 'input_id', 'started_at', 'completed_at')}
+        value['evidence_context'] = independent.get('public_evidence_inputs') or independent.get('evidence_context') or {
+            k: req[k] for k in ('evidence_id', 'knowledge_cutoff', 'market_cutoff', 'market_evidence_id')}
+        value['public_source'] = {k: independent[k] for k in ('agent_id', 'rollout_path', 'verification_scope') if k in independent}
+        value['public_source']['role'] = 'ORIGINAL_PUBLIC_AUTHOR'
+        value['public_source']['completed_at'] = independent.get('initial_completed_at', independent['completed_at'])
+        if independent.get('market_amendment'):
+            value['public_amendment_source'] = {k: independent['market_amendment'][k]
+                for k in ('agent_id', 'rollout_path', 'dispatch_call_id', 'return_message_id', 'dispatch_method', 'turn_id', 'completed_at')
+                if k in independent['market_amendment']}
+        value['use'] = 'Completed public source with its original conditions; reuse does not refresh its evidence, grant approval, or create new independent research.'
+        identity = independent_id
     elif phase == 'portfolio':
         require(candidate_id is None and independent_id is not None, 'portfolio input needs the actual independent result')
         independent = _load(root, 'independent', independent_id)
@@ -783,7 +809,7 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             require(not errors, 'candidate preflight failed: ' + json.dumps(errors, ensure_ascii=False))
         if check_only:
             return {'valid': True, 'candidate_hash': digest(candidate), 'scope': 'structure_and_bindings_only',
-                    'next_action': 'DISCLOSE_TO_ORIGINAL_RESEARCHER_FOR_CONTENT_REVIEW'}
+                    'next_action': 'DISCLOSE_EXACT_CANDIDATE_FOR_ACTUAL_ASTRA_REVIEW'}
         assignment = ({'review_assignment': {'instructions': cycle.MAPPING_REVIEW,
                        'method_references': cycle.method_references('mapping')}}
                       if req['issue_key'] == cycle.ISSUE_KEY else {})
@@ -813,14 +839,17 @@ def result(root, spec, guard_attempt=None):
         disclosed = _load(root, 'candidates', spec['candidate_id'])
         phase = _load(root, 'independent', disclosed['independent_id'])
         _verify_market_amendment(phase, root)
-        require(phase.get('verification_scope', 'NATIVE_RUNTIME_PHASE_INPUT_READ') == 'NATIVE_RUNTIME_PHASE_INPUT_READ', 'orchestrated research needs its orchestration result adapter')
+        _public_origin(root, req, phase)
         require(disclosed['request_id'] == req['request_id'] == phase['request_id'], 'research phases bind different requests')
-        require(spec['agent_id'] == disclosed['agent_id'] == phase['agent_id'], 'research phases must use the same agent')
-        require(spec['turn_id'] != phase['turn_id'], 'candidate phase must be a later independent turn')
-        require(str(Path(spec['rollout_path']).resolve()) == phase['rollout_path'], 'candidate phase must use the same runtime trace')
+        require(disclosed['agent_id'] == phase['agent_id'], 'candidate PUBLIC source changed')
+        require((spec['agent_id'], spec['turn_id']) != (phase['agent_id'], phase.get('turn_id')),
+                'candidate review cannot replay the PUBLIC turn')
         turn = _completed_turn(spec['rollout_path'], spec['agent_id'], spec['turn_id'])
         require(turn['started_at'] >= instant(disclosed['revealed_at']).timestamp(), 'candidate phase started before disclosure')
         require(read_input(root, req['request_id'], 'candidate', spec['candidate_id']) in turn['proof_reads'], 'candidate runtime did not read the disclosed candidate')
+        if spec['agent_id'] != phase['agent_id']:
+            require(read_input(root, req['request_id'], 'public-result', independent_id=phase['independent_id']) in turn['proof_reads'],
+                    'new reviewer did not read the exact frozen public result')
         require(spec['analysis'] == turn['last_agent_message'], 'research analysis differs from actual agent output')
         from .cycle import review_output
         cycle_review = review_output(req, disclosed, spec['analysis'], spec)
@@ -966,6 +995,69 @@ def _same_orchestration_author(previous, current):
                 'native continuation must anchor this exact original PUBLIC proof')
 
 
+def _public_ancestors(root, phase):
+    values = set()
+    while True:
+        require(phase['independent_id'] not in values, 'cyclic public source ancestry')
+        values.add(phase['independent_id'])
+        parent = phase.get('parent_independent_id')
+        if not parent:
+            return values
+        previous = _load(root, 'independent', parent)
+        require(previous['request_id'] == phase['request_id'], 'public ancestry crosses research requests')
+        phase = previous
+
+
+def _public_origin(root, req, phase):
+    if phase.get('dispatch_call_id'):
+        proof = _orchestration_turn(phase['rollout_path'], phase['dispatch_call_id'], phase['return_message_id'], 'spawn_agent')
+        require(all(proof[k] == phase['trace_proof'][k] for k in ('dispatch_hash', 'return_hash')),
+                'original PUBLIC source proof changed')
+        if 'continuations' in phase:
+            require(proof['continuations'] == phase['continuations'], 'original PUBLIC continuation trace changed')
+        return proof
+    proof = _completed_turn(phase['rollout_path'], phase['agent_id'], phase['turn_id'])
+    require(proof['last_agent_message'] == phase['summary']
+            and read_input(root, req['request_id']) in proof['proof_reads'],
+            'original native PUBLIC source or input proof changed')
+    return dict(proof, agent_id=phase['agent_id'])
+
+
+def _phase_author(root, req, phase, rollout, dispatch, returned, method, input_review=None, author_source=None):
+    """Keep PUBLIC provenance separate from the actual successor's origin.
+
+    A new spawn is a later phase, never a second independent PUBLIC result.
+    A later follow-up may bind a completed successor spawn (e.g. PORTFOLIO)
+    even if that phase did not produce a public amendment.
+    """
+    require(method in ('spawn_agent', 'followup_task'), 'unsupported research phase dispatch')
+    if author_source is not None:
+        exact(author_source, 'phase guard_attempt rollout_path dispatch_call_id return_message_id input_review', 'successor author source')
+        require(method == 'followup_task' and author_source['phase'] in ('PORTFOLIO', 'PUBLIC_CORRECTION', 'APPROVAL'),
+                'successor origin must be a completed later phase, not another PUBLIC launch')
+        import model_daily
+        claim = model_daily.completed_source(req['issue_id'], 'btc/research', author_source['phase'],
+                                             author_source['guard_attempt'], author_source['rollout_path'])
+        origin = _orchestration_turn(author_source['rollout_path'], author_source['dispatch_call_id'],
+                                     author_source['return_message_id'], 'spawn_agent')
+        review = _main_input_review(author_source['input_review'], req['request_id'], claim['input_digest'], author_source['dispatch_call_id'])
+        require(bool(_public_ancestors(root, phase).intersection(review['evidence_refs'])),
+                'successor origin must bind this research public source')
+        require(origin['started_at'] >= phase.get('initial_completed_at', phase['completed_at']),
+                'successor origin predates the original public completion')
+    else:
+        origin = _public_origin(root, req, phase)
+    proof = _orchestration_turn(rollout, dispatch, returned, method,
+                                origin['agent_id'] if method == 'followup_task' else None)
+    if method == 'followup_task':
+        _same_orchestration_author(origin, proof)
+        require(proof['started_at'] >= origin['completed_at'], 'successor follow-up predates its own completed origin')
+    else:
+        require(input_review is not None and phase['independent_id'] in input_review['evidence_refs'],
+                'new author MAIN review must bind the exact frozen public source')
+    return proof
+
+
 def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, return_message_id, input_review, guard_attempt=None, additional=None):
     """Dispatch and actual final are verified; inner reads remain a declared main review."""
     with locked(root):
@@ -994,7 +1086,8 @@ def orchestrated_independent(root, request_id, rollout_path, dispatch_call_id, r
 
 
 def orchestrated_result(root, spec, guard_attempt=None):
-    exact(spec, 'request_id candidate_id rollout_path dispatch_call_id return_message_id input_review coverage counterevidence unresolved reopen_conditions', 'orchestrated research result')
+    optional = ' '.join(k for k in ('dispatch_method', 'author_source') if k in spec)
+    exact(spec, 'request_id candidate_id rollout_path dispatch_call_id return_message_id input_review coverage counterevidence unresolved reopen_conditions ' + optional, 'orchestrated research result')
     for key in ('coverage', 'counterevidence', 'unresolved', 'reopen_conditions'):
         require(isinstance(spec[key], list), 'research ' + key + ' must be a list')
         for item in spec[key]:
@@ -1011,18 +1104,17 @@ def orchestrated_result(root, spec, guard_attempt=None):
             and amendment.get('source_phase') in PUBLIC_ARTIFACT_SCOPES
             and phase.get('verification_scope') == PUBLIC_ARTIFACT_SCOPES[amendment['source_phase']])
         from .durable_proof import SCOPE as durable_scope
-        require(phase.get('verification_scope') in (ORCHESTRATED_SCOPE, durable_scope) or continued_public,
-                'native research must retain native input-read verification')
+        require(phase.get('verification_scope', 'NATIVE_RUNTIME_PHASE_INPUT_READ') in
+                (ORCHESTRATED_SCOPE, durable_scope, 'NATIVE_RUNTIME_PHASE_INPUT_READ') or continued_public,
+                'unsupported original PUBLIC proof scope')
         require(req['request_id'] == disclosed['request_id'] == phase['request_id'], 'orchestrated phases bind different requests')
         # Recheck PUBLIC through its frozen proof. APPROVAL keeps its own
         # completed claim's byte-bound proof; neither phase needs a rewritten
         # file containing both histories. Paths alone are not provenance.
-        first = _orchestration_turn(phase['rollout_path'], phase['dispatch_call_id'], phase['return_message_id'], 'spawn_agent')
-        require(first['dispatch_hash'] == phase['trace_proof']['dispatch_hash'] and first['return_hash'] == phase['trace_proof']['return_hash'], 'independent orchestration proof changed')
-        if 'continuations' in phase:
-            require(first['continuations'] == phase['continuations'], 'independent phase continuation trace changed')
-        proof = _orchestration_turn(spec['rollout_path'], spec['dispatch_call_id'], spec['return_message_id'], 'followup_task', phase['agent_id'])
-        _same_orchestration_author(first, proof)
+        _public_origin(root, req, phase)
+        _main_input_review(spec['input_review'], req['request_id'], spec['candidate_id'], spec['dispatch_call_id'])
+        proof = _phase_author(root, req, phase, spec['rollout_path'], spec['dispatch_call_id'], spec['return_message_id'],
+                              spec.get('dispatch_method', 'followup_task'), spec['input_review'], spec.get('author_source'))
         require(proof['started_at'] >= instant(disclosed['revealed_at']).timestamp(), 'candidate follow-up predates candidate disclosure')
         read_input(root, req['request_id'], 'candidate', spec['candidate_id'])
         _main_input_review(spec['input_review'], req['request_id'], spec['candidate_id'], spec['dispatch_call_id'])
@@ -1030,7 +1122,7 @@ def orchestrated_result(root, spec, guard_attempt=None):
         cycle_review = review_output(req, disclosed, proof['analysis'], spec)
         return _save(root, 'results', 'result_id', {'schema': 'BTC_RESEARCH_RESULT_V4', **spec,
             **({'cycle_review': cycle_review} if cycle_review is not None else {}),
-            'issue_id': req['issue_id'], 'agent_id': phase['agent_id'], 'analysis': proof['analysis'],
+            'issue_id': req['issue_id'], 'agent_id': proof['agent_id'], 'analysis': proof['analysis'],
             'scope': req['scope'], 'fact_version': _result_facts(req, disclosed), **_result_evidence(req, disclosed),
             'independent_id': phase['independent_id'], 'verification_scope': proof.get('verification_scope', ORCHESTRATED_SCOPE),
             **({'source_verification': proof['source_verification']} if 'source_verification' in proof else {}),
@@ -1445,13 +1537,25 @@ def _verify_market_amendment(phase, root=None):
     amendment = phase.get('market_amendment')
     if amendment:
         if amendment.get('turn_id'):
-            proof = _completed_turn(amendment['rollout_path'], phase['agent_id'], amendment['turn_id'])
+            proof = _completed_turn(amendment['rollout_path'], amendment.get('agent_id', phase['agent_id']), amendment['turn_id'])
             analysis = proof['last_agent_message']
             require(digest(analysis) == amendment['analysis_hash'], 'public market amendment trace changed')
+            if amendment.get('agent_id', phase['agent_id']) != phase['agent_id']:
+                require(root is not None and phase.get('parent_independent_id'), 'new native contributor needs its public predecessor')
+                require(read_input(root, phase['request_id'], 'public-result', independent_id=phase['parent_independent_id']) in proof['proof_reads'],
+                        'new native contributor public input proof changed')
         else:
-            proof = _orchestration_turn(amendment['rollout_path'], amendment['dispatch_call_id'],
-                amendment['return_message_id'], 'followup_task', phase['agent_id'])
-            _same_orchestration_author(phase, proof)
+            if amendment.get('dispatch_method') == 'spawn_agent' or amendment.get('author_source') is not None:
+                require(root is not None and phase.get('parent_independent_id'), 'successor amendment needs its original public source')
+                previous = _load(root, 'independent', phase['parent_independent_id'])
+                req = _load(root, 'requests', phase['request_id'])
+                proof = _phase_author(root, req, previous, amendment['rollout_path'], amendment['dispatch_call_id'],
+                    amendment['return_message_id'], amendment.get('dispatch_method', 'followup_task'),
+                    amendment.get('input_review'), amendment.get('author_source'))
+            else:
+                proof = _orchestration_turn(amendment['rollout_path'], amendment['dispatch_call_id'],
+                    amendment['return_message_id'], 'followup_task', phase['agent_id'])
+                _same_orchestration_author(phase, proof)
             require(proof['dispatch_hash'] == amendment['dispatch_hash'] and proof['return_hash'] == amendment['return_hash'],
                     'public market amendment trace changed')
             analysis = proof['analysis']
@@ -1516,7 +1620,7 @@ def _candidate_companion_report(root, phase):
     return {'sha256':reference['sha256'],'bytes':entry['bytes']}
 
 
-def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None, *, source_phase='PUBLIC_CORRECTION'):
+def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, return_message_id=None, additional=None, turn_id=None, guard_attempt=None, *, source_phase='PUBLIC_CORRECTION', dispatch_method='followup_task', agent_id=None, input_review=None, author_source=None):
     """Continue the same research with an actual public-evidence correction.
 
     Original independent provenance stays intact; this is explicitly a later
@@ -1535,15 +1639,28 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
                 'manifest public updates require revision 9')
         if turn_id:
             require(dispatch_call_id is None and return_message_id is None, 'choose native turn or orchestrated amendment')
-            proof = _completed_turn(rollout_path, phase['agent_id'], turn_id)
+            require(author_source is None and input_review is None and dispatch_method == 'followup_task',
+                    'native turn uses its own runtime input and model proof')
+            actual_agent = agent_id or phase['agent_id']
+            proof = _completed_turn(rollout_path, actual_agent, turn_id)
+            if actual_agent != phase['agent_id']:
+                require(read_input(root, req['request_id'], 'public-result', independent_id=independent_id) in proof['proof_reads'],
+                        'new public contributor did not read the original public result')
             proof['analysis'] = proof['last_agent_message']
-            amendment = {'turn_id': turn_id, 'analysis_hash': digest(proof['analysis'])}
+            amendment = {'turn_id': turn_id, 'agent_id': actual_agent, 'analysis_hash': digest(proof['analysis'])}
         else:
             require(dispatch_call_id is not None and return_message_id is not None, 'actual amendment phase required')
-            proof = _orchestration_turn(rollout_path, dispatch_call_id, return_message_id, 'followup_task', phase['agent_id'])
-            _same_orchestration_author(phase, proof)
+            require(agent_id is None, 'orchestrated author comes from actual source events')
+            if input_review is not None:
+                _main_input_review(input_review, req['request_id'], independent_id, dispatch_call_id)
+            proof = _phase_author(root, req, phase, rollout_path, dispatch_call_id, return_message_id,
+                                  dispatch_method, input_review, author_source)
             amendment = {'dispatch_call_id': dispatch_call_id, 'return_message_id': return_message_id,
-                         'dispatch_hash': proof['dispatch_hash'], 'return_hash': proof['return_hash']}
+                         'dispatch_hash': proof['dispatch_hash'], 'return_hash': proof['return_hash'],
+                         'agent_id': proof['agent_id'], 'dispatch_method': dispatch_method,
+                         **({'input_review': input_review} if input_review is not None else {}),
+                         **({'author_source': author_source} if author_source is not None else {}),
+                         **({'source_verification': proof['source_verification']} if 'source_verification' in proof else {})}
         require(proof['started_at'] >= phase['completed_at'], 'amendment predates the independent result')
         supplement = {}
         if additional is not None:
@@ -1579,20 +1696,27 @@ def amend_market(root, independent_id, rollout_path, dispatch_call_id=None, retu
         # and clock; an amendment cannot backdate new standards to that clock.
         updated.pop('lifecycle_frozen_at', None)
         updated.update(result, **supplement, parent_independent_id=independent_id,
-            independence_status=('DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_'+source_phase if manifest_phase
+            independence_status=('DISCLOSED_PUBLIC_UPDATE_FROM_'+source_phase if manifest_phase
                                  else 'CONTINUED_PUBLIC_CORRECTION'),
             initial_completed_at=phase.get('initial_completed_at', phase['completed_at']),
             completed_at=proof['completed_at'], market_amendment={
             'rollout_path': str(Path(rollout_path).resolve()), **amendment,
             'completed_at': proof['completed_at']})
-        # A lost reply must not give the same actual author return a second
-        # lifecycle freeze or another public owner. Revalidate its artifacts
-        # above, then reuse the exact already-saved result.
+        # Identify the actual completed effect, not its transport path or the
+        # metadata shape of the current adapter. New attribution fields must
+        # not turn replay of an old successful amendment into a fresh owner.
+        def effect(value, public):
+            if value.get('turn_id'):
+                return ('native', value.get('agent_id', public['agent_id']), value['turn_id'], value['analysis_hash'])
+            return ('orchestrated', value.get('dispatch_hash'), value.get('return_hash'))
         for path in (Path(root)/'research/independent').glob('*.json'):
             saved = _load(root,'independent','sha256:'+path.stem)
             if (saved.get('parent_independent_id') == independent_id
-                    and saved.get('market_amendment') == updated['market_amendment']):
-                require({k:v for k,v in saved.items() if k not in ('independent_id','lifecycle_frozen_at')} == updated,
+                    and saved.get('market_amendment')
+                    and effect(saved['market_amendment'], phase) == effect(updated['market_amendment'], phase)):
+                ignored = ('independent_id', 'lifecycle_frozen_at', 'market_amendment', 'independence_status')
+                require({k:v for k,v in saved.items() if k not in ignored} ==
+                        {k:v for k,v in updated.items() if k not in ignored},
                         'same actual public amendment cannot change its saved content')
                 return saved
         return _save(root, 'independent', 'independent_id', updated)
