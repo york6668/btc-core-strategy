@@ -32,7 +32,7 @@ worker 在领取持久任务之前，还要核对本机 CLI 可执行、项目�
 
 每次宿主入口取得原 `flock` 后，先从原 `task.status` 检查 formal 的 RUNNING/UNKNOWN attempt，再检查新领取所需节点窗口和本机执行器；原 release 已变化、节点没有新窗口或 CLI 不可用，都不免除消费原结果的责任。读取仅限本适配器原私有 attempt 目录，不搜索原生会话存储。原 claim 的问题、阶段、输入、证据、release 与 started_ms 必须逐一相等；原生事件须属于原调用的唯一 thread 和同一唯一 turn，按 thread.started→turn.started→turn.completed 顺序且结束后无新轮，显式 thread/turn ID 一致；缺开始、结束后新启动、交错轮次及 error/turn.failed 均不能完成。CLI未提供服务端turn ID时保留None与有序单轮的证据边界，不编造真实ID；最后结果须标识同一 task/attempt。随后调用原 `task.reconcile`，仍由原领域校验实际业务原件，不能从 JSON 自述或模型 final 签业务完成。已成功核清的一次入口不再领取新模型，下一次才按原准入继续。
 
-新 attempt 在实际调用前先持久写入 revision2 claim 与 launch-intent，并 fsync 文件和父目录。只有本适配器锁已取得、revision2 claim 存在、launch-intent 与任何执行产物都不存在，才可记录明确未执行；旧 claim 缺 launch-intent、进程退出、超时或时间经过均不能推出未执行。已经花费的研究名额不退还。原生结果/持久效果仍未知则保留原 attempt，不启动替代模型；不影响无依赖的源码、取证和独立工作。
+新 attempt 在实际调用前先持久写入 revision2 claim 与 launch-intent，并 fsync 文件和父目录。只有本适配器锁已取得、revision2 claim 存在、launch-intent 与任何执行产物都不存在，才可记录明确未执行；旧 claim 缺 launch-intent、进程退出、超时或时间经过均不能推出未执行。已发生调用及实际用量保留，不因失败、恢复或跨日抹除；历史计数不形成项目日历次数上限。原生结果/持久效果仍未知则保留原 attempt，不启动替代模型；不影响无依赖的源码、取证和独立工作。
 
 核清变更也先按原 attempt 以固定 `reconcile-intent.json` O_EXCL 写证据及固定 operation_id，再调用原节点；任何旧版 `reconcile-*.json` 意图也阻止自动重发。晚到事件或证据字节变化不生成第二个提交身份；响应丢失时下一入口只读原 task 状态，不能重新提交同一核清。仍未核清时使用保存的原完整请求调用原 `core.recover`，在同一 writer/operation 日志中核清；完整原请求缺失或旧版 journal 状态不明时保留待明确核清，不重放外部动作。该持久文件仅绑定原节点日志，不是另一套任务库。当前实现与隔离通过不证明原宿主接口可用、节点接管已采用或真实跨轮唤醒。
 
