@@ -341,6 +341,18 @@ def anchors(root, project):
 def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None, resume_preparation=False, collector_snapshot=None, retained_source_bindings=None, main_provenance=None):
     text(run_ref, 'actual run reference')
     text(agent_id, 'actual main agent id')
+    if main_provenance is None:
+        existing = next((Path(directory) / name for name in ('run.json', 'preparation.json')
+                         if (Path(directory) / name).is_file()), None)
+        # Preserve a partial preparation's original metadata on retry.
+        if existing:
+            main_provenance = read(existing).get('main_provenance')
+        else:
+            import node_config
+            from model_identity import native_runtime_profile
+            observed = native_runtime_profile(node_config.load(), agent_id)
+            main_provenance = {'role': 'MAIN', 'model': observed['name'],
+                               'effort': observed['reasoning_effort'], 'agent_id': agent_id, 'run_ref': run_ref}
     if main_provenance is not None:
         from .main_flow import validate_preview_provenance
         validate_preview_provenance(main_provenance, project=project)
@@ -391,6 +403,8 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                        'collector_snapshot_hash':compatibility.get('collector_snapshot_hash'),
                        'compatibility':compatibility,
                        'additional_hash':digest(read(Path(additional) / 'evidence.json')) if additional else None}
+        if main_provenance is not None and (not marker.exists() or 'main_provenance' in read(marker)):
+            preparation['main_provenance'] = deepcopy(main_provenance)
         if marker.exists():
             require(resume_preparation, 'incomplete preparation exists; use --resume-preparation')
             require(read(marker) == preparation, 'preparation identity or context changed; use a new directory with original frozen inputs')
@@ -601,10 +615,9 @@ def identity(run):
         require(value['agent_id'] == run['agent_id'] and value['run_ref'] == run['run_ref'],
                 'explicit MAIN provenance belongs to another run')
         return value
-    # Existing native assignments retain their contract. A durable caller must
-    # supply its evidence-bound identity; never fill its null fields from this
-    # scheduled native assignment.
-    return {'role': 'MAIN', 'model': market.CURRENT_HOURLY_MODEL['name'], 'effort': market.CURRENT_HOURLY_MODEL['reasoning_effort'],
+    # Old runs without observed metadata do not establish an actual model.
+    # Their frozen outcomes retain their original bytes and source records.
+    return {'role': 'MAIN', 'model': None, 'effort': None,
             'agent_id': run['agent_id'], 'run_ref': run['run_ref']}
 
 
@@ -1022,8 +1035,9 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
                     payload = deepcopy(authored)
                     payload.update(schema='BTC_SENSING_REVIEW_V4', revision=ctx.get('revision', 4), context_id=ctx['context_id'])
                     raw = read(run['market'])
+                    author = identity(run)
                     payload['market_review'].update(schema=market.REVIEW_SCHEMA, evidence_id=raw['evidence_id'], observed_hour=raw['observed_hour'],
-                        context_id=ctx['context_id'], model=dict(market.CURRENT_HOURLY_MODEL))
+                        context_id=ctx['context_id'], model={'name': author['model'], 'reasoning_effort': author['effort']})
                     intent = {'payload': payload}
                 elif stage == 'main':
                     exact(authored, 'components checks', 'authored main input')

@@ -20,11 +20,8 @@ import uuid
 
 import node_config
 from native_usage import NativeUsageBlocked, require_admission
-import market_observation as market
 
 
-MODEL = market.CURRENT_HOURLY_MODEL['name']
-DEEP_MODEL = 'gpt-6-astra'
 RESPONSE_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
@@ -237,10 +234,7 @@ def launch(config, task, directory):
     schema = directory / 'response-schema.json'
     output = directory / 'last-message.json'
     _write_private(schema, json.dumps(RESPONSE_SCHEMA, sort_keys=True).encode())
-    model = DEEP_MODEL if task['kind'] == 'DEEP' else MODEL
-    command = [str(cli), 'exec', '--json', '-m', model, '-s', 'workspace-write',
-               '-c', 'model_reasoning_effort="max"' if task['kind'] == 'DEEP'
-                     else 'model_reasoning_effort="high"',
+    command = [str(cli), 'exec', '--json', '-s', 'workspace-write',
                '--approve-for-me',
                '-C', str(Path(config['project_dir']).resolve(strict=True)),
                '--skip-git-repo-check', '--output-schema', str(schema),
@@ -588,7 +582,7 @@ def run_once(config, client=None, launcher=launch):
         finished = client.request('task.finish', params,
                                   operation_id='schedule-finish-' + attempt_id)
         return {'action': finished['action'], 'task_id': task['task_id'],
-                'attempt_id': attempt_id, 'recovery': recovered, 'model': DEEP_MODEL if task['kind'] == 'DEEP' else MODEL}
+                'attempt_id': attempt_id, 'recovery': recovered}
 
 
 def main():

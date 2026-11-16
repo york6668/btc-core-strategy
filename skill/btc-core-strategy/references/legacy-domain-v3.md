@@ -16,12 +16,12 @@
 | 派生状态 | `策略状态.md` | 当前决定、证据矩阵、三层状态和组合复核 | 观察与计划不得直接触发状态迁移 |
 | 计划投影 | `当前预期计划.md` | 当前决定的完整评估投影 | 计划不得反向决定状态 |
 | 评估报告 | `$btc-core-strategy` | 面向用户的决定、依据、影响和下一证据 | 报告不得承载内部控制面 |
-| 自动触发 | 唯一项目级 Scheduled | Sol/high 每小时连续评估与记录；必要时请求只读 Sol/max 深评；主任务验证后执行 D/E | 入口阶段不得代替深评写策略；任何阶段均不执行交易、不改变`position_fact` |
+| 自动触发 | 唯一项目级 Scheduled |主执行者每小时连续评估与记录；必要时请求只读研究作者深评；主任务验证后执行 D/E | 入口阶段不得代替深评写策略；任何阶段均不执行交易、不改变`position_fact` |
 
 ## 运行角色与动态推理分配
 
-- 唯一 Scheduled 主任务使用`gpt-5.6-sol / high`按[连续市场观察](market-observation.md)执行多周期形态与累计变化评估，每小时保存有效观察或缺口。入口不得代替完整深评修改正式状态/计划或生成策略报告。
-- 当观察形成复核候选、最终事件完成或出现重大风险候选时，主任务临时创建一个`gpt-5.6-sol / max`只读深评子代理。子代理只读取项目 Owner 文件和公开市场证据，只返回符合本契约的候选决策包与可审计推理摘要；不得写文件、写收据、投递云端或请求真实执行。
+- 唯一 Scheduled 主任务使用主执行者按[连续市场观察](market-observation.md)执行多周期形态与累计变化评估，每小时保存有效观察或缺口。入口不得代替完整深评修改正式状态/计划或生成策略报告。
+- 当观察形成复核候选、最终事件完成或出现重大风险候选时，主任务临时创建一个研究作者只读深评子代理。子代理只读取项目 Owner 文件和公开市场证据，只返回符合本契约的候选决策包与可审计推理摘要；不得写文件、写收据、投递云端或请求真实执行。
 - 主任务始终是唯一写入与投递 Owner：它验证深评结果、计算指纹、执行原子更新、决定报告并完成云端回读。
 - 普通复核候选无法获得有效深评时，保持最近有效锚并静默等待下一小时重试，不允许入口阶段代替。重大风险候选无法深评时，可在存在可验证最近有效锚且全部校验通过的前提下形成保守风险说明；否则失败关闭，不伪造决定。
 - Scheduled 不得读取`本机 Codex 长期记忆目录`或其他 Codex 长期记忆；不得登录私有账户或调用认证账户、订单、交易 API。
@@ -284,7 +284,7 @@ PRE_WRITE 的`runtime`必须且只能包含`run_id,state_id,plan_id,pricing_as_o
 - D：非最终事件的有效深评在绑定基线同域比较中产生实质决定变化。主任务原子更新状态与计划；正常变化使用`CHANGE_NOTICE`。仅当`report_fingerprint`也变化时，`report_required=true`；新重大风险必须进入两类语义指纹，已报告且未变化的重大风险不得重复投递。
 - E：`final_expiry_event`已完成。必须深评并建立下一周期，因而原子更新状态与计划；E只终止旧投影，不改变真实仓位。若新周期的用户可见决定未变，则`report_required=false`，不得机械报告。
 
-revision 2到revision 3的首次激活使用一次性`MIGRATION`，不伪装成 D 或 E。迁移决策包使用`write_transition=MIGRATION`、`decision_class=REVISION_MIGRATION`、`monitor_state=NONE`、`project_patch_required=true`。`validate-bundle`的四个`--previous-*`参数必须 all-or-none：`--previous-state`与`--previous-plan`必须是写前固定 Owner 路径，`--previous-report`与`--previous-report-projection`必须是下文列出的不可变 fixture；MIGRATION 禁止并传`--current-state/--current-plan`，非 MIGRATION 禁止传任一迁移参数。旧报告由`revision2_report_bridge.py`以固定实物和来源见证重投影，生成非空旧完整指纹；`report_changed`唯一使用`migration_compare`在固定历史未知路径双侧屏蔽后的同域比较指纹，不直接比较跨格式哈希，也不将比较指纹覆盖正式报告指纹。来源、屏蔽范围和编码差异审查按[自然表达契约](report-expression.md#迁移比较)。无法完成真实基线校验时迁移失败关闭。迁移必须由 Sol/max 按切换时最新公开证据重新推导，主任务原子生成一组 revision 3 状态与计划；只有用户可见决定实质变化才投递报告。迁移完成后，Scheduled 只使用 A/D/E与完整报告指纹。
+revision 2到revision 3的首次激活使用一次性`MIGRATION`，不伪装成 D 或 E。迁移决策包使用`write_transition=MIGRATION`、`decision_class=REVISION_MIGRATION`、`monitor_state=NONE`、`project_patch_required=true`。`validate-bundle`的四个`--previous-*`参数必须 all-or-none：`--previous-state`与`--previous-plan`必须是写前固定 Owner 路径，`--previous-report`与`--previous-report-projection`必须是下文列出的不可变 fixture；MIGRATION 禁止并传`--current-state/--current-plan`，非 MIGRATION 禁止传任一迁移参数。旧报告由`revision2_report_bridge.py`以固定实物和来源见证重投影，生成非空旧完整指纹；`report_changed`唯一使用`migration_compare`在固定历史未知路径双侧屏蔽后的同域比较指纹，不直接比较跨格式哈希，也不将比较指纹覆盖正式报告指纹。来源、屏蔽范围和编码差异审查按[自然表达契约](report-expression.md#迁移比较)。无法完成真实基线校验时迁移失败关闭。迁移必须由研究作者按切换时最新公开证据重新推导，主任务原子生成一组 revision 3 状态与计划；只有用户可见决定实质变化才投递报告。迁移完成后，Scheduled 只使用 A/D/E与完整报告指纹。
 
 重大风险与 D/E 正交，但 A 不得与新的`MAJOR_RISK`语义并存。重大风险只包括：既定硬失效或安全边界、替代核验后决定性来源仍严重冲突，或会实质改变风险判断的本地已确认事实矛盾。首次确认或语义变化的重大风险必须改变`major_risk_semantics`并形成 D/E；已报告且未变化的风险由报告指纹去重。普通波动、账户实时字段未知、单一来源异常和观察关系切换均不是重大风险。
 
@@ -429,7 +429,7 @@ report_fingerprint: sha256:...
 | MIGRATION patch | 写后固定 Owner 的`--state`与`--plan`；按报告状态添加与 D/E 相同的 report/cloud 实物 | 两个`--current-*`和两个`--previous-*-snapshot`；迁移 previous baseline 由 immutable fixtures 内置加载 |
 
   `--current-state/--current-plan`与两个 snapshot 参数都必须各自成对；两对不能同时存在。只要`project_patch_required=true`，`--state/--plan`必须成对且只能是两条固定 Owner 路径。`report_required=false`禁止`--report`；`report_required=true`必须传`--report`。只有 FINAL 声明`DELIVERED`时才允许且必须传唯一`--cloud-readback`实物。
-- Sol/max 不可用不走`validate-receipt`，只能执行`validate-unavailable-receipt --input RUN/unavailable-receipt.json --current-state $BTC_PROJECT/策略状态.md --current-plan $BTC_PROJECT/当前预期计划.md --observation RUN/unavailable-observation.json`。两个 current 参数必须是固定 revision 3 Owner；observation 必须是实际小时观察并绑定 Owner 中原价值区/锚和本轮报价证据。该分支不接受 bundle、patch、report 或 cloud 参数。
+-研究作者不可用不走`validate-receipt`，只能执行`validate-unavailable-receipt --input RUN/unavailable-receipt.json --current-state $BTC_PROJECT/策略状态.md --current-plan $BTC_PROJECT/当前预期计划.md --observation RUN/unavailable-observation.json`。两个 current 参数必须是固定 revision 3 Owner；observation 必须是实际小时观察并绑定 Owner 中原价值区/锚和本轮报价证据。该分支不接受 bundle、patch、report 或 cloud 参数。
 - `BTC_DEEP_EVAL_UNAVAILABLE_V3`收据必须且只能包含`schema,deep_eval_status,retry_required,receipt_phase,monitor_state,attention_planned,project_patch_required,report_required,local_readback_state,report_validation_state,cloud_delivery_state,report_visible,observation_fingerprint,reused_decision_fingerprint,reused_report_fingerprint`；固定值由工具校验。其`--observation`顶层必须且只能包含`schema,observation,value_zones,anchor_map_semantics,price_quote_evidence,fact_owner_fingerprints,evaluation_as_of`，其中`schema=BTC_UNAVAILABLE_OBSERVATION_V3`。`value_zones`与`anchor_map_semantics`必须在结构化值上等于当前 Owner baseline；`fact_owner_fingerprints`必须逐项等于三份实际本地事实 Owner 且等于 baseline，事实版本变化不能被该分支隐藏；`price_quote_evidence`必须是本轮两个或更多 registry 来源的已验证报价证据。
 - UNAVAILABLE 只允许真实普通复核候选：`event_discriminator_status=DEEP_REVIEW_CANDIDATE`、最终事件仍`PENDING`、来源健康不是`DECISIVE_SOURCE_CONFLICT`，且去除事件判别/最终状态暂态后的规范化 observation 必须相对当前 Owner baseline 实际变化，或者绑定观察库中的真实小时深评候选；任意模型自报状态或哈希不成立。实际证据截止不得晚于 observation.observed_at，时间不得早于 baseline。`evaluation_as_of`必须是带时区 ISO-8601，不得超过本地调度器 UTC 时钟加 5 分钟；`observation.observed_at <= evaluation_as_of`，报价来源和范围仍受`observed_at`截止门约束。`observation_fingerprint`同时绑定规范化 observation 与`evaluation_as_of`。任一门失败都不得写降级收据，也不得合成组合决定或候选阶梯。
 - `cloud_delivery_state=DELIVERED`只接受一个有序可信回读 JSON：`--cloud-readback`必须且只能包含`schema,visible_report_text,assistant_responses`，其中`schema=BTC_CLOUD_READBACK_V3`、`visible_report_text`逐字等于实际`--report`、`assistant_responses`逐项且完整地恰好等于`["已收录"]`。工具将云端正文哈希绑定`cloud_visible_body_fingerprint`，将整个回读对象的规范指纹绑定`cloud_readback_fingerprint`，并要求`report_visible=true`。本地报告、云端正文和回执均不得 trim、折叠空白或转换 CRLF/LF；数组存在第二条响应即代表第二份输出并失败。最终收据通过上述实物绑定后才能整体替换`memory.md`。
@@ -476,7 +476,7 @@ report_fingerprint: sha256:...
 
 四字段来自 `market_observation.record` 返回的实际 binding，不由模型臆造。`observed_hour` 是最后一个完整小时的起点；实际证据 `cutoff` 是小时终点，必须不晚于正式 `observation.observed_at`。
 
-当前 bundle 的绑定通过固定观察库真实读取，并重新校验冻结 evidence、review 和写入时 context。旧 baseline 校验只审查持久化绑定形状，不依赖当前数据库或已推进的 context。生产调用额外要求实际 review 的 `model` 恰为 `{"name":"gpt-5.6-sol","reasoning_effort":"high"}`；Terra/high 与 Sol/medium 只属于隔离对照。
+当前 bundle 的绑定通过固定观察库真实读取，并重新校验冻结 evidence、review 和写入时 context。旧 baseline 校验只审查持久化绑定形状，不依赖当前数据库或已推进的 context。历史 review 的型号及档位保留原值；新的来源记录按真实执行取得，型号不决定生产资格。
 
 绑定只进入 observation 指纹，不直接进入 decision/report 指纹。没有新字段的旧 revision 3 路径不填默认值、不读观察库，旧 Owner 正文、sidecar 与三指纹算法保持原行为。
 
@@ -516,7 +516,7 @@ report_fingerprint: sha256:...
 
 在主要解释、关键不确定性（该 kind 有 uncertainties 时）、下一证据的 `narrative` 中，每个重要 kind 都必须有一个带隐藏 `subject=kind` 的自然中文段落。允许同时有无 subject 的整体说明。主要解释对应段落必须 `verification=EVIDENCE_LINKED`，引用该形态自己的 support/counter 实物。subject 及稳定语义码不进入可见正文；仍输出 renderer 冻结的完整 body，保持八类、逐字校验与去重。
 
-这些校验只证明绑定、覆盖与表达结构，不证明自然语言含义或市场因果。Sol/max 必须实际给出形态变化、反证、预期影响及为何暂不调整规模；主任务仍须审阅。
+这些校验只证明绑定、覆盖与表达结构，不证明自然语言含义或市场因果。研究作者 必须实际给出形态变化、反证、预期影响及为何暂不调整规模；主任务仍须审阅。
 
 ### 成功/不可用分支与基线推进
 
@@ -576,5 +576,5 @@ report_fingerprint: sha256:...
 - 不保存 portfolio、account_facts、持仓或建议金额、完整报告正文、`reasoning_summary` 或原始思维链。Shape 校验不是原正式 bundle 校验的替代品；两个门必须共同满足。
 - `record_completion` 的成功分支必须由适配器传 `accepted_market_assessment=...`；REPORT 另传已验证的 `report_fingerprint`，DEEP 不携带报告指纹。失败分支不得携带接受结论。
 - `read_context.successful_deep` 与 `reported_conclusion` 返回 `accepted_market_assessment`；原入口 review 明确改名 `original_hourly_candidate`。下一小时比较深评/报告时必须读已接受结果，不能拿入口候选代替。两者的 evidence 仍可用于累计新证据比较。
-- 入口判断“承接形成”而 Sol/max 正式结论为 `FALSIFIED` 时，成功深评基线保存 FALSIFIED；小时候选只作为原始审计材料。REPORT 必须与同 review 已成功 DEEP 的接受结果一致，并绑定真实报告指纹。
+- 入口判断“承接形成”而研究作者正式结论为 `FALSIFIED` 时，成功深评基线保存 FALSIFIED；小时候选只作为原始审计材料。REPORT 必须与同 review 已成功 DEEP 的接受结果一致，并绑定真实报告指纹。
 - 对同一 review 的成功重放若接受结论或报告指纹不同则拒绝，完全相同则保留首次完成时间。旧库中没有接受结果的历史成功项明确返回 `LEGACY_COMPLETION_PAYLOAD_MISSING`，不得把原入口候选冒充接受结果。

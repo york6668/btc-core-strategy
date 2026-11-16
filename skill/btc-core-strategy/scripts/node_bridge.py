@@ -17,6 +17,7 @@ PATH_OPTIONS = ('--project', '--root', '--run', '--directory', '--input', '--ans
                 '--template', '--market', '--additional', '--evidence', '--base',
                 '--references', '--collector-observations', '--collector-snapshot',
                 '--retained-source-bindings', '--main-provenance', '--draft', '--review', '--spec', '--prepared-context', '--file', '--read-set', '--receipt', '--runtime-schedule', '--input-review', '--author-source', '--rollout')
+IDENTITY_OPTIONS = ('--agent', '--run-ref')
 
 # These host entries prepare/refresh model-facing material or advance the
 # protected workflow. Standalone report/research paths must not bypass the
@@ -126,24 +127,26 @@ def absolute_paths(argv, directory):
         # Logical symlinks are part of the template identity.
         return os.path.abspath(path if path.is_absolute() else Path(directory) / path)
     index = 0
+    options = PATH_OPTIONS + IDENTITY_OPTIONS
     while index < len(argv):
         item = argv[index]
         flag, equal, value = item.partition('=')
-        if flag.startswith('--') and flag not in PATH_OPTIONS and any(name.startswith(flag) for name in PATH_OPTIONS):
-            raise ValueError('use the full path option spelling: ' + flag)
-        if flag in PATH_OPTIONS:
+        if flag.startswith('--') and flag not in options and any(name.startswith(flag) for name in options):
+            raise ValueError('use the full option spelling: ' + flag)
+        if flag in options:
             if flag in seen:
                 raise ValueError('one value required for ' + flag)
             seen.add(flag)
-        if flag not in PATH_OPTIONS or (flag == '--review' and review_identity):
+        if flag not in options or (flag == '--review' and review_identity):
             result.append(item)
             index += 1
             continue
+        convert = absolute if flag in PATH_OPTIONS else lambda value: value
         if equal:
-            result.extend((flag, absolute(value)))
+            result.extend((flag, convert(value)))
             index += 1
         elif index + 1 < len(argv):
-            result.extend((flag, absolute(argv[index + 1])))
+            result.extend((flag, convert(argv[index + 1])))
             index += 2
         else:
             result.append(item)
@@ -260,28 +263,42 @@ def forward_if_enabled(argv, *, requested_release=None):
                 handle.write(data); handle.flush(); os.fsync(handle.fileno())
         arguments[arguments.index(flag) + 1] = str(target)
         inputs[str(target)] = digest_value
-    if '--main-provenance' in arguments:
+    provenance = None
+    if subcommand(arguments) == 'run-prepare' and '--main-provenance' not in arguments:
+        directory = Path(arguments[arguments.index('--directory') + 1])
+        existing = next((directory / name for name in ('run.json', 'preparation.json')
+                         if (directory / name).is_file()), None)
+        if existing:
+            provenance = json.loads(existing.read_bytes()).get('main_provenance')
+        else:
+            from model_identity import native_runtime_profile
+            agent = arguments[arguments.index('--agent') + 1]
+            observed = native_runtime_profile(config, agent)
+            provenance = {'role': 'MAIN', 'agent_id': agent,
+                          'run_ref': arguments[arguments.index('--run-ref') + 1],
+                          'model': observed['name'], 'effort': observed['reasoning_effort']}
+    if '--main-provenance' in arguments or provenance is not None:
         # Durable MAIN proof has nested immutable source files. Bridge both the
         # manifest and its bound official thread response, then rewrite only
         # the container-visible path in a staged provenance input.
-        original = Path(arguments[arguments.index('--main-provenance') + 1]).resolve()
-        if not original.is_file() or original.is_symlink() or original.stat().st_size > 16384:
-            raise ValueError('MAIN provenance input is missing, linked, or oversized')
-        provenance = json.loads(original.read_bytes())
+        if '--main-provenance' in arguments:
+            original = Path(arguments[arguments.index('--main-provenance') + 1]).resolve()
+            if not original.is_file() or original.is_symlink() or original.stat().st_size > 16384:
+                raise ValueError('MAIN provenance input is missing, linked, or oversized')
+            provenance = json.loads(original.read_bytes())
         from v4.main_flow import validate_preview_provenance
         validate_preview_provenance(provenance)
         if 'execution_evidence' in provenance:
             raise ValueError('preview execution evidence is bound to the local validation code; use its isolated local consumer, not business forwarding')
         evidence = provenance.get('configuration_evidence')
-        if not evidence:
-            raise ValueError('native scheduled MAIN provenance does not require a durable proof bridge')
-        proof_path = Path(evidence['proof_path'])
-        proof_directory = Path(docker.get('native_proof_dir', ''))
-        container_proof_directory = docker.get('container_proof_dir')
-        if not proof_directory.is_absolute() or not container_proof_directory:
-            raise ValueError('durable MAIN proof bridge is not configured for this node')
-        copy_proof(proof_path, proof_directory)
-        evidence['proof_path'] = str(Path(container_proof_directory) / proof_path.name)
+        if evidence:
+            proof_path = Path(evidence['proof_path'])
+            proof_directory = Path(docker.get('native_proof_dir', ''))
+            container_proof_directory = docker.get('container_proof_dir')
+            if not proof_directory.is_absolute() or not container_proof_directory:
+                raise ValueError('durable MAIN proof bridge is not configured for this node')
+            copy_proof(proof_path, proof_directory)
+            evidence['proof_path'] = str(Path(container_proof_directory) / proof_path.name)
         data = json.dumps(provenance, ensure_ascii=False, sort_keys=True).encode('utf-8')
         digest_value = hashlib.sha256(data).hexdigest()
         directory = Path(docker['fact_bridge_dir']).parent / 'native-inputs' / digest_value
@@ -293,7 +310,10 @@ def forward_if_enabled(argv, *, requested_release=None):
             target.chmod(0o600)
         elif target.is_symlink() or target.read_bytes() != data:
             raise ValueError('immutable MAIN provenance bridge collision')
-        arguments[arguments.index('--main-provenance') + 1] = str(target)
+        if '--main-provenance' in arguments:
+            arguments[arguments.index('--main-provenance') + 1] = str(target)
+        else:
+            arguments += ['--main-provenance', str(target)]
         inputs[str(target)] = digest_value
     for flag in ('--rollout',):
         if flag in arguments:

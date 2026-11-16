@@ -135,8 +135,6 @@ def turn(path, manifest, dispatch_id, return_id, method, agent_id=None):
     ci, ct = received['child_index'], received['child_turn']
     ii, call = received['call_index'], received['call']
     args = call['arguments']
-    require(args.get('model') in (None, 'gpt-6-astra') and args.get('thinking') in (None, 'max'),
-            'native author configuration conflicts with research contract')
     require(ct['id'] != original['source_verification']['author_turn_id']
             and ct.get('status') == 'completed' and ct.get('error') is None,
             'native continuation needs a new successfully completed author turn')
@@ -144,11 +142,7 @@ def turn(path, manifest, dispatch_id, return_id, method, agent_id=None):
     require(all(type(v) in (int, float) and math.isfinite(v) for v in (began, completed, parent_began))
             and 0 < parent_began <= began <= completed and began >= original['completed_at'],
             'native continuation clocks missing, reversed or replayed')
-    # This source route currently verifies identity/turn/final, not model
-    # telemetry. Exposed settings cannot be silently downgraded to unknown.
-    require(all(v.get(k) is None for v in (child['thread'], ct)
-                for k in ('model', 'modelName', 'effort', 'reasoningEffort', 'reasoning_effort')),
-            'known native runtime configuration needs an explicit verifier')
+    configuration = d.runtime_configuration(child['thread'], ct)
     fi, final = d._one([(n, i) for n, i in enumerate(ct['items'])
                        if i.get('type') == 'agentMessage' and i.get('phase') == 'final_answer'], 'native actual FINAL')
     require(final.get('id') == return_id and final.get('truncated') is not True,
@@ -172,8 +166,7 @@ def turn(path, manifest, dispatch_id, return_id, method, agent_id=None):
                 'received_pointer': f"/turns/{ci}/items/{received['received_index']}",
                 'original_proof': manifest['original'], 'author_path_source': 'VERIFIED_ORIGINAL_PUBLIC_PROOF',
                 'original_public_trace': {k: original[k] for k in ('dispatch_hash', 'return_hash')},
-                'runtime_model': None, 'runtime_effort': None, 'runtime_fork_turns': None,
-                'runtime_configuration_verified': False, 'inbound_messages_verified': False,
+                **configuration, 'runtime_fork_turns': None, 'inbound_messages_verified': False,
                 'dispatch_pointer': f'/turns/{pi}/items/{ii}', 'return_pointer': f'/turns/{ci}/items/{fi}',
                 'input_verification': 'MAIN_INPUT_REVIEW_WITH_AVAILABLE_SOURCE_READS'}}
 

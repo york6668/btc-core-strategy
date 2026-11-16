@@ -31,9 +31,7 @@ CONTEXT_SCHEMA = 'BTC_MARKET_CONTEXT_V1'
 PATTERN_KINDS = {'ABSORPTION', 'POSSIBLE_DISTRIBUTION', 'ACTIVE_SELLING', 'DELEVERAGING', 'LEVERAGED_RISE_OR_SHORT_COVER'}
 STAGES = {'UNRESOLVED', 'FORMING', 'ACCUMULATING', 'STRENGTHENING', 'WEAKENING', 'REVERSED', 'FALSIFIED'}
 CONFIDENCES = {'UNRESOLVED', 'LOW', 'MEDIUM', 'HIGH'}
-CURRENT_HOURLY_MODEL = {'name': 'gpt-6.1-sol', 'reasoning_effort': 'high'}
-# Historical bindings remain readable, including the original isolated comparisons.
-MODELS = {('gpt-6.1-sol', 'high'), ('gpt-6-sol', 'high'), ('gpt-5.6-sol', 'high'), ('gpt-5.6-sol', 'medium'), ('gpt-5.6-terra', 'high')}
+from model_identity import runtime_profile
 ISSUES = {'OUTSIDE_REQUESTED_WINDOW', 'UNCLOSED_OR_FUTURE', 'INVALID_SAMPLE', 'DUPLICATE_SAMPLE', 'CONFLICTING_DUPLICATE', 'SOURCE_UNAVAILABLE'}
 LIMITATIONS = ['Market patterns require model review; measurements do not establish intent or participant identity.', 'Binance spot, perpetuals, OI and funding share a source group.', 'Coinbase/Kraken price and volume do not independently confirm Binance taker flow.', 'USD and USDT quotes are separate units; no FX equivalence is assumed.', 'Missing measurements remain null; sums cover observed rows only.', 'Funding settlement schedule is not assumed; historical events are sparse, not hourly bars.']
 SOURCE_INFO = {
@@ -644,8 +642,7 @@ def validate_review(evidence, review, context, *, model_market=False):
     if review['context_id'] != context['context_id']:
         raise ObservationError('review does not bind the current three-baseline context')
     exact_keys(review['model'], {'name', 'reasoning_effort'}, 'model')
-    if (review['model']['name'], review['model']['reasoning_effort']) not in MODELS:
-        raise ObservationError('unsupported hourly model route')
+    runtime_profile(review['model']['name'], review['model']['reasoning_effort'])
     _text(review['assessment_summary'], 'assessment summary', 4000)
     if model_market:
         patterns = review['patterns']
@@ -823,15 +820,11 @@ def record(evidence, review, db_path=DEFAULT_DB):
         if latest and latest['binding']['evidence_id'] == evidence['evidence_id']:
             if canonical(review) != canonical(latest['review']):
                 validate_review(evidence, review, current)
-                if review['model'] != CURRENT_HOURLY_MODEL:
-                    raise ObservationError('new hourly review requires '+CURRENT_HOURLY_MODEL['name']+'/high')
             # Same complete-hour market input is one canonical review even if a
             # model's prose varies on a rerun. Never manufacture a new revision.
             _store_retrieval(conn, evidence)
             return {'status': 'UNCHANGED', 'binding': latest['binding']}
         validation = validate_review(evidence, review, current)
-        if review['model'] != CURRENT_HOURLY_MODEL:
-            raise ObservationError('new hourly review requires '+CURRENT_HOURLY_MODEL['name']+'/high')
         if latest and timestamp(review['observed_hour']) < timestamp(latest['binding']['observed_hour']):
             raise ObservationError('late older-hour review cannot overwrite latest-hour baseline')
         review_id = validation['review_id']

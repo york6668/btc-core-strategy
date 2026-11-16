@@ -270,7 +270,7 @@ def claim(db, *, attempt_id):
     selected = min(current, key=lambda row: (row['due_ms'], PRIORITY[row['kind']], row['task_id']))
     result = tasks.start(db, task_id=selected['task_id'], attempt_id=attempt_id,
         release_id=release_id,
-        **({'claim_id': attempt_id + '-deep', 'model': 'gpt-6-astra'}
+        **({'claim_id': attempt_id + '-deep'}
            if selected['kind'] == 'DEEP' else {}))
     state = _state(db)
     state['last_claim_ms'] = millis()

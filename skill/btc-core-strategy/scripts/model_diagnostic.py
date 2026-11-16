@@ -156,7 +156,7 @@ def _authority(fault_id, original_claim_id, action=ACTION):
     require(claim.get('state') == 'FAILED' and claim.get('phase') == phase
             and claim.get('failure_kind') == kind, 'original failed phase/kind is not diagnostic eligible')
     if action == PORTFOLIO_ACTION:
-        require(model_daily.astra_max(claim.get('model')), 'original portfolio model admission required')
+        require(model_daily.valid_selection(claim.get('model')), 'original portfolio model admission required')
     require(fault.get('state') == 'OPEN' and fault.get('kind') == kind
             and fault.get('fault_digest') == claim.get('input_digest')
             and fault.get('scope') == claim.get('scope'), 'original open fault/input/scope mismatch')

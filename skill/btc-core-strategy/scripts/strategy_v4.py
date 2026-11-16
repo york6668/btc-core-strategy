@@ -33,7 +33,7 @@ def main(argv=None):
     p.add_argument('--collector-snapshot', help='validated original collector.json, distinct from a reader export array')
     p.add_argument('--resume-preparation', action='store_true', help='reuse a partial preparation and its frozen inputs without recollection')
     p.add_argument('--retained-source-bindings', help='explicit original evidence_id/source_hash choices for legacy retrieval collisions')
-    p.add_argument('--deep', action='store_true', help='force refresh of daily/weekly raw evidence; does not run Astra')
+    p.add_argument('--deep', action='store_true', help='force refresh of daily/weekly raw evidence; does not run research author')
     p = sub.add_parser('run-material')
     p.add_argument('--run', required=True)
     p.add_argument('--stage', choices=('report','report-body','main'), default='report')

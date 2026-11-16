@@ -28,9 +28,9 @@ recommendations恰好包含upper_short、lower_spot、portfolio。每侧字段�
 | allocation_percent | 空单为{}；现货侧为经审阅的动态组合，标识有效、非空、比例均为正且合计100，以当前已确认版本或明确待采纳建议为准；不固定成员名单 |
 | rationale / impact / refs | 依据及无建议理由、有效性分析、组合影响、冻结公开原始引用 |
 
-`validity.from/until` 约束建议适用窗口。revision 7及以前按证据截止校验，revision 8起按 `max(temporal_scope.knowledge_cutoff, investment_decision.decided_at)` 校验：from不得晚于该时点，可执行建议在该时点不得已到期。决定真实形成晚于证据截止时，不应为旧接口倒填from；也不能把预计发布或其他未来时刻冒充形成时间。正式建议只从真实版本发布后生效，嗅探按 `max(validity.from, recommendations_issued_at)` 起算，不回填此前策略或成交。证据截止、决定形成和正式采纳各自保留原时间，复核期限仍来自实际分析。候选提交 Astra 前复用 recommendations.validate 校验该时间关系及数字/结构，原始引用另在受控证据中解析。
+`validity.from/until` 约束建议适用窗口。revision 7及以前按证据截止校验，revision 8起按 `max(temporal_scope.knowledge_cutoff, investment_decision.decided_at)` 校验：from不得晚于该时点，可执行建议在该时点不得已到期。决定真实形成晚于证据截止时，不应为旧接口倒填from；也不能把预计发布或其他未来时刻冒充形成时间。正式建议只从真实版本发布后生效，嗅探按 `max(validity.from, recommendations_issued_at)` 起算，不回填此前策略或成交。证据截止、决定形成和正式采纳各自保留原时间，复核期限仍来自实际分析。候选提交研究作者前复用 recommendations.validate 校验该时间关系及数字/结构，原始引用另在受控证据中解析。
 
-空单amount_u是建议名义额，capital_u是这份建议的假设资金占用，二者不得混为同一个U口径；无法支持具体预留时允许null，不阻断明确的名义金额建议。现货amount_u=capital_u为该档投入。档位缺省继承侧级完整组合；显式覆盖只能与该组合数值一致，或为独立BTC的{"BTC":"100"}，不接受未说明的残缺篮子。即使组合以后仅含BTC，继承组合与显式独立BTC也保留不同身份，不因分配数值相同而合并。空单不接受覆盖字段。BTC价位只作相应加密现货参考，美股及黄金使用自身正文、business_meaning与组合叙述，不塞入BTC价位字段。正式建议仍由Astra/max形成并审阅，Sol/high核验写入；工具不由目标缺口自动计算建议。
+空单amount_u是建议名义额，capital_u是这份建议的假设资金占用，二者不得混为同一个U口径；无法支持具体预留时允许null，不阻断明确的名义金额建议。现货amount_u=capital_u为该档投入。档位缺省继承侧级完整组合；显式覆盖只能与该组合数值一致，或为独立BTC的{"BTC":"100"}，不接受未说明的残缺篮子。即使组合以后仅含BTC，继承组合与显式独立BTC也保留不同身份，不因分配数值相同而合并。空单不接受覆盖字段。BTC价位只作相应加密现货参考，美股及黄金使用自身正文、business_meaning与组合叙述，不塞入BTC价位字段。正式建议仍由研究作者形成并审阅，主执行者核验写入；工具不由目标缺口自动计算建议。
 
 三类收益与新配置比例统一由核心研判形成，美股定投/减仓/回补及配置建议使用recommendations.portfolio.narrative与conclusion.business_meaning/正文承载，并绑定自身证据、条件和期限。BTC两侧资金路径只覆盖这些档位，不能冒充全资产占用核算；内部完整分析须核对美股投入、篮子、独立BTC、对冲保证金/缓冲和储备的共同资金安排，正文按[研判与报告的职责边界](mobile-report.md#研判与报告的职责边界)呈现综合安排及必要依据，不要求逐模块展开。目标比例、当期建议占用与已确认事实分别表达。
 
@@ -42,11 +42,11 @@ watch_targets由当前DecisionSnapshot派生，只保存decision_id、side及rec
 
 ## 持续维护与吸收
 
-Astra/max 深评拥有两侧方案与组合推导；Sol/high 按已采纳深评持续验证。到价进入条件核验，金额依据、市场机制或事实影响实质变化返回完整周期深评。建议有效期到达只表示需要核验适用性；重新定价、改变金额或延长期限假设必须由深评批准。开放发现不受旧档位或五类形态限制。
+研究作者 深评拥有两侧方案与组合推导；主执行者 按已采纳深评持续验证。到价进入条件核验，金额依据、市场机制或事实影响实质变化返回完整周期深评。建议有效期到达只表示需要核验适用性；重新定价、改变金额或延长期限假设必须由深评批准。开放发现不受旧档位或五类形态限制。
 
 主评估revision 3沿用上述recommendations字段，增加当前conclusion、section_provenance与research_absorptions；具体接口见[v4契约](v4-contract.md)。section_provenance说明本轮评估或复用的真实原版本、证据、时间和适用理由，不能将原判断伪装成最新全量分析。所有引用仍必须落在当前精简包内，实际需要的历史锚保留原source。
 
-research_absorptions将专项补充纳入当前结论。Sol 明确采纳/部分采纳/否定；涉及定价、金额或风险的完整映射须由 Astra 复核，补齐相关五模块与四种资金路径后才能 ADOPT 为周期基线。事实变化后，旧专项结果须重新说明适用性；不因全局时钟或另一个问题研究完成清除当前问题的积累。
+research_absorptions将专项补充纳入当前结论。主执行者 明确采纳/部分采纳/否定；涉及定价、金额或风险的完整映射须由研究作者复核，补齐相关五模块与四种资金路径后才能 ADOPT 为周期基线。事实变化后，旧专项结果须重新说明适用性；不因全局时钟或另一个问题研究完成清除当前问题的积累。
 
 报价、记录时间和同义改写不自动报告。重要解释、条件、有效期、金额口径、保护目的和风险的稳定含义进入报告比较；当前conclusion.business_meaning由主任务维护已审阅含义，不能只换标签或利用旧标签隐藏新判断。可读narrative补充可发布为当前结论而不报告。报告基线来自真实验收，详见[简报表达](report-expression.md)。
 

@@ -68,8 +68,8 @@ def load_hourly_review(binding: Any) -> Mapping[str, Any]:
     if not isinstance(result, Mapping):
         raise ValueError("hourly review loader returned no bound evidence")
     model = result.get("review", {}).get("model", {})
-    if model.get("name") not in {"gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"} or model.get("reasoning_effort") != "high":
-        raise ValueError("bound production hourly review requires Sol/high; historical model provenance is preserved")
+    from model_identity import runtime_profile
+    runtime_profile(model.get("name"), model.get("reasoning_effort"))
     return result
 
 

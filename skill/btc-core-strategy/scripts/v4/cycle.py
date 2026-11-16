@@ -22,13 +22,13 @@ COVERAGE = ('cycle_structure', 'value_pricing', 'downside_paths',
 REPORT_CHECKS = {'cycle_basis', 'downside_and_levels'}
 SUMMARY_CHECKS = {'deep_report_summary'}
 CORE_REPORT_REVIEW = (
-    '先按 method_references 阅读方法，仅依据公开证据完成市场结论与价格风险，再由当前阶段 Astra 读取本地事实完成个人应对，保留各阶段真实来源。'
+    '先按 method_references 阅读方法，仅依据公开证据完成市场结论与价格风险，再由当前阶段研究作者读取本地事实完成个人应对，保留各阶段真实来源。'
     'report_boundary 统一研判与报告职责：先在内部完成因子取舍及反证影响判断，正文明确呈现综合方向、周期、依据和安排，不把冲突交给用户裁决。'
     '报告已采用的来源按发布节奏核验是否有新原件；包内缺件不等于客观不可得，可取得先补入同一研究，失败说明实际尝试及影响，不以旧行情缺口充当最终结论。'
     '用户希望报告覆盖BTC及拟核对的币安QQQ、VOO产品；SPX/NDX继续作为底层研究。report_subjects的BINANCE目标场所不等于产品身份已核验，具体产品断言与报价须分别有公开原证及正文绑定；身份未核验时以SPX/NDX底层市场判断说明盈利影响，不把它写成已核验币安产品的判断，缺产品价不抹去市场结论。方向、周期、结构变化、依据和确认程度自然表达且对象明确；未知不写中性。'
     '区分小时承接、波段形态与中期趋势，历史结构锚未迁移不等于风险或形态未变。市场依据不得包含个人持仓、个人成本、偏好或操作；公共持有人成本须核验群体、口径和日期。'
     '个人应对以当前已确认美股组合和加密现货组合为单位；成分权重可调整，独立BTC/黄金是额外机会，保护另评，成员研究不替代核心市场结论。'
-    'historical_anchor 仅保留带日期的历史版本出处；历史市场数据从公开原始来源读取；相同证据与期限下持仓差异只改变个人应对。Sol 映射不得改写市场论点。'
+    'historical_anchor 仅保留带日期的历史版本出处；历史市场数据从公开原始来源读取；相同证据与期限下持仓差异只改变个人应对。主执行者映射不得改写市场论点。'
 )
 APPLICABILITY_REVIEW = (
     '用实际原始引用填写 applicability_review；未触发研究不等于 VALID，缺证保留具体限制。'
@@ -66,7 +66,7 @@ REPORT_SCOPE_REVIEW = (
     '不得以同版报告ID、上一小时分析或 maintenance 代替已展示依据。风险较上一小时减弱也不证明用户已收到该风险。'
     'MARKET_UPDATE和URGENT_RISK是已完成含义判断后的交付模式，不是突破、费率或风险字段变化的通知开关。先对照原主论点及最后真实正文，说明机制、现价参与价值或实际组合安全发生了什么实质改变；普通噪音内部持续分析。真正独立反证和重大即时危险不等评级改变，新正式建议仍须原研究审阅采纳。'
     '先理解 report_boundary，REPORT 时展开 when_report，用 AUTHORED_REPORT_V1.body 表达已完成的综合判断；不拆lead/blocks、不设固定篇幅或栏目、不自动追加建议。'
-    '汇报不产生第二套判断：Sol、其他模型、程序或云端都不能在整理时重排因子、补充因果解释或改变已形成的结论；需要改变判断时返回对应研判。'
+    '汇报不产生第二套判断：主执行者、其他模型、程序或云端都不能在整理时重排因子、补充因果解释或改变已形成的结论；需要改变判断时返回对应研判。'
     'cycle_basis与deep_report_summary在冻结前对照研究、当前判断和最终正文核验周期状态、机制、价值及风险是否一致；具体指出正文如何分别表达当前方向与日期用途，不能只以日期未变证明语义一致。周期证据不足保留具体限制并返回研究，不能将小时判断改标为数周。完整分析保留内部，必要即时风险仍及时反馈。'
     '市场结论、价格风险和分歧区只绑定纯市场字段与当前观察；个人建议价、生效或撤回状态放在个人应对，文字概括同样遵守此边界。'
     '方向与适用周期明确，依据解释主导因素及重要反证怎样支持当前判断；每段及每句话都应帮助理解结论、关键依据或行动，不为数字绑定照搬 horizon.change、basis 或 narrative。'
@@ -203,7 +203,7 @@ def content(assessment):
 
 
 def candidate(assessment):
-    """The final mapped sections Astra must actually inspect before approval."""
+    """The final mapped sections research author must actually inspect before approval."""
     return {'assessment': {k: deepcopy(assessment[k]) for k in
             (*SECTIONS, 'fact_version', 'temporal_scope')}}
 
@@ -214,7 +214,7 @@ def validate_candidate(value, resolve=None, lifecycle_root=None, project=None, f
     from . import assessment, recommendations
     from .closed_loop import public_hash
     revision = market_state.revision(value['assessment'])
-    # Apply the existing recommendation contract before spending an Astra
+    # Apply the existing recommendation contract before spending an research author
     # review on an unpublishable mapping. Raw refs are resolved separately by
     # the evidence-bound preflight and final assessment validation.
     if revision < 9 or resolve is not None:
@@ -238,7 +238,7 @@ def validate_candidate(value, resolve=None, lifecycle_root=None, project=None, f
 
 
 def review_output(req, disclosed, analysis, supplied):
-    """Bind the actual final Astra response, not a MAIN-authored approval flag."""
+    """Bind the actual final research author response, not a MAIN-authored approval flag."""
     if req['issue_key'] != ISSUE_KEY:
         return None
     validate_candidate(disclosed['candidate'])
@@ -247,7 +247,7 @@ def review_output(req, disclosed, analysis, supplied):
           + ''.join(' ' + key for key in ('report_narrative', 'report_hash') if key in value), 'actual cycle review')
     require(not ('report_narrative' in value and 'report_hash' in value), 'cycle review must choose report text or hash')
     require(value['candidate_hash'] == disclosed['candidate_hash'], 'cycle approval references a different candidate')
-    require(type(value['approved']) is bool, 'Astra cycle approval must be explicit')
+    require(type(value['approved']) is bool, 'research author cycle approval must be explicit')
     exact(value['coverage'], ' '.join(COVERAGE), 'cycle research coverage')
     for key in COVERAGE:
         text(value['coverage'][key], 'cycle coverage ' + key)
@@ -255,8 +255,8 @@ def review_output(req, disclosed, analysis, supplied):
         require(isinstance(value[key], list), 'cycle review ' + key + ' must be a list')
         for item in value[key]:
             text(item, 'cycle review ' + key)
-        require(value[key] == supplied[key], 'recorded cycle findings differ from actual Astra output')
-    require(supplied['coverage'] == [value['coverage'][k] for k in COVERAGE], 'recorded cycle coverage differs from actual Astra output')
+        require(value[key] == supplied[key], 'recorded cycle findings differ from actual research author output')
+    require(supplied['coverage'] == [value['coverage'][k] for k in COVERAGE], 'recorded cycle coverage differs from actual research author output')
     require(value['reopen_conditions'], 'cycle baseline needs evidence or event invalidators')
     final_evidence = disclosed.get('evidence_context', req)
     require(instant(value['recheck_at']) > instant(final_evidence['knowledge_cutoff']), 'cycle review deadline must follow its evidence cutoff')
@@ -264,12 +264,12 @@ def review_output(req, disclosed, analysis, supplied):
     if 'report_hash' in value:
         require(value['report_hash'] == digest(narrative), 'cycle report hash differs from reviewed candidate')
         # The raw final response stays in research.analysis. Only restore the
-        # exact frozen candidate that the real Astra response explicitly binds.
+        # exact frozen candidate that the real research author response explicitly binds.
         value['report_narrative'] = narrative
     elif 'report_narrative' in value:
-        text(value['report_narrative'], 'Astra authored full cycle report')
+        text(value['report_narrative'], 'research author authored full cycle report')
         require(value['report_narrative'].rstrip('\n') == narrative.rstrip('\n'),
-                'published report must match the actual Astra authored report')
+                'published report must match the actual research author authored report')
         # Keep the actual response in research.analysis; trailing LF is a text
         # envelope difference, not a new report. Persist the approved candidate
         # spelling so its publication and downstream report hash stay stable.
@@ -288,7 +288,7 @@ def adopted(root, assessment):
         proof = saved.get('cycle_review')
         if not proof:
             continue
-        require(proof['approved'], 'cycle adoption requires an approved actual Astra mapping')
+        require(proof['approved'], 'cycle adoption requires an approved actual research author mapping')
         req = research._load(root, 'requests', saved['request_id'])
         require(req['issue_key'] == ISSUE_KEY and set(SCOPE) <= set(req['scope']), 'incomplete cycle research scope')
         require(set(SCOPE) <= set(absorption['assessment_refs']), 'cycle adoption must cover the complete mapped assessment')
@@ -449,13 +449,13 @@ def validate_publication(root, prior, draft):
             return
     else:
         saved, disclosed = adopted(root, draft)
-    require(saved is not None, 'cycle changes require an adopted actual Astra/max cycle review')
+    require(saved is not None, 'cycle changes require an adopted actual research author cycle review')
     if report_required(root):
         require(saved['cycle_review'].get('report_narrative') == draft['conclusion']['narrative'],
-                'new cycle publication requires the actual Astra authored full report')
-    require(saved['fact_version'] == draft['fact_version'], 'cycle repricing requires Astra review of the current confirmed facts')
+                'new cycle publication requires the actual research author authored full report')
+    require(saved['fact_version'] == draft['fact_version'], 'cycle repricing requires research author review of the current confirmed facts')
     require(content(draft) == content(dict(disclosed['candidate']['assessment'], revision=market_state.revision(disclosed['candidate']['assessment']))),
-            'published cycle differs from the candidate actually approved by Astra')
+            'published cycle differs from the candidate actually approved by research author')
     if draft.get('revision', 1) >= 6:
         from .closed_loop import allocation, risk
         personal = risk(draft) if draft.get('revision', 1) >= 7 else allocation(draft)
@@ -491,7 +491,7 @@ def validate_report_basis(spec, ctx):
     require(len(binding['verification'].strip()) >= 12, 'report verification requires substantive reasoning')
     if binding['mode'] == 'CYCLE_SUMMARY':
         require(basis['status'] == 'CURRENT' and basis.get('report_narrative'),
-                'cycle summary needs a current Astra authored report')
+                'cycle summary needs a current research author authored report')
     elif binding['mode'] == 'LIMITED_FEEDBACK':
         # Public research and its personal application have separate lifecycles.
         # This context is produced by the normal report entry, not by a report
@@ -621,7 +621,7 @@ def request_template(ctx):
 
 
 def deadline_reopen(root, assessment, change):
-    """Timers require Sol verification, never manufacture discriminating evidence."""
+    """Timers require MAIN verification, never manufacture discriminating evidence."""
     if change['kind'] != 'REOPEN_CONDITION_MET':
         return None
     basis = baseline(root, assessment)

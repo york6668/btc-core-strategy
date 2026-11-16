@@ -49,7 +49,7 @@ PARAMETERS = {
     'model.deep.status': obj({}),
     'model.defect.check': obj({'scope':TEXT}, ['scope']),
     'model.deep.claim': obj({'claim_id':TEXT,'issue_id':TEXT,'scope':TEXT,'phase':TEXT,'input_digest':TEXT,'model':TEXT},
-                             ['claim_id','issue_id','scope','phase','input_digest','model']),
+                             ['claim_id','issue_id','scope','phase','input_digest']),
     'model.deep.finish': obj({'claim_id':TEXT,'outcome':{'type':'string','enum':['COMPLETE','FAILED','UNKNOWN','CANCELED']},
         'result_ref':TEXT,'failure_kind':TEXT,'failure_ref':TEXT},['claim_id','outcome']),
     'model.deep.reconcile': obj({'claim_id':TEXT,'outcome':{'type':'string','enum':['COMPLETE','FAILED','CANCELED']},
