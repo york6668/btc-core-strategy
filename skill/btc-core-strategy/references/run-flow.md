@@ -1,5 +1,10 @@
 # 节点增量入口（旧小时任务兼容）
 
+当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
+
+
+`report` 必要性评估与 `report-body` 正文写作分开消费。正文入口直接提供已形成市场判断、个人所选项及相关备选的实际比较、关键限制和结果绑定；不要求正文作者先读完整未报历史、旧问题流水或维护评估。完整上下文、原结果、指标及正式模板保留在该入口的按需来源中，需要核验具体主张时再沿精确来源读取。正文视图不改变正式模板绑定或数据Owner，也不以压缩替代缺失的方案比较。
+
 目标任务准入和切换条件见[节点任务职责与切换验收](node-tasks.md)。本文件的小时步骤是现有正式运行及冻结旧轮的兼容方法；新节点仅在有证据支持的执行任务下调用所需阶段。`main_eligible`、`research_eligible` 与 `deep_eligible` 的旧布尔投影说明业务待办，不能单独授权新模型启动。节点 `task.assess`、开放缺陷、每日深评名额和原阶段完成记录共同决定是否可运行；同一未完成问题不因新小时重开。
 
 完整核心报告以币安QQQ、VOO和BTC为用户报告对象，SPX/NDX沿用为底层研究及历史引用，产品身份与价格见[币安产品口径](equity-products.md)，三类收益用于解释机制；美股与加密组合是持续评估单位，成分和权重可调整，独立BTC／黄金机会及保护分别表达。正式重评先检查本次需要的公开证据是否仍足以支持各市场与期限；可取得但尚未补取、旧行情和空壳页面不能直接当作不可判断的最终依据，按具体缺口用同一研究补证。慢数据按发布节奏和实际适用性复用，不全量重复采集。每轮先按纯市场基线及后续有效观察核验市场依据、冲突、周期共振/反转与分歧区，再由仓位阶段核验完整正文中的个人条件和本金保护；美股公开原文沿用freeze-evidence与--additional，不用BTC两侧检查替代。factor_checks/research_findings承载分资产发现，maintenance核对完整报告条件及上一反馈承诺；手机未展示条件也须维护。新比例和独立BTC档位由实际深评形成并审阅映射。
@@ -30,9 +35,13 @@ Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务�
 
 部分 `run-prepare` 失败不重新采集：有 `preparation.json` 时显式加 `--resume-preparation`，身份、固定输入与原状态仍一致才复用 market.json、collector.json 及完整证据包。原状态已变化或旧目录没有该记录时，用新目录和 `--market <原market.json> --collector-snapshot <原collector.json>` 接续；`--collector-observations` 只接受 reader 导出数组。损坏或未完成的证据包保持原样，不删除、不覆盖。
 
+隔离业务验证需实际调用 Astra 时，仍先向原深评 authority 取得该 issue/phase/input 的真实 claim，完成后绑定真实来源证明；既有 native usage 准入不能代替这张票据，不倒补已发生工作。节点可显式配置 docker_service.guard_enabled=true、enabled=false，只连接原服务的 model.deep.status/claim/finish 与 model.defect.check；业务仍在隔离项目执行，不能转发 core.execute 或把该选项当本地票据回退。原服务不可用或拒绝时保留对应阻断，不取消保护。
+
 历史 `retained evidence source collision` 返回原包 evidence_id、完整来源 source_hash、raw_hash 与获知时间。仅确认是相同市场数据的不同获取记录后，显式传 `--retained-source-bindings <JSON文件>`，内容为 `{"冲突source_id":{"evidence_id":"原包ID","source_hash":"原来源对象摘要"}}`。选择保留该原绑定，其他获取记录以独立来源身份进入新包，原字节与时间均保留；真实行情、来源契约变化和错误引用继续拒绝。没有明确选择不自动重绑，旧包、研究、运行及 UNKNOWN 投递不变。
 
 披露前使用 `research-reveal ... --check-only` 核验实际候选及原始引用，再向同一 Astra 披露。正式写入前可用 `run-advance --stage main ... --check-only`；现有 `validate` 与提交共用校验，集中返回可独立确定的错误。预检不写策略或候选，也不证明研究批准；真实提交在锁内重新检查当前状态。参数、绑定和交付错误分别从原阶段修复，不因机械失败重新取证或重开已完成研究。
+
+相对当前已采纳版本的事实指纹变化时，`assemble-main` 要求显式重评 domain、robustness、portfolio_analysis、recommendations 与 conclusion，防止新个人决定与静默继承的旧风险或报告镜像并存；仍适用的公开 outlook 与 factor_assessment 可精确复用。显式填写仅证明没有静默继承，模型仍须核对各个人消费者与事实、所选方案和实施缺口的实际一致性。
 
 按阶段展开方法：各阶段先理解 method_references.report_boundary 指向的职责边界，同一会话已读且未变时复用；观察读 market-observation 与价值因子指引，独立研究读 core-strategy 和 recommendation-maintenance，映射读 v4 周期契约。报告判断读 report-care，决定 REPORT 后再展开 mobile-report 的正文接口与交付规则，实际交付时读 market-reporting。各阶段的 method_references 保留这些入口；read_set 为模型提供正文、阶段材料及精确复用引用，路径可达不代表已阅读或通过实质审阅。
 
@@ -41,6 +50,7 @@ Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务�
 下面所有子命令之前必须带全局参数 `--project $BTC_PROJECT --root $BTC_PROJECT/.strategy/v4`；隔离验证使用对应临时项目路径。
 
 1. `strategy_v4.py run-prepare --run-ref <真实运行引用> --agent <真实主任务ID> --directory <本轮新目录>`。一次完成恢复盘点、pin、匿名公开取数、精简证据根和模板；优先读返回 read_set.observe 的全部 required 分段，按 on_demand 的 reference_index 展开实际原始引用。较大文本已分段，按输出预算分批读，不能将截断当作读完。旧运行无 read_set 时读 context、market_summary、reference_index、observation_template、vocabulary。revision 5 市场阶段不读取账户事实或完整混合旧正文；市场冻结后，首次个人适配或事实变化再完整读三份本地事实。报告阶段材料的 report_care 保留上一报告全部条件和承诺；revision 5 市场阶段只读纯市场基线，冻结后再读取完整报告与个人条件，即使无新完整小时也完成必要复核。已有发送中或未知交付走原恢复入口；pending_work 只含公开接续标识，交付正文留到 report 阶段。 reference-index.json 的顶层是来源数组，每项用 id 标识来源、refs 给出实际引用；input_role 根据本轮冻结绑定区分 CURRENT_MARKET、CURRENT_COLLECTOR 与 SUPPORTING_EVIDENCE，不改变来源信任或历史引用有效性，数组顺序不代表当前批次；read-set 按自身键和 required 路径读取，不预设 sources 或 sections 容器。
+   Durable MAIN 作者可将由官方线程读取响应与同一真实线程内成功的正常 `btc-core enter --run-id` 记录组成的来源证明，通过 `--main-provenance <JSON文件>` 绑定到本次运行。证明里的 `agent_id` 和 `run_ref` 必须与 `--agent`、`--run-ref` 一致；正式验证核对线程身份、turn、独立成功入口及已暴露模型配置。Docker 节点还须配置 native/container proof 目录，入口会桥接不可变来源并改写容器路径。若无该证明，定时运行沿用原定时模型身份；不得仅因新线程可读取旧决策，就复用旧决策作为新作者结果。
    revision 5 及以后同目录的 `recovery.json` 也只提供当前身份、报告待办标识、数量和后继阶段，不包含完整 `report_care`、个人报告理由或展示正文；完整恢复资料由市场冻结后的报告阶段取得。旧冻结运行保持原文件，不能把旧混合恢复文件当作纯公开材料。
    `run-prepare` 默认只读本地 BTC、QQQ、VOO 最新辅助导出；`--collector-observations <文件>` 可固定输入并离线回放。三标的各自缺口、时间与限制进入 `collector_observations`，`raw_ref` 指向冻结完整数据；采集值必须独立核验，不能直接支持已核验事实。详见[辅助采集消费](collector-evidence.md)。
 2. revision 5 及以后先按 [market-state](market-state.md) 填 market_template，执行 `run-advance --run <run.json> --stage market --template <market_template> --answers <判断JSON> --check-only`。程序导出实际合成的 market_candidate 及 read_set.market_review，不冻结市场结果或提供个人材料。执行返回的 `review_read`，用 `run-read --run <run.json> --read-set <read_set.market_review> --cursor 0` 输出真实片段，并跟随 `next_cursor` 到 `complete`。该只读入口不修改候选、阶段或历史；默认每页至多12000字符，工具使用推荐的16000输出token预算。若输出截断，在原cursor减小 `--max-characters` 重读，不能跳过余段。精简视图保留全部内容与对象层级，pointer-only `$read_ref` 指向同一 material 中的精确原值，重复文本及引用不重复展开；它不承接原判断的正确性。完整理解 required 后，核验主证据链、实际消费边界内的分句范围、重要反证、推断限制与条件。同一对象内唯一且清楚的范围可共享；单独摘出 changes_since_hour/deep 或其他句子时，保留或明确承接其必要限定，不能让多所价格主语覆盖单所成交。文件解析、输出 complete 和预检通过均不证明模型已审阅。需修正则更新本轮判断、重新预检并回读新候选。完成内容审阅后另行执行 `run-advance --run <run.json> --stage market --input <market_candidate>`，冻结同一候选；新冻结拒绝直接提交填写稿或重新合成的判断，只有已冻结结果可沿旧输入恢复、复核事实，且不改历史字节。跨指令版本恢复核验旧文件自身的payload/hash，以及原运行公开材料或与冻结对象完全一致的既有候选产物，保留原market_context_id；新候选仍按当前公开上下文绑定，不能借恢复改写旧结果。候选有改动须重新预检并回读审阅。不能在同一次调用中写判断并直接冻结，候选存在和预检通过均不证明语义已审阅。随后读取返回的 portfolio_context，只填写仓位检查和主评估必要性。旧版直接填写原观察稿。再 `run-advance --run <run.json> --stage observe --template <observation_template> --answers <判断JSON>`；程序承接原模板确定字段。旧 --input 完整填写稿仍可使用。revision 5 的旧五类 patterns 仅兼容观察，可按本次分析选择子集或填写空数组，不作必查清单或证据充分性门槛，extra_findings、research_findings、factor_checks 承载开放发现。程序绑定身份、证据和上下文，返回真实观察收据、gate、主评估与报告模板。每轮同时按 factor_context 指引核验旧依据并主动查找未覆盖或过时因素；精简上下文保留指引路径、公开来源入口、真实 section_provenance 与原评估时间，行情包不是全部研究证据。重大遗漏补证后用 research_findings 恢复原 BTC_CYCLE，不等待价格或金额变化；不由程序填“维持”。
@@ -56,7 +66,7 @@ Docker 桥接前将路径按宿主调用目录固定；直接调用容器服务�
 
 启用完整报告策略后，report_context 携带简短 cycle_report_instructions；观察 context 通过 method_references、applicability_instructions 与 factor_context 引导核验。先独立核验当前市场变化并完成影响判断，再对照已采纳正文及最后真实展示，分别判断深评和报告；提示不生成市场结论或新增策略状态。既有 cycle_basis、deep_report_summary 与 report_basis.verification 具体核验正式研究、本轮判断与最终正文的忠实性，遵守职责边界：方向和期限清楚、依据支持结果、个人安排及必要风险和限制准确，不要求所有内部期限、冲突、状态和核验结果进入正文。分析缺项回原研究，表达遗漏在冻结前补齐；短窗变化不冒充中期反转，中期未反转也不屏蔽重要波段风险。重要价格或条件仅在已批准完整正文时，按手机契约用narrative的excerpt精确摘录绑定，不因没有独立标量字段省略。精简上下文也携带 spot_risk_review_instructions 方法提示。模型在既有观察摘要/extra_findings 中沿周期主线和当前定价，结合持有目的与已确认事实持续比较参与、防守和等待，写入支持、反证及有据取舍；实质研究变化才交回原深评，不能从短线走弱直接推出减仓。必要的敞口和保护核对留在内部；账户缺口只限制依赖它的数量、覆盖或净行动，不停止公开分歧区、下行路径和条件性价值分析。风险动作仅在确需应对且动作有依据时附加，其他机会建议不受这个门槛限制。提示本身不是已完成评估；程序不从价格生成减仓决定。新研究按 cycle_assignment 的方法入口展开完整组合分析；最终六项审阅仍使用 portfolio_waiting，不另建结论字段。
 
-映射候选送审前先完成可做的结构、精确数值、原始引用与事件身份预校验，不能用正式发布反复试探格式。新 ASSESSED domain 可用现有 `assessment.validate(draft, evidence_dir, storage.domain_baseline(root, storage.current(root)), project, review)` 做只读校验，它只创建临时兼容视图，不写当前策略；预校验不替代实际 Astra 审阅、候选哈希和发布时重验。`cycle.validate_candidate` 也复用现有 recommendations.validate 检查数字和 `from <= knowledge_cutoff < until`，并不以壁钟替换证据截止；原始引用仍需对受控证据解析。实际建议生效由真实 published_at 起算，不为匹配未知的提交秒数反复移动 from。REUSED domain 必须满足既有来源、内容一致性及到期门，已到期不能靠 LAST_VALID_ANCHOR 或复用标记跳过当前事件复核。修正影响候选内容时，重新冻结并交同一 Astra 审阅，不能沿用另一候选的批准。
+映射候选送审前先完成可做的结构、精确数值、原始引用与事件身份预校验，不能用正式发布反复试探格式。新 ASSESSED domain 可用现有 `assessment.validate(draft, evidence_dir, storage.domain_baseline(root, storage.current(root)), project, review)` 做只读校验，它只创建临时兼容视图，不写当前策略；预校验不替代实际 Astra 审阅、候选哈希和发布时重验。`cycle.validate_candidate` 也复用现有 recommendations.validate 检查数字和建议窗口：revision 7及以前沿用知识截止，revision 8起使用知识截止与真实 investment_decision.decided_at 的较晚时点，未来起效及形成时已到期的可执行建议仍拒绝；不移动证据截止或倒填决定形成时间，详见[建议维护](recommendation-maintenance.md)；原始引用仍需对受控证据解析。实际建议生效由真实 published_at 起算，不为匹配未知的提交秒数反复移动 from。REUSED domain 必须满足既有来源、内容一致性及到期门，已到期不能靠 LAST_VALID_ANCHOR 或复用标记跳过当前事件复核。修正影响候选内容时，重新冻结并交同一 Astra 审阅，不能沿用另一候选的批准。
 
 ## 选择材料与重试
 

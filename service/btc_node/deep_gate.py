@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+import json
 from zoneinfo import ZoneInfo
 
 from .codec import Conflict, millis
@@ -79,23 +80,55 @@ def status(db):
 
 
 def check_scope(db, *, scope):
-    """Read the same open faults before ordinary affected model stages."""
+    """Report registered overlap, not a diagnosis of model/tool capability."""
     scope = _scope(scope)
-    records = list(_state(db)['faults'].values())
-    faults = [{'fault_id': item['fault_id'], 'kind': item['kind'], 'scope': item['scope']}
-              for item in records
+    state = _state(db)
+    fault_records = list(state['faults'].values())
+    claims = records(state)
+    faults = [dict(fault_id=item['fault_id'], kind=item['kind'], scope=item['scope'],
+                   evidence_ref=item.get('evidence_ref'), impact_ref=item.get('impact_ref'),
+                   cause_ref=item.get('cause_ref'),
+                   related_claims=_related_claims(item, claims))
+              for item in fault_records
               if item['state'] == 'OPEN' and _affected(item['scope'], scope)]
     faults.sort(key=lambda item: item['fault_id'])
     corrections = [{key: item.get(key) for key in ('fault_id', 'scope', 'kind',
                    'fault_digest', 'evidence_ref', 'impact_ref', 'cause_ref',
                    'repair_digest', 'correction_ref', 'verification_ref', 'resolved_at_ms')}
-                   for item in records if item['state'] == 'RESOLVED'
+                   for item in fault_records if item['state'] == 'RESOLVED'
                    and _affected(item['scope'], scope)
                    and all(item.get(key) for key in ('impact_ref', 'cause_ref',
                                                      'correction_ref', 'verification_ref'))]
     corrections.sort(key=lambda item: (item['resolved_at_ms'], item['fault_id']))
     return {'scope': scope, 'allowed': not faults, 'faults': faults,
-            'accepted_corrections': corrections}
+            'accepted_corrections': corrections,
+            'basis': 'REGISTERED_SCOPE_OVERLAP', 'capabilities_verified': False}
+
+
+def _related_claims(fault, claims):
+    """Expose failure identity without rewriting legacy faults or guessing impact.
+
+    Older faults omitted their originating claim. All matching failed identities
+    are reported; an ambiguous match is never promoted to a unique author or
+    proof that a particular tool caused the failure.
+    """
+    related = []
+    for claim in claims.values():
+        if (claim.get('state') not in ('FAILED', 'UNKNOWN')
+                or claim.get('scope') != fault['scope']
+                or claim.get('failure_kind') != fault['kind']
+                or claim.get('input_digest') != fault.get('fault_digest')):
+            continue
+        signature = 'sha256:' + hashlib.sha256(
+            (claim['failure_kind'] + '\0' + claim['input_digest']).encode()).hexdigest()
+        if signature != fault.get('signature'):
+            continue
+        origin = fault.get('originating_claim_id')
+        if origin is not None and claim['claim_id'] != origin:
+            continue
+        related.append({'claim_id': claim['claim_id'], 'phase': claim.get('phase'),
+                        'state': claim['state']})
+    return sorted(related, key=lambda item: item['claim_id'])
 
 
 def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
@@ -112,9 +145,10 @@ def claim(db, *, claim_id, issue_id, scope, phase, input_digest, model):
     now_ms = millis()
     day = tokyo_day(now_ms)
     state = _state(db)
-    if any(item['state'] == 'OPEN' and _affected(item['scope'], scope)
-           for item in state['faults'].values()):
-        raise Conflict('known defect blocks affected deep-research scope')
+    blocked = check_scope(db, scope=scope)
+    if not blocked['allowed']:
+        raise Conflict('known defect blocks affected deep-research scope: ' +
+                       json.dumps(dict(source='LOCAL_MODEL_GATE', **blocked), sort_keys=True))
     existing = records(state)
     identity = dict(issue_id=issue_id, scope=scope, phase=phase,
                     input_digest=input_digest, model=model)
@@ -175,6 +209,7 @@ def open_fault(db, *, scope, kind, signature, fault_digest, evidence_ref,
     if current:
         record['prior_resolutions'] = current.get('prior_resolutions', []) + [
             {key: current.get(key) for key in ('fault_id', 'fault_digest', 'evidence_ref',
+             'originating_claim_id',
              'impact_ref', 'cause_ref', 'repair_digest', 'correction_ref',
              'verification_ref', 'opened_at_ms', 'resolved_at_ms')}]
     state['faults'][identity] = record
@@ -206,11 +241,13 @@ def finish(db, *, claim_id, outcome, result_ref=None, failure_kind=None, failure
     slot['finished_at_ms'] = millis()
     slot['result_ref'] = result_ref
     slot['failure_kind'] = failure_kind
+    slot['failure_ref'] = failure_ref
     if outcome in ('FAILED','UNKNOWN'):
         signature = 'sha256:' + hashlib.sha256((failure_kind + '\0' + slot['input_digest']).encode()).hexdigest()
         identity = _fault_id(slot['scope'],signature)
         state['faults'][identity] = {'fault_id':identity,'scope':slot['scope'],
             'kind':failure_kind,'signature':signature,'fault_digest':slot['input_digest'],
+            'originating_claim_id':claim_id,
             'evidence_ref':failure_ref,'state':'OPEN','opened_at_ms':millis(),
             'repair_digest':None,'verification_ref':None,'resolved_at_ms':None}
     _save(db,state)

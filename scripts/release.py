@@ -68,15 +68,22 @@ def version_dir(root, revision):
     return root / 'releases' / revision
 
 
+def manifest_files(required):
+    files = required['files']
+    entries = {'export-manifest.json', 'scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
+               'project-methods/AGENTS.md', 'tasks/hourly.md'}
+    if not isinstance(files, list) or not all(isinstance(name, str) for name in files) or not entries.issubset(files):
+        raise ValueError('release source manifest is missing its runtime or method entries')
+    if len(files) != len(set(files)) or any(Path(name).is_absolute() or '..' in Path(name).parts for name in files):
+        raise ValueError('release source manifest has duplicate or unsafe entries')
+    return files
+
+
 def check_sources(path):
     """Use the same source contract during installation and later entry."""
     root = path.resolve()
     required = read(path / 'export-manifest.json')
-    files = required['files']
-    entries = {'scripts/release.py', 'skill/btc-core-strategy/SKILL.md',
-               'project-methods/AGENTS.md', 'tasks/hourly.md'}
-    if not isinstance(files, list) or not all(isinstance(name, str) for name in files) or not entries.issubset(files):
-        raise ValueError('release source manifest is missing its runtime or method entries')
+    files = manifest_files(required)
     for name in files:
         relative = Path(name)
         source = path / relative
@@ -139,7 +146,7 @@ def activate(config, revision):
         return {'status': 'ACTIVE', 'commit': revision, 'previous': previous, 'release': str(target)}
 
 
-def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None):
+def install(config, source, ref='HEAD', *, activate_after=True):
     source = Path(source).resolve()
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', ref + '^{commit}'], text=True).strip()
     with locked(config) as root:
@@ -149,32 +156,46 @@ def install(config, source, ref='HEAD', *, activate_after=True, test_reader=None
             check_release(destination)
     if not installed:
         # Validation must not hold the lease lock used by ordinary enter/finish.
-        # Each installer owns its workspace; only a complete tested tree can be
+        # Each installer owns its workspace; only a complete source package can be
         # atomically published under the short shared lock below.
         releases = root / 'releases'; releases.mkdir(exist_ok=True)
         workspace = Path(tempfile.mkdtemp(prefix='.install-', dir=releases)).resolve()
         stage = workspace / revision
         stage.mkdir()
         try:
+            manifest = json.loads(subprocess.check_output(
+                ['git', '-C', str(source), 'show', revision + ':export-manifest.json'], text=True))
+            files = manifest_files(manifest)
             archive = workspace / 'source.tar'
             with archive.open('wb') as output:
-                subprocess.run(['git', '-C', str(source), 'archive', revision], stdout=output, check=True)
+                subprocess.run(['git', '--literal-pathspecs', '-C', str(source), 'archive', revision, '--', *files], stdout=output, check=True)
             with tarfile.open(archive) as package:
+                exported = set()
                 for member in package.getmembers():
                     relative = Path(member.name)
                     if relative.is_absolute() or '..' in relative.parts or member.issym() or member.islnk():
                         raise ValueError('release archive must contain only relative regular sources')
+                    if member.isfile():
+                        if member.name not in files or member.name in exported:
+                            raise ValueError('release archive differs from its source manifest')
+                        exported.add(member.name)
+                    elif not member.isdir():
+                        raise ValueError('release archive must contain only relative regular sources')
+                if exported != set(files):
+                    raise ValueError('release archive is missing declared sources')
                 package.extractall(stage)
             archive.unlink()
             required = check_sources(stage)
-            reader = Path(test_reader or config['reader_code_dir']).expanduser().resolve()
-            if not (reader / 'reader.py').is_file():
-                raise ValueError('configured reader_code_dir must contain the installed reader')
-            subprocess.run([config['python'], str(stage / 'scripts/run_tests.py'),
-                            '--reader', str(reader)], cwd=stage, check=True)
+            # Behavior regression belongs to the candidate's temporary validation,
+            # not to the permanent package or the runtime admission contract.
+            syntax_check = ('import ast,sys; from pathlib import Path; '
+                            '[ast.parse(Path(p).read_bytes(), filename=p) for p in sys.argv[1:]]')
+            subprocess.run([config['python'], '-B', '-c', syntax_check,
+                            *(name for name in files if name.endswith('.py'))], cwd=stage, check=True)
             write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
                   'content_contract': required.get('content_contract', {'read_revisions': [1, 2, 3, 4, 5], 'new_write_revision': 5}),
-                  'tested_python': config['python'], 'repository': 'york6668/btc-core-strategy'})
+                  'source_validation': 'MANIFEST_AND_PYTHON_SYNTAX',
+                  'python': config['python'], 'repository': 'york6668/btc-core-strategy'})
             with locked(config) as root:
                 check_release(stage)
                 destination = version_dir(root, revision)
@@ -224,8 +245,17 @@ def enter(config, run_id, context=None):
         # execution on an adopted node checks the shared native anomaly latch.
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skill/btc-core-strategy/scripts'))
         from native_usage import require_admission
-        require_admission(config)
+        admission = require_admission(config)
+        native_context = admission.get('native_context')
+        if native_context is not None:
+            # Preserve original registration and append only genuinely new
+            # native execution identities when an existing run is resumed.
+            contexts = run.setdefault('native_contexts', [])
+            if native_context not in contexts:
+                contexts.append(native_context)
         run.update(status='ACTIVE', release=str(release), node_config=config['_path'],
+                   node_path_binding={'release_root': str(Path(config['release_root'])),
+                                      'resolved_release_root': str(Path(config['release_root']).resolve())},
                    skill=str(release / 'skill/btc-core-strategy/SKILL.md'),
                    task=str(release / 'tasks/hourly.md'),
                    methods=str(release / 'project-methods'), project_dir=config['project_dir'],
@@ -377,7 +407,6 @@ def main():
     parser.add_argument('--node-config', required=True)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('install'); p.add_argument('--source', required=True); p.add_argument('--ref', default='HEAD'); p.add_argument('--stage-only', action='store_true')
-    p.add_argument('--reader', help='Exported reader with offline test sources; leaves the production reader unchanged')
     p = sub.add_parser('activate'); p.add_argument('commit')
     p = sub.add_parser('enter'); p.add_argument('--run-id', required=True); p.add_argument('--resume-context')
     p = sub.add_parser('bind-context'); p.add_argument('--run-id', required=True); p.add_argument('--context', required=True)
@@ -393,7 +422,7 @@ def main():
         data_service(config, args.command)
         return
     if args.command == 'install':
-        result = install(config, args.source, args.ref, activate_after=not args.stage_only, test_reader=args.reader)
+        result = install(config, args.source, args.ref, activate_after=not args.stage_only)
     elif args.command == 'activate':
         result = activate(config, args.commit)
     elif args.command == 'enter':

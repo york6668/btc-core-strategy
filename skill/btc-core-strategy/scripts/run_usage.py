@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Read runtime usage and optionally update its existing defect; never estimate quota charges."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 import json
 import re
 from pathlib import Path
 import sqlite3
+import subprocess
+import time
 from collections import Counter
 from statistics import median
 
@@ -88,12 +91,58 @@ def timestamp(value):
     return dt.timestamp()
 
 
+def rollout_source(value):
+    """Follow Codex's plain-first representation of the same logical JSONL."""
+    plain = Path(value)
+    if plain.name.endswith('.jsonl.zst'):
+        plain = plain.with_suffix('')
+    try:
+        return plain.resolve(strict=True), False
+    except FileNotFoundError:
+        if not plain.name.endswith('.jsonl'):
+            raise
+        return Path(str(plain) + '.zst').resolve(strict=True), True
+
+
+@contextmanager
+def rollout_stream(value):
+    # Match the shared native meter's supported zstd stream. A representation
+    # switch can race resolution/open; only retry that same logical source.
+    for attempt in range(4):
+        try:
+            path, compressed = rollout_source(value)
+            source = path.open('rb')
+            break
+        except FileNotFoundError:
+            if attempt == 3:
+                raise
+            time.sleep(.05)
+    with source:
+        if not compressed:
+            yield source, False
+            return
+        # Keep the original file descriptor across archival/materialization.
+        # Never unpack, repair or modify native session files on disk.
+        process = subprocess.Popen(['zstd', '-q', '-d', '-c'], stdin=source,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            yield process.stdout, True
+            if process.wait() != 0:
+                raise ValueError('native compressed rollout decoding failed')
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+
+
 def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
     usage = {}; calls = {}; started = set(); completed = set(); completed_at = None
     errors = Counter(); aborted = set(); waits = 0; compactions = 0
     error_occurrences = []; seen_errors = set()
     active_call_id = None
     turns = {}; active_turn = None; inherited_turns = set()
+    unattributed = dict(model_roundtrips=0, **{key: 0 for key in FIELDS})
     def turn(identity):
         return turns.setdefault(identity, {'turn_id': identity, 'root_turn_id': identity,
             'started_at': None, 'completed_at': None, 'model': None, 'effort': None,
@@ -112,11 +161,17 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
             error_occurrences.append(dict(error, call_id=call_id, execution_id=execution_id, line=line_number))
     seen_responses = seen_responses if seen_responses is not None else set()
     flags = {'research_tool_observed': False, 'delivery_tool_observed': False}
-    with open(path) as stream:
-        for line_number, line in enumerate(stream, 1):
+    with rollout_stream(path) as (stream, compressed):
+        for line_number, raw in enumerate(iter(lambda: stream.readline(16 * 1024 * 1024 + 1), b''), 1):
+            if len(raw) > 16 * 1024 * 1024:
+                raise ValueError('native record exceeds bounded reader')
+            if not raw.endswith(b'\n'):
+                if compressed:
+                    raise ValueError('incomplete compressed native record')
+                break  # Do not consume an in-flight final native write.
+            line = raw.decode('utf-8')
             try: event = json.loads(line)
             except ValueError:
-                if not line.endswith('\n'): break  # A running file can end in a partial write.
                 raise ValueError('complete native record is invalid JSON')
             p = event.get('payload', {}); kind = event.get('type')
             stamp = timestamp(event['timestamp']) if event.get('timestamp') else None
@@ -154,6 +209,11 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
                         for field in FIELDS:
                             value = p.get('usage', {}).get(field)
                             native[field] = native[field] + value if native[field] is not None and isinstance(value, int) else None
+                    else:
+                        unattributed['model_roundtrips'] += 1
+                        for field in FIELDS:
+                            value = measured.get(field)
+                            unattributed[field] = unattributed[field] + value if unattributed[field] is not None and isinstance(value, int) else None
             elif kind == 'event_msg':
                 if p.get('type') == 'task_started': started.add(p.get('turn_id'))
                 if p.get('type') == 'task_complete':
@@ -193,6 +253,7 @@ def rollout(path, since=None, until=None, seen_responses=None, thread_id=None):
                 error_counts=dict(errors), error_occurrences=error_occurrences,
                 repeated_errors=sum(max(0,n-1) for n in errors.values()),
                 wait_calls=waits, compactions=compactions,
+                unattributed_usage=unattributed if unattributed['model_roundtrips'] else None,
                 native_turns=[v for v in turns.values() if v['turn_id'] not in inherited_turns and (v['model_roundtrips'] or
                     (v['started_at'] and (until is None or timestamp(v['started_at']) < until)
                      and (not v['completed_at'] or since is None or timestamp(v['completed_at']) >= since)))], **flags)
@@ -265,19 +326,119 @@ def usage_database(explicit=None, configured=None):
     return candidates[0]
 
 
-def audit(db, since, until, root_threads=None):
-    start, end = timestamp(since), timestamp(until)
-    if end <= start: raise ValueError('until must follow since')
-    db = usage_database(explicit=db)
+def native_threads(db):
+    """Read identity/usage metadata only, never native message or report text."""
     with source_connection(db) as conn:
         conn.row_factory = sqlite3.Row
-        threads = {v['id']:dict(v) for v in conn.execute('SELECT * FROM threads')}
+        threads = {v['id']:dict(v) for v in conn.execute(
+            'SELECT id,rollout_path,created_at,updated_at,model,reasoning_effort,thread_source,name,source FROM threads')}
         tables = {v[0] for v in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         parents = dict((v[1],v[0]) for v in conn.execute('SELECT parent_thread_id,child_thread_id FROM thread_spawn_edges')) if 'thread_spawn_edges' in tables else {}
         for identity, v in threads.items():
             try: parents[identity] = json.loads(v.get('source',''))['subagent']['thread_spawn']['parent_thread_id']
             except (TypeError,ValueError,KeyError): pass
-    roots = set(root_threads) if root_threads is not None else {k for k,v in threads.items() if v.get('thread_source')=='automation' and v.get('name')=='BTC核心策略自动重评'
+    return threads, parents
+
+
+def automation_roots(db, automation_id, before=None):
+    """Use the original native registration, including failed and active runs.
+
+    This is a read-only usage adapter, not a scheduler. Names, project IDs and
+    thread creation time alone never establish membership in an automation.
+    """
+    if not db or not isinstance(automation_id, str) or not automation_id.strip():
+        raise UsageSourceUnavailable('explicit automation database and automation_id are required')
+    try:
+        with source_connection(Path(db).expanduser()) as conn:
+            if conn.execute('SELECT id FROM automations WHERE id=?', (automation_id,)).fetchone() is None:
+                raise UsageSourceUnavailable('configured native automation registration is missing')
+            rows = conn.execute('SELECT thread_id,created_at FROM automation_runs WHERE automation_id=?',
+                                (automation_id,)).fetchall()
+        roots = set()
+        for identity, created in rows:
+            if before is not None and timestamp(created) >= before:
+                continue
+            if not isinstance(identity, str) or not identity.strip():
+                raise UsageSourceUnavailable('registered automation run has no native root identity')
+            roots.add(identity)
+        return roots
+    except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
+        if isinstance(exc, UsageSourceUnavailable):
+            raise
+        raise UsageSourceUnavailable('native automation usage registration unavailable: ' + type(exc).__name__) from exc
+
+
+def selected_roots(threads, parents, root_threads, automation_db=None, automation_id=None, before=None):
+    if root_threads is not None and not isinstance(root_threads, (list, tuple, set)):
+        raise UsageSourceUnavailable('native roots must be a collection of explicit identities')
+    roots = set(root_threads or [])
+    if any(not isinstance(identity, str) or not identity.strip() for identity in roots):
+        raise UsageSourceUnavailable('configured native root identity is empty')
+    registered = automation_roots(automation_db, automation_id, before) if automation_db is not None else set()
+    if any(identity in parents for identity in registered):
+        raise UsageSourceUnavailable('registered automation root has a native parent; scope requires review')
+    roots |= registered
+    if not roots or not roots <= threads.keys():
+        raise UsageSourceUnavailable('explicit current native roots are missing; no zero-usage assumption')
+    return roots, registered
+
+
+def current_native_scope(config, current_thread):
+    """Prove this execution belongs to the configured metered native scope."""
+    if not isinstance(current_thread, str) or not current_thread.strip():
+        raise UsageSourceUnavailable('current native thread identity is empty; usage coverage unknown')
+    db = usage_database(configured=config.get('codex_state_db'))
+    threads, parents = native_threads(db)
+    roots, registered = selected_roots(threads, parents, config.get('usage_root_threads'),
+        config.get('codex_automations_db'), config.get('automation_id'))
+    identity, seen = current_thread, set()
+    if identity not in threads:
+        raise UsageSourceUnavailable('current native thread metadata missing; usage coverage unknown')
+    while identity not in roots and identity in parents and identity not in seen:
+        seen.add(identity)
+        identity = parents[identity]
+        if identity not in threads:
+            raise UsageSourceUnavailable('current native ancestor metadata missing; usage coverage unknown')
+    if identity not in roots:
+        raise UsageSourceUnavailable('current native thread is outside the registered usage scope')
+    if config.get('codex_automations_db') is not None and identity not in registered:
+        raise UsageSourceUnavailable('current native root is not registered to this automation; historical roots are audit-only')
+    return {'thread_id': current_thread, 'root_thread_id': identity,
+            'root_thread_ids': sorted(roots), 'automation_root_thread_ids': sorted(registered),
+            'source_db': str(db), 'automation_id': config.get('automation_id')}
+
+
+def audit(db, since, until, root_threads=None, *, automation_db=None, automation_id=None,
+          historical_automation_ids=None):
+    start, end = timestamp(since), timestamp(until)
+    if end <= start: raise ValueError('until must follow since')
+    db = usage_database(explicit=db)
+    threads, parents = native_threads(db)
+    history_ids = historical_automation_ids if historical_automation_ids is not None else []
+    if (not isinstance(history_ids, list) or any(not isinstance(identity, str) or not identity.strip() for identity in history_ids)
+            or len(set(history_ids)) != len(history_ids) or automation_id in history_ids):
+        raise UsageSourceUnavailable('historical automation IDs must be distinct non-empty IDs, separate from current admission')
+    history_scopes = []
+    historical_roots = set()
+    if root_threads is not None and not isinstance(root_threads, (list, tuple, set)):
+        raise UsageSourceUnavailable('native roots must be a collection of explicit identities')
+    for identity in history_ids:
+        observed = automation_roots(automation_db, identity, end)
+        historical_roots |= observed
+        history_scopes.append({'automation_id':identity, 'root_thread_ids':sorted(observed),
+                               'registration':'REGISTERED_NATIVE_RUNS' if observed else 'AWAITING_NATIVE_RUN'})
+    if historical_roots:
+        # Historical automation membership affects metering only. Admission
+        # continues to resolve solely config.automation_id in current_native_scope.
+        if any(identity in parents for identity in historical_roots):
+            raise UsageSourceUnavailable('historical automation root has a native parent; scope requires review')
+        root_threads = list(set(root_threads or []) | historical_roots)
+    explicit_scope = root_threads is not None or automation_db is not None
+    if explicit_scope:
+        roots, registered = selected_roots(threads, parents, root_threads, automation_db, automation_id, end)
+    else:
+        registered = set()
+        roots = {k for k,v in threads.items() if v.get('thread_source')=='automation' and v.get('name')=='BTC核心策略自动重评'
              and v['created_at'] < end and v.get('updated_at',v['created_at']) >= start}
     if not roots or not roots <= threads.keys():
         raise UsageSourceUnavailable('explicit current native roots are missing; no zero-usage assumption')
@@ -319,24 +480,29 @@ def audit(db, since, until, root_threads=None):
         run['stratum'] = ('research' if len(family)>1 or any(v['research_tool_observed'] for v in family)
                           else 'delivery' if value['delivery_tool_observed'] else 'ordinary')
         rows.append(run)
-    completed_turns = set()
-    if root_threads is not None:
-        # Heartbeats reuse a long-lived thread. A thread lifetime is not one
-        # scheduled run; native root_turn_id supplies the exact family binding.
+    completed_turns = set(); observed_triggers = set(); attribution_gaps = []
+    if explicit_scope:
+        # Neither a long-lived heartbeat thread nor a fresh cron root is a
+        # trigger count. Native root_turn_id supplies the exact family binding.
         families = {}
         for cost in costs:
+            if cost['unattributed_usage']:
+                attribution_gaps.append(cost['thread_id'])
             for value in cost['native_turns']:
                 value = dict(value, thread_id=cost['thread_id'])
-                families.setdefault(value['root_turn_id'], []).append(value)
+                families.setdefault((cost['root_thread_id'], value['root_turn_id']), []).append(value)
+                if cost['role'] == 'main' and value['turn_id'] == value['root_turn_id']:
+                    observed_triggers.add((cost['thread_id'], value['root_turn_id']))
         rows = []
-        for root_turn, family in families.items():
-            main = next((v for v in family if v['thread_id'] in roots and v['turn_id'] == root_turn), None)
+        for (root_thread, root_turn), family in families.items():
+            main = next((v for v in family if v['thread_id'] == root_thread and v['turn_id'] == root_turn), None)
             full = main and all(v['started_at'] and v['completed_at'] and not v['failed_or_interrupted']
+                                and v['model_roundtrips'] and all(v[key] is not None for key in FIELDS)
                                 and start <= timestamp(v['started_at']) < timestamp(v['completed_at']) < end for v in family)
             if not full:
                 excluded.append({'root_turn_id': root_turn, 'reason': 'native turn family incomplete or partially outside window; costs retained'})
                 continue
-            row = dict(main, root_turn_id=root_turn, counted_thread_ids=sorted({v['thread_id'] for v in family}),
+            row = dict(main, root_thread_id=root_thread, root_turn_id=root_turn, counted_thread_ids=sorted({v['thread_id'] for v in family}),
                        elapsed_seconds=max(timestamp(v['completed_at']) for v in family)-min(timestamp(v['started_at']) for v in family),
                        repeated_errors=None)
             for field in ('model_roundtrips', 'tool_calls') + FIELDS:
@@ -345,23 +511,36 @@ def audit(db, since, until, root_threads=None):
                               else 'delivery' if main['delivery_tool_observed'] else 'ordinary')
             rows.append(row)
             completed_turns.update((v['thread_id'], v['turn_id']) for v in family)
-    if unread:
-        excluded.append({'reason': 'unread scoped thread prevents certifying complete run families'})
+    if unread or attribution_gaps:
+        excluded.append({'reason': 'unread or unattributed scoped usage prevents certifying complete run families'})
         rows = []
         completed_turns.clear()
     incomplete_costs = ([v for cost in costs for v in cost['native_turns']
                          if (cost['thread_id'], v['turn_id']) not in completed_turns]
-                        if root_threads is not None else [r for r in costs if unread or not r['fully_completed_in_window']])
+                        if explicit_scope else [r for r in costs if unread or not r['fully_completed_in_window']])
+    if explicit_scope:
+        incomplete_costs.extend(cost['unattributed_usage'] for cost in costs if cost['unattributed_usage'])
     groups = {}
     for row in rows: groups.setdefault('/'.join((row['model'] or 'UNKNOWN',row['effort'] or 'UNKNOWN',row['stratum'])),[]).append(row)
     errors = Counter()
     for row in costs: errors.update(row['error_counts'])
     return {'schema':'BTC_RUN_USAGE_AUDIT_V1','since':since,'until':until,
         'source':{'status':'AVAILABLE','adapter':'codex_internal_sqlite','path':str(db)},
-        'coverage':{'status':'INCOMPLETE' if unread else 'COMPLETE_LOCAL_SCOPE','unread_thread_ids':unread,
-                    'missing_metadata_thread_ids':missing_metadata},
+        'scope':{'root_thread_ids':sorted(roots), 'automation_root_thread_ids':sorted(registered),
+                 'automation_id':automation_id if automation_db is not None else None,
+                 'historical_automation_scopes':history_scopes,
+                 'automation_database':str(automation_db) if automation_db is not None else None,
+                 'automation_registration':('REGISTERED_NATIVE_RUNS' if registered else 'AWAITING_NATIVE_RUN')
+                                            if automation_db is not None else 'NOT_CONFIGURED'},
+        'coverage':{'status':'INCOMPLETE' if unread or attribution_gaps else 'COMPLETE_LOCAL_SCOPE','unread_thread_ids':unread,
+                    'missing_metadata_thread_ids':missing_metadata,
+                    'unattributed_usage_thread_ids':attribution_gaps},
+        'trigger_counts':({'observed_native_root_turns':len(observed_triggers), 'completed':len(rows),
+                           'incomplete_or_failed':len(observed_triggers)-len(rows),
+                           'identity_coverage':'INCOMPLETE' if unread or attribution_gaps else 'OBSERVED_NATIVE_TURNS'}
+                          if explicit_scope else None),
         'measurement':'Distinct model response usage records and outer model tool calls. Cached input is included in input; no quota conversion.',
-        'stratification':'Native root-turn families for explicit heartbeat roots; legacy thread families otherwise. Descendants included. Conservative tool-trace flags, not a quality score.',
+        'stratification':'Native root-turn families for explicit or registered roots; legacy thread families otherwise. Descendants included. Conservative tool-trace flags, not a quality score.',
         'summary':summarize(rows),'groups':{key:summarize(value) for key,value in groups.items()},'runs':rows,'excluded':excluded,
         'cost_scope':'Window-filtered main and descendant usage; failed/incomplete work retained, never called successful.',
         'thread_costs':costs,'cost_totals':{scope:{k:v for k,v in summarize(items).items() if k!='completed_runs'}
@@ -457,7 +636,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db',help='Explicit read-only Codex usage database; no filename/version assumption');p.add_argument('--since');p.add_argument('--until')
     p.add_argument('--output');p.add_argument('--baseline')
-    p.add_argument('--root-thread', action='append', help='Current native main thread identity; includes descendants and groups heartbeat root turns')
+    p.add_argument('--root-thread', action='append', help='Explicit audit scope override; otherwise use configured historical and registered automation roots')
     p.add_argument('--status',action='store_true',help='Read only: preceding JST day and pending acceptance, uses explicit or configured defect')
     p.add_argument('--defect',help='Update the existing local defect with usage evidence; never closes it.')
     a=p.parse_args()
@@ -473,7 +652,10 @@ def main():
     try:
         configured = __import__('node_config').load()
         database = usage_database(a.db, configured.get('codex_state_db'))
-        value=audit(database,a.since,a.until,a.root_thread or configured.get('usage_root_threads'))
+        value=audit(database,a.since,a.until,a.root_thread if a.root_thread is not None else configured.get('usage_root_threads'),
+                    automation_db=None if a.root_thread is not None else configured.get('codex_automations_db'),
+                    automation_id=configured.get('automation_id'),
+                    historical_automation_ids=[] if a.root_thread is not None else configured.get('usage_history_automation_ids'))
     except (UsageSourceUnavailable, sqlite3.Error, OSError) as exc:
         value={'schema':'BTC_RUN_USAGE_AUDIT_V1','since':a.since,'until':a.until,
                'source':{'status':'UNAVAILABLE','adapter':'codex_internal_sqlite','reason':str(exc)},

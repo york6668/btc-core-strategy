@@ -25,6 +25,7 @@ def main(argv=None):
     p = sub.add_parser('run-prepare')
     p.add_argument('--run-ref', required=True)
     p.add_argument('--agent', required=True)
+    p.add_argument('--main-provenance', help='explicit evidence-bound MAIN identity JSON for durable authors; must bind this --agent and --run-ref')
     p.add_argument('--directory', required=True)
     p.add_argument('--market', help='frozen raw package for offline replay or same-study refresh')
     p.add_argument('--additional', help='additional model-selected frozen public evidence')
@@ -107,11 +108,17 @@ def main(argv=None):
     p=sub.add_parser('report-context')
     p.add_argument('--run', required=True)
     p.add_argument('--run-ref', required=True)
+    p = sub.add_parser('report-preview')
+    for flag in ('draft', 'evidence', 'review'):
+        p.add_argument('--'+flag, required=True)
+    p.add_argument('--spec', help='render only the exact reviewed body; otherwise prepare its normal authoring context')
+    p.add_argument('--prepared-context')
     p=sub.add_parser('report-care')
     p.add_argument('--run-ref')
     p.add_argument('--run', help='original independently frozen run; otherwise public timing flags only')
     p = sub.add_parser('report-review')
     p.add_argument('--spec', required=True)
+    p.add_argument('--prepared-context', help='unchanged normal report-context output used for this authored draft')
     p = sub.add_parser('market-report-source')
     p.add_argument('--review', required=True)
     p.add_argument('--output', required=True)
@@ -156,7 +163,7 @@ def main(argv=None):
     p = sub.add_parser('enqueue')
     p.add_argument('--decision', required=True)
     p.add_argument('--source', help='new locally frozen source JSON for main revisions 3/4')
-    p.add_argument('--destination', required=True, help='JSON with actual project_id and thread_id')
+    p.add_argument('--destination', required=True, help='JSON with actual thread_id; include project_id only for a verified Project destination')
     p = sub.add_parser('delivery')
     p.add_argument('--identity', required=True)
     p.add_argument('--action', choices=('BEGIN', 'UNKNOWN', 'CONFIRM', 'NOT_SENT', 'BIND_REQUEST', 'ACKNOWLEDGE', 'BEGIN_CORRECTION', 'RECONCILE_REQUEST', 'RETRY_UNKNOWN', 'SUPERSEDE_PENDING'), required=True)
@@ -194,7 +201,8 @@ def main(argv=None):
             result = run_flow.prepare(args.root,args.project,args.run_ref,args.directory,args.market,args.additional,args.deep,args.agent,args.collector_observations,
                                       workflow_revision=max(8, storage.NEW_WRITE_REVISION) if market_state.enabled(args.root) else None,
                                       resume_preparation=args.resume_preparation, collector_snapshot=args.collector_snapshot,
-                                      retained_source_bindings=args.retained_source_bindings)
+                                      retained_source_bindings=args.retained_source_bindings,
+                                      main_provenance=read(args.main_provenance) if args.main_provenance else None)
         elif args.command == 'run-value-ref':
             from v4 import run_flow, material_reads
             run = run_flow.read_run(args.run, args.root, args.project)
@@ -228,6 +236,8 @@ def main(argv=None):
                 result = sensing.context(args.root, Path(args.project) / '.strategy/market_observation.sqlite3', args.project, read(args.market), args.limit, compact=not args.full, evidence_dir=args.evidence)
             else:
                 result = hourly.context(args.root, Path(args.project) / '.strategy/market_observation.sqlite3', args.limit)
+            from v4.position_analysis import author_view
+            result = author_view(result, args.root, args.project)
         elif args.command == 'observe':
             result = sensing.record(args.root, Path(args.project) / '.strategy/market_observation.sqlite3', args.project, read(args.market), read(args.review), evidence_dir=args.evidence)
         elif args.command == 'sensing-gate':
@@ -276,8 +286,18 @@ def main(argv=None):
             from v4 import recovery
             recovery.frozen_run(args.root,args.project,args.run,args.run_ref)
             result=reporting.authoring_context(args.root)
+        elif args.command == 'report-preview':
+            if args.spec:
+                if not args.prepared_context:
+                    raise ValueError('render preview requires its prepared context')
+                result=reporting.preview_candidate(args.root,args.project,read(args.draft),args.evidence,read(args.review),read(args.spec),read(args.prepared_context))
+            else:
+                if args.prepared_context:
+                    raise ValueError('prepared context is only used with the exact preview spec')
+                result=reporting.preview_context(args.root,args.project,read(args.draft),args.evidence,read(args.review))
         elif args.command == 'report-review':
-            result=reporting.record(args.root,read(args.spec))
+            result=reporting.record(args.root,read(args.spec),
+                prepared_context=read(args.prepared_context) if args.prepared_context else None)
         elif args.command == 'market-report-source':
             value=reporting.source(args.root,args.review)
             create(args.output,value)

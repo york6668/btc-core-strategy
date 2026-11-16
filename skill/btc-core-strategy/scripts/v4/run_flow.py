@@ -256,6 +256,67 @@ def report_brief(ctx):
     return brief
 
 
+def report_body_brief(ctx, result_path):
+    """Formed decisions for body writing; complete records remain on demand."""
+    from .closed_loop import report_inputs
+    results = report_inputs(ctx)
+    value = {k: deepcopy(ctx.get(k)) for k in ('context_id', 'evaluated_at',
+        'knowledge_cutoff', 'market_revision', 'report_contract_revision',
+        'report_subjects', 'report_quote_policy')}
+    assessment = results['market_result'].get('market_assessment') or {}
+    rows = []
+    for item in assessment.get('markets', []):
+        row = {k: deepcopy(item.get(k)) for k in
+               ('id', 'as_of', 'conflicts', 'next_check', 'resonance', 'reversal')}
+        row['horizons'] = []
+        for horizon in item.get('horizons', []):
+            formed = {k: deepcopy(horizon.get(k)) for k in ('id', 'period',
+                'direction', 'confirmation', 'structure', 'change', 'basis',
+                'momentum', 'price_attractiveness', 'strategy_applicability')}
+            formed['forward'] = {k: deepcopy((horizon.get('forward') or {}).get(k))
+                for k in ('observed_window', 'judgement_window', 'realization_window',
+                          'timing_basis', 'conditions', 'invalidations')}
+            for key in ('momentum', 'price_attractiveness'):
+                if isinstance(formed[key], dict):
+                    formed[key].pop('refs', None); formed[key].pop('counter_refs', None)
+            row['horizons'].append(formed)
+        rows.append(row)
+    value['market_result'] = {'summary': assessment.get('summary'), 'markets': rows}
+    whole = results.get('investment_decision')
+    value['investment_decision'] = ({k: deepcopy(whole[k]) for k in
+        ('status', 'summary', 'priorities', 'supported_judgements', 'selected_ids',
+         'candidates', 'gaps', 'validation_limits', 'review_conditions',
+         'decided_at', 'valid_until')} if whole else None)
+    value['applicability'] = deepcopy(results['applicability'])
+    value['execution_plans'] = deepcopy(results['execution_plans'])
+    risk_key = 'portfolio_risk' if 'portfolio_risk' in results else 'allocation_decision'
+    risk = results.get(risk_key)
+    value[risk_key] = ({k: deepcopy(risk[k]) for k in ('status', 'summary',
+        'response_needed', 'response_reason', 'actions', 'execution_limits',
+        'review_conditions', 'limitations', 'fact_version', 'decided_at', 'valid_until')
+        if k in risk} if risk else None)
+    value['result_binding'] = deepcopy(results['result_binding'])
+    if 'decision_results' in results:
+        value['decision_results'] = deepcopy(results['decision_results'])
+    value['full_results_ref'] = str(result_path)
+    guidance = reporting.authoring_guidance(ctx)
+    for key in ('maintenance_authoring', 'cycle_report_instructions', 'result_instructions'):
+        guidance.pop(key, None)
+    value.update(guidance)
+    return value
+
+
+def report_review_view(payload, ctx, checked):
+    """Complete final body, with quantities excluded from its financial inputs."""
+    value = {'candidate': deepcopy(payload), 'reviewed_candidate_hash': checked['reviewed_candidate_hash'],
+             'instructions': reporting.authoring_guidance(ctx)}
+    if ctx.get('position_analysis_input') is not None:
+        value['candidate'].pop('context', None)
+        value['author_context'] = report_brief(ctx)
+        value['full_context_role'] = 'PROGRAM_BINDING_AND_ON_DEMAND_TECHNICAL_AUDIT_NOT_DIRECTIONAL_INPUT'
+    return value
+
+
 def main_template(core):
     return {'components': {'updates': {},
         'section_reviews': {key: None for key in main_flow.sections_for_revision(max(4, core.get('revision', 1)))},
@@ -277,9 +338,14 @@ def anchors(root, project):
         'report_review': _latest(root, 'report-review-current.json')}
 
 
-def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None, resume_preparation=False, collector_snapshot=None, retained_source_bindings=None):
+def prepare(root, project, run_ref, directory, market_file=None, additional=None, deep=False, agent_id=None, collector_file=None, workflow_revision=None, resume_preparation=False, collector_snapshot=None, retained_source_bindings=None, main_provenance=None):
     text(run_ref, 'actual run reference')
     text(agent_id, 'actual main agent id')
+    if main_provenance is not None:
+        from .main_flow import validate_preview_provenance
+        validate_preview_provenance(main_provenance, project=project)
+        require(main_provenance['agent_id'] == agent_id and main_provenance['run_ref'] == run_ref,
+                'explicit MAIN provenance belongs to another run')
     root, project, directory = Path(root).resolve(), Path(project).resolve(), Path(directory).resolve()
     require(root == (project / '.strategy/v4').resolve(), 'run store must belong to the supplied project')
     require(not (collector_file and collector_snapshot), 'reader export and frozen collector snapshot are different inputs')
@@ -287,11 +353,14 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
     compatibility = ({'retained_source_bindings': choices} if choices is not None else {})
     if collector_snapshot:
         compatibility['collector_snapshot_hash'] = digest(Path(collector_snapshot).read_bytes())
+    if main_provenance is not None:
+        compatibility['main_provenance_hash'] = digest(main_provenance)
     with locked(directory):
         path = directory / 'run.json'
         if path.exists():
             run = read_run(path, root, project)
             require(run['run_ref'] == run_ref and run['agent_id'] == agent_id, 'run belongs to a different execution')
+            require(run.get('main_provenance') == main_provenance, 'run MAIN author source changed; prepare a new directory')
             require(run['anchors'] == anchors(root, project), 'run context changed; prepare a new directory and review the difference')
             require(not market_file or read(market_file) == read(run['market']), 'different raw input needs a new run directory')
             require(run.get('additional') == (str(Path(additional).resolve()) if additional else None), 'new supplemental evidence needs a new directory')
@@ -315,6 +384,7 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
         require(core.get('revision', 1) >= 3, 'run adapter needs the existing main workflow; use legacy migration explicitly')
         preparation = {'schema':'BTC_PREPARATION_V1','run_ref':run_ref,'agent_id':agent_id,
                        'anchors':before,'deep':deep,'workflow_revision':workflow_revision,
+                       'main_provenance_hash': digest(main_provenance) if main_provenance is not None else None,
                        'accepted_corrections':accepted_corrections,
                        'market_input_hash':digest(Path(market_file).read_bytes()) if market_file else None,
                        'collector_input_hash':digest(Path(collector_file).read_bytes()) if collector_file else None,
@@ -496,6 +566,10 @@ def prepare(root, project, run_ref, directory, market_file=None, additional=None
                'additional_hash': digest(read(Path(additional) / 'evidence.json')) if additional else None,
                'deep': deep, 'context_id': ctx['context_id'], 'read_set': {'observe': reads},
                'recovery_contract_revision': 1}
+        if main_provenance is not None:
+            run['main_provenance'] = deepcopy(main_provenance)
+            if 'execution_evidence' in main_provenance:
+                run['purpose'] = 'ISOLATED_PREVIEW'
         if collector_path:
             run.update(collector=collector_path, collector_input=str(Path(collector_file).resolve()) if collector_file else None,
                        collector_input_hash=digest(Path(collector_file).read_bytes()) if collector_file else None)
@@ -518,9 +592,12 @@ def result_paths(run, status):
 
 def identity(run):
     if run.get('main_provenance') is not None:
-        from .main_flow import validate_provenance
+        from .main_flow import validate_provenance, validate_preview_provenance
         value = deepcopy(run['main_provenance'])
-        validate_provenance(value)
+        if run.get('purpose') == 'ISOLATED_PREVIEW':
+            validate_preview_provenance(value, project=run.get('project'))
+        else:
+            validate_provenance(value)
         require(value['agent_id'] == run['agent_id'] and value['run_ref'] == run['run_ref'],
                 'explicit MAIN provenance belongs to another run')
         return value
@@ -574,15 +651,23 @@ def phase_material(run, label, stage='report'):
                               run['project'], read(run['market']), evidence_dir=run['evidence'], frozen_review=True, workflow_revision=run.get('workflow_revision'))
         prefix = label + '-main-' + digest(ctx)[7:19]
         path = save(d / (prefix + '-context.json'), ctx)
+        from .position_analysis import author_view
+        view = author_view(ctx, root, run['project'])
+        author_path = save(d / (prefix + '-author-context.json'), view) if view is not ctx else path
+        if view is not ctx:
+            # An older portfolio read-set can contain quantities. Reuse only
+            # the pure-public preceding stage when producing this new mode.
+            base_reads = (run.get('read_set') or {}).get('observe')
         form = main_template(storage.current(root)['assessment'])
         form['_binding'] = {'context_file': path, 'context_hash': digest(ctx)}
         template = save(d / (prefix + '-main-template.json'), form)
         request = save(d / (prefix + '-cycle-request-template.json'), cycle.request_template(ctx)) if 'cycle_baseline' in ctx else None
-        reads = material_reads.make(d, 'main', path, base=base_reads, required={'main_template': template},
-            on_demand={'cycle_request_template': request, 'reference_index': str(d / 'reference-index.json')})
+        reads = material_reads.make(d, 'main', author_path, base=base_reads, required={'main_template': template},
+            on_demand={'cycle_request_template': request, 'reference_index': str(d / 'reference-index.json')},
+            compact=True)
         return {'main_template': template, 'cycle_request_template': request, 'read_set': {'main': reads}}
     # Every observation still reviews report necessity. Body material is lazy.
-    ctx = reporting.context(root)
+    ctx = reporting.prepare_context(root, reporting.context(root))
     # The same context has one physical template regardless of the caller's
     # label. Body authoring then reuses the already read necessity material.
     prefix = 'authored-report-' + digest(ctx)[7:19]
@@ -602,31 +687,20 @@ def phase_material(run, label, stage='report'):
     if stage == 'report-body':
         extra = {'layout_template': save(d / (prefix + '-layout-template.json'), layout),
                  'report_metrics': save(d / (prefix + '-metrics.json'), ctx['metrics'])}
-    prior = None
-    if stage == 'report-body':
-        # A fresh clock/maintenance check must not re-emit all earlier facts.
-        # Use the preceding read view with this exact business identity; make
-        # validates its hash and references only byte-identical subtrees.
-        candidates = []
-        for candidate_path in sorted((d / 'reading').glob('report-*/read-set.json')):
-            index = read(candidate_path)
-            if index.get('stage') != 'report':
-                continue
-            require(d.resolve() in Path(index['material']).resolve().parents, 'prior report material escapes run')
-            candidate = read(index['material'])
-            if (candidate.get('context_id') == ctx['context_id'] and candidate.get('evaluated_at')
-                    and candidate.get('report_contract_revision') == ctx.get('report_contract_revision')
-                    and instant(candidate['evaluated_at']) <= instant(ctx['evaluated_at'])):
-                candidates.append((instant(candidate['evaluated_at']), str(candidate_path)))
-        if candidates:
-            prior = max(candidates)[1]
-    prior = prior or material_reads.make(d, 'report', brief_path,
+        from .closed_loop import report_inputs
+        results_path = save(d / (prefix + '-finished-results.json'), report_inputs(ctx))
+        brief_path = save(d / (prefix + '-body-context.json'), report_body_brief(ctx, results_path))
+        reads = material_reads.make(d, 'report-body', brief_path,
+            required={'layout_template': extra['layout_template']}, compact=True,
+            on_demand={'full_context': full_path, 'finished_results': results_path,
+                       'report_template': template_path, 'report_metrics': extra['report_metrics']})
+        return {'report_context': brief_path, 'report_template': template_path, **extra,
+                'read_set': {'report': reads}, 'delivery_recovery': ctx['pending_delivery'],
+                'delivery_obligations': ctx['delivery_obligations']}
+    reads = {'report': material_reads.make(d, 'report', brief_path,
                 base=None if ctx.get('market_revision', 0) >= 6 else base_reads,
                 required={'report_template': template_path}, compact=True,
-                on_demand={} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path})
-    reads = {'report': (material_reads.make(d, 'report-body', brief_path, base=prior,
-                required={'report_template': template_path}, compact=True, on_demand=extra)
-                if stage == 'report-body' else prior)}
+                on_demand={} if ctx.get('market_revision', 0) >= 6 else {'full_context': full_path})}
     recovery = ctx['pending_delivery']
     return {'report_context': brief_path, 'report_template': template_path, **extra,
             'delivery_recovery': recovery, 'delivery_obligations': ctx['delivery_obligations'],
@@ -810,6 +884,8 @@ def advance_market(run_path, input_path=None, root=None, project=None, template_
             form['_binding'] = {'context_file': context_path, 'context_hash': digest(latest)}
             form_path = d / ('portfolio-' + latest['context_id'][7:] + '-observation-template.json')
             save(form_path, form)
+        from .position_analysis import author_view
+        portfolio = author_view(portfolio, root, run['project'])
         portfolio_path = save(d / ('portfolio-context-' + digest(portfolio)[7:] + '.json' if ctx.get('revision', 1) >= 6 else 'portfolio-context.json'), portfolio)
         reads = material_reads.make(d, 'portfolio', portfolio_path,
             base=None if ctx.get('revision', 1) >= 6 else run.get('read_set', {}).get('observe'),
@@ -828,6 +904,9 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
         return advance_market(run_path, input_path, root, project, template_path, answers_path, check_only=check_only)
     require(stage in ('observe', 'main', 'report'), 'invalid run stage')
     run = read_run(run_path, root, project)
+    if run.get('purpose') == 'ISOLATED_PREVIEW':
+        require(stage != 'observe' and (stage == 'main' and check_only),
+                'isolated preview cannot publish a strategy, record observations or register a report; use report-preview')
     d, root = Path(run['directory']), Path(run['root'])
     if input_path is not None:
         require(template_path is None and answers_path is None, 'use input or template with answers, not both')
@@ -883,7 +962,13 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
             # The reviewed text has a stable identity; each immutable reading artifact
             # also binds its current context and review notes without overwriting history.
             material = save(d / ('report-review-' + digest(review_material)[7:] + '.json'), review_material)
-            reads = material_reads.make(d, 'report-review', material, compact=True)
+            on_demand = {}
+            if ctx.get('position_analysis_input') is not None:
+                full_material = material
+                view = report_review_view(payload, ctx, checked)
+                material = save(d / ('report-review-author-' + digest(view)[7:] + '.json'), view)
+                on_demand['full_candidate_technical_audit'] = full_material
+            reads = material_reads.make(d, 'report-review', material, compact=True, on_demand=on_demand)
             return dict(checked, status='REPORT_CANDIDATE_READY', review_material=material,
                         read_set={'report_review': reads},
                         review_read={'arguments': ['run-read', '--run', str(run_path), '--read-set', reads, '--cursor', '0']},
@@ -894,9 +979,15 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
         exact(authored, 'components checks', 'authored main input')
         candidate, review = main_flow.assemble(root, run['project'], authored['components'], run['evidence'],
             read(run['market']), identity(run), authored['checks'], workflow_revision=run.get('workflow_revision'))
-        storage.validate_main(root, run['project'], candidate, run['evidence'], review)
-        return {'valid': True, 'draft_id': candidate['draft_id'], 'scope': 'structure_and_bindings_only',
-                'next_action': 'COMMIT_WITH_LIVE_REVALIDATION'}
+        validator = storage.validate_preview if run.get('purpose') == 'ISOLATED_PREVIEW' else storage.validate_main
+        validator(root, run['project'], candidate, run['evidence'], review)
+        result = {'valid': True, 'draft_id': candidate['draft_id'], 'scope': 'structure_and_bindings_only',
+                  'next_action': 'COMMIT_WITH_LIVE_REVALIDATION'}
+        if run.get('purpose') == 'ISOLATED_PREVIEW':
+            result.update(preview_only=True, adopted=False,
+                          execution_evidence=main_flow.validate_preview_provenance(identity(run), project=run['project']),
+                          next_action='USE_REPORT_PREVIEW_WITH_EXACT_APPROVED_CANDIDATE')
+        return result
     if stage == 'observe' and read(d / 'sensing-context.json').get('revision', 1) >= 5:
         frozen = read(d / 'market-result.json')
         require(frozen['result_hash'] == digest(frozen['payload']), 'frozen market result damaged')
@@ -954,6 +1045,11 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
                 result = reporting.record(root, intent['payload'], prepared_context=ctx)
         if stage == 'observe':
             result['gate'] = sensing.gate(root, result['observation_id'])
+            if result['gate'].get('main_eligible'):
+                # Eligibility is unfinished work, never proof of a dispatch.
+                # Keep the frozen public result; the operator must actually
+                # complete the affected personal/main phase under admission.
+                result['next_action'] = 'COMPLETE_MAIN_EVALUATION_WITH_FROZEN_MARKET'
         if stage in ('observe', 'main'):
             result.update(phase_material(run, stage))
         elif result['action'] == 'REPORT':

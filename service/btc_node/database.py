@@ -55,8 +55,9 @@ class Database:
 
     def initialize(self):
         from .market_store import DDL as MARKET_DDL
+        from .reader_schema import DDL as READER_DDL
         # MySQL DDL auto-commits; only initialize on explicit service startup.
-        for statement in schema.DDL + MARKET_DDL:
+        for statement in schema.DDL + MARKET_DDL + READER_DDL:
             self.execute(statement)
         row = self.one('SELECT version FROM node_schema WHERE singleton=1')
         if row and row['version'] != schema.VERSION:

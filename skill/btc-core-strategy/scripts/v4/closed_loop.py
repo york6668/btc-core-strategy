@@ -65,8 +65,8 @@ MARKET_INSTRUCTIONS += LIFECYCLE_REVIEW
 INSTRUCTIONS += CYCLE_THESIS_REVIEW
 REPORT_INSTRUCTIONS += REPORT_FIDELITY_REVIEW + CYCLE_EXPRESSION_REVIEW + MOMENTUM_REPORT_REVIEW + EVIDENCE_REPORT_REVIEW
 from .investment import POLICY_INSTRUCTIONS
-from .report_intent import DISCIPLINE
-INSTRUCTIONS += POLICY_INSTRUCTIONS + DISCIPLINE
+from .report_intent import DISCIPLINE, PERSONAL_DECISION_REVIEW
+INSTRUCTIONS += POLICY_INSTRUCTIONS + PERSONAL_DECISION_REVIEW + DISCIPLINE
 REPORT_INSTRUCTIONS += (
     'validation_limits与gaps限制对应产品和安排；METHOD_CHECK只证明模拟方法，不得在正文写成杠杆组合、真实收益或策略有效。未支持能力影响动作时不输出执行建议，影响数量时保留有据方向和实际执行限制。'
     'revision 8报告消费investment_decision的总体取舍、优先关系、有据分项判断和具体依赖，不把风险与分项机会并列未决当作完整组合决定。'
@@ -283,6 +283,9 @@ def validate_allocation_review(value, ctx, market_hash, main_required=False):
 def report_inputs(ctx):
     """A finished-result interface, never the five-module analysis or mixed prose."""
     strategy = ctx['current_strategy']
+    from .investment import decision as whole_decision
+    from .position_analysis import matches
+    directional_sources_match = matches(whole_decision(strategy), ctx.get('position_analysis_input'))
     observation = ctx.get('observation') or {}
     # Publication can advance the decision before its next observation exists.
     decision_id = ctx['identity'].get('decision_id')
@@ -319,6 +322,19 @@ def report_inputs(ctx):
             'baseline_decision_id': observation.get('baseline_decision_id') if matched else None,
             'market_result_hash': review.get('market_result_hash') if matched else None,
             'applicability_review': deepcopy(review.get('applicability_review')) if matched else None}
+        original_public = (observation.get('review') or {}).get('market_review')
+        if original_public is not None:
+            # A private-only publication can precede its next observation.
+            # Preserve the already frozen public observation as dated evidence,
+            # without relabelling its old baseline or reusing private advice.
+            market['observation_basis']['dated_public_review'] = {
+                'observation_id': observation.get('observation_id'),
+                'baseline_decision_id': observation.get('baseline_decision_id'),
+                'observed_hour': observation.get('observed_hour'),
+                'market_cutoff': observation.get('market_cutoff'),
+                'current_baseline_verified': matched,
+                'market_result_hash': (observation.get('review') or {}).get('market_result_hash'),
+                'market_review': deepcopy(original_public)}
     result_key, binding = result_keys(revision)
     decision = risk(strategy) if revision >= 7 else allocation(strategy)
     personal = deepcopy(review.get('allocation_review'))
@@ -327,7 +343,7 @@ def report_inputs(ctx):
         personal = None  # A just-published arrangement needs its own applicability check.
     if revision >= 7 and personal and personal.get('strategy_advice_hash') != (digest(advice) if advice is not None else None):
         personal = None
-    if current_contract and personal and personal.get('fact_version') != ctx['identity']['fact_version']:
+    if current_contract and personal and personal.get('fact_version') != ctx['identity']['fact_version'] and not directional_sources_match:
         personal = None  # A prior/other fact review is not a current reassessment.
     result = {'market_result': market, result_key: deepcopy(decision),
               'execution_plans': {s: {k: deepcopy(strategy['recommendations'][s][k]) for k in
@@ -337,7 +353,7 @@ def report_inputs(ctx):
                                 'portfolio': personal or {'outcome': 'EVIDENCE_LIMITED', 'limitations': ['Current allocation has not been reviewed in this observation.']}}}
     if revision >= 7 and decision is None:
         result['applicability']['portfolio'] = {'outcome': 'EVIDENCE_LIMITED', 'limitations': ['A revision 7 asset risk assessment has not been formed; legacy actions are not a new risk conclusion.']}
-    if decision and decision['fact_version'] != ctx['identity']['fact_version']:
+    if decision and decision['fact_version'] != ctx['identity']['fact_version'] and not directional_sources_match:
         changed = {'outcome': 'REVISE', 'limitations': ['Local asset facts changed; the previous arrangement is not a current decision.']}
         if current_contract and personal:
             # The old arrangement is invalid on new facts, but a matching
@@ -385,9 +401,16 @@ def report_inputs(ctx):
     if revision >= 8:
         from .investment import decision as investment_decision, finished
         whole = investment_decision(strategy)
-        if whole is not None and whole['fact_version'] != ctx['identity']['fact_version']:
+        if whole is not None and whole['fact_version'] != ctx['identity']['fact_version'] and not directional_sources_match:
             whole = None
+        if whole is not None and finished(whole) is None:
+            whole = None  # Missing alternatives return upstream, not report-side synthesis.
         result['investment_decision'] = finished(whole)
+        if result['investment_decision'] is not None and ctx.get('report_contract_revision', 1) >= 8:
+            # Historical issue identities/dispositions remain upstream. The
+            # report needs their actual decision limits, already in gaps and
+            # validation_limits, not the internal correction workflow.
+            result['investment_decision'].pop('issues', None)
         current_whole=whole is not None and instant(whole['valid_until'])>instant(ctx['evaluated_at'])
         result['portfolio_narrative']=strategy['recommendations']['portfolio']['narrative'] if current_whole else None
         result['result_binding']['portfolio_narrative_hash']=digest(result['portfolio_narrative']) if result['portfolio_narrative'] is not None else None
@@ -398,6 +421,8 @@ def report_inputs(ctx):
         elif instant(whole['valid_until']) <= instant(ctx['evaluated_at']):
             result['applicability']['portfolio']['outcome'] = 'REVISE'
             result['applicability']['portfolio'].setdefault('limitations', []).append('Investment judgement expired; preserve open issues and current bounded review, never renew by reporting.')
+        if not current_whole and result['investment_decision'] is not None:
+            result['investment_decision'].pop('allocation_choice', None)
         if whole is None or instant(whole['valid_until']) <= instant(ctx['evaluated_at']):
             # Preserve the original bounded judgement and open questions, but
             # remove its executable outputs from the current report interface.
@@ -409,7 +434,18 @@ def report_inputs(ctx):
             result['result_binding'][binding]=digest(result[result_key]) if result[result_key] is not None else None
             result['result_binding']['strategy_advice_hash']=None
         result['result_binding']['applicability_hash'] = digest(result['applicability'])
-    return result
+    from .decision_design import report_results, public_case
+    primary = None
+    if public_case(strategy.get('outlook')) is not None:
+        observed_case = market.get('market_assessment', {}).get('cycle_case')
+        require(observed_case is None or observed_case == public_case(strategy.get('outlook')),
+                'public decision changed: complete its matching personal reassessment before report')
+        primary = report_results(strategy, ctx['identity']['fact_version'], ctx['evaluated_at'], current_analysis=ctx.get('position_analysis_input'))
+    if primary is not None:
+        result['decision_results'] = primary
+        result['result_binding']['decision_results_hash'] = digest(primary)
+    from .position_analysis import report_projection
+    return report_projection(result, ctx.get('position_analysis_input'), whole if revision >= 8 else None)
 
 
 def validate_report_binding(spec, ctx):

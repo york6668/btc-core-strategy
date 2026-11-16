@@ -10,10 +10,13 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
+import stat
 import tempfile
+import uuid
 
-from .codec import Conflict, encode, fingerprint, identity, millis, sync_directory
+from .codec import Conflict, encode, fingerprint, fingerprint_file, identity, millis, sync_directory
 from .lifecycle import DAY, RETENTION_DAYS
 
 
@@ -72,6 +75,236 @@ def sqlite_rows(connection, table):
 class Catalog:
     def __init__(self, db):
         self.db = db
+
+    @staticmethod
+    def _dependency_entries(manifest):
+        """An explicit archive selection, never a replacement namespace/view."""
+        if (not isinstance(manifest, dict) or set(manifest) != {'schema', 'files'}
+                or manifest['schema'] != 'BTC_RESEARCH_DEPENDENCIES_V1'
+                or not isinstance(manifest['files'], list) or not manifest['files']):
+            raise ValueError('explicit research dependency manifest required')
+        seen, entries = set(), []
+        research = {'requests', 'inputs', 'independent', 'candidates', 'results',
+                    'author_outputs', 'public_case_sources', 'user_requests'}
+        investment = {'policies', 'rules', 'validations', 'evaluations', 'decisions'}
+        for item in manifest['files']:
+            if not isinstance(item, dict) or set(item) != {'path', 'sha256'}:
+                raise ValueError('dependency needs exact path and byte digest')
+            name, digest = item['path'], item['sha256']
+            if not isinstance(name, str) or not isinstance(digest, str):
+                raise ValueError('dependency path and digest must be text')
+            path = Path(name)
+            if (path.is_absolute() or '..' in path.parts or '\\' in name
+                    or path.as_posix() != name or name in seen):
+                raise ValueError('unique canonical relative dependency path required')
+            parts = path.parts
+            allowed = (len(parts) >= 4 and parts[:2] == ('v4', 'research')
+                       and parts[2] in research)
+            allowed |= len(parts) >= 4 and parts[:2] == ('v4', 'evidence')
+            allowed |= (len(parts) >= 4 and parts[:2] == ('v4', 'investment')
+                        and (parts[2] in investment or parts[2:4] == ('ledger', 'versions')))
+            if (not allowed or any(p.startswith('.') for p in parts)
+                    or path.name == 'current' or path.name.endswith('-current.json')):
+                raise ValueError('only archived research/evidence/investment dependencies may be appended')
+            if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+                raise ValueError('dependency requires its original SHA256 byte digest')
+            seen.add(name)
+            entries.append({'path': name, 'sha256': digest})
+        return entries
+
+    @staticmethod
+    def _dependency_bytes(root, item):
+        root = Path(root).resolve(strict=True)
+        # Open each component relative to an already-open directory. Checking
+        # Path.is_symlink before open alone would leave an ancestor-swap race.
+        parts = Path(item['path']).parts
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        finally:
+            os.close(parent)
+        with os.fdopen(fd, 'rb') as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise Conflict('dependency source is not a regular file')
+            data = handle.read()
+            after = os.fstat(handle.fileno())
+        if ((before.st_ino, before.st_mtime_ns, before.st_size, before.st_ctime_ns) !=
+                (after.st_ino, after.st_mtime_ns, after.st_size, after.st_ctime_ns)
+                or fingerprint(data) != item['sha256'][7:]):
+            raise Conflict('dependency source bytes changed: ' + item['path'])
+        return data, after
+
+    def plan_dependencies(self, root, manifest):
+        """Read-only preflight; content hashes confer neither authorship nor approval."""
+        planned = []
+        archive = self._dependency_archive()
+        for item in self._dependency_entries(manifest):
+            if item['path'] in archive and archive[item['path']] != item['sha256']:
+                raise Conflict('archived dependency identity has different content: ' + item['path'])
+            data, source = self._dependency_bytes(root, item)
+            row = self.db.one('SELECT * FROM documents WHERE document_key=%s',
+                              (identity('strategy', item['path']),))
+            if row:
+                if (row['namespace'] != 'strategy' or row['path'] != item['path']
+                        or row['kind'] != 'FILE' or row['link_target'] is not None
+                        or row['digest'] != item['sha256'][7:] or row['byte_length'] != len(data)):
+                    raise Conflict('existing dependency identity has different content: ' + item['path'])
+                blob = self.db.blobs.path(row['digest'])
+                if not blob.is_file() or blob.is_symlink() or fingerprint_file(blob) != row['digest']:
+                    raise Conflict('existing dependency blob is unavailable or corrupt: ' + item['path'])
+            planned.append({**item, 'byte_length': len(data),
+                            'source_mtime_ns': source.st_mtime_ns,
+                            'retention_action': ('PROMOTE_KEY' if row and
+                                (row['retention_class'] != 'KEY' or row['expires_ms'] is not None) else 'KEEP'),
+                            'action': 'UNCHANGED' if row else 'APPEND'})
+        return {'status': 'CHECKED', 'scope': 'ARCHIVAL_DEPENDENCIES_ONLY',
+                'counts': {'append': sum(v['action'] == 'APPEND' for v in planned),
+                           'existing_content_unchanged': sum(v['action'] == 'UNCHANGED' for v in planned),
+                           'promote_key': sum(v['retention_action'] == 'PROMOTE_KEY' for v in planned)},
+                'files': planned, 'manifest_sha256': fingerprint(encode(manifest)),
+                'strategy_adopted': False, 'compatibility_view_materialized': False}
+
+    def _dependency_archive(self):
+        value = self.db.metadata('catalog.dependencies:strategy')
+        return {v['path']: v['sha256'] for v in self._dependency_entries(value)} if value else {}
+
+    def plan_materialization(self, root, manifest):
+        """Verify registered original bytes and a view; no filesystem/DB writes."""
+        root = Path(root).resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError('existing compatibility directory required')
+        archive, files = self._dependency_archive(), []
+        for item in self._dependency_entries(manifest):
+            row = self.db.one('SELECT * FROM documents WHERE document_key=%s',
+                              (identity('strategy', item['path']),))
+            if (archive.get(item['path']) != item['sha256'] or not row or row['kind'] != 'FILE'
+                    or row['namespace'] != 'strategy' or row['path'] != item['path']
+                    or row['digest'] != item['sha256'][7:] or row['link_target'] is not None):
+                raise Conflict('materialization requires the exact registered archive: ' + item['path'])
+            data = self.db.blobs.get(row['digest'])
+            if len(data) != row['byte_length']:
+                raise Conflict('registered archive length changed')
+            try:
+                self._dependency_bytes(root, item)
+            except FileNotFoundError:
+                action = 'CREATE'
+            else:
+                action = 'UNCHANGED'
+            files.append({**item, 'action': action})
+        return {'status': 'CHECKED', 'scope': 'REGISTERED_ARCHIVE_VIEW_ONLY', 'files': files,
+                'create': sum(v['action'] == 'CREATE' for v in files),
+                'unchanged': sum(v['action'] == 'UNCHANGED' for v in files), 'strategy_adopted': False}
+
+    @staticmethod
+    def _dependency_parent(root, relative, *, create=False):
+        parts = Path(relative).parts
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                if create:
+                    try: os.mkdir(part, mode=0o700, dir_fd=parent)
+                    except FileExistsError: pass
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                os.close(parent); parent = child
+            return parent, parts[-1]
+        except BaseException:
+            os.close(parent)
+            raise
+
+    def materialize_dependencies(self, root, manifest):
+        """Only create missing originals in the configured view; never replace.
+
+        Temp bytes are fsynced then linked with no-replace semantics. A crash
+        can leave complete matching originals, never a partial visible file.
+        Rechecking the explicit manifest identifies completed work. Exceptions
+        retain already published originals: checking then unlinking a target
+        cannot safely exclude an external concurrent replacement.
+        """
+        root = Path(root).resolve(strict=True)
+        created = 0
+        with self.db.writer(), self.db.transaction():
+            if self.db.one("SELECT operation_id FROM operations WHERE status<>'COMMITTED' LIMIT 1"):
+                raise Conflict('reconcile pending operations before materializing dependencies')
+            plan = self.plan_materialization(root, manifest)
+            for item in plan['files']:
+                if item['action'] == 'UNCHANGED':
+                    continue
+                parent, leaf = self._dependency_parent(root, item['path'], create=True)
+                temporary = '.staging-dependency-' + uuid.uuid4().hex
+                try:
+                    data = self.db.blobs.get(item['sha256'][7:])
+                    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 mode=0o600, dir_fd=parent)
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(data); handle.flush(); os.fsync(handle.fileno())
+                    try:
+                        os.link(temporary, leaf, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                    except FileExistsError:
+                        # A competing creator never grants overwrite rights.
+                        self._dependency_bytes(root, item)
+                    else:
+                        created += 1
+                        os.fsync(parent)
+                finally:
+                    try: os.unlink(temporary, dir_fd=parent)
+                    except FileNotFoundError: pass
+                    os.close(parent)
+            checked = self.plan_materialization(root, manifest)
+            if checked['create']:
+                raise Conflict('compatibility view changed during materialization')
+            return {**checked, 'status': 'MATERIALIZED', 'created': created,
+                    'database_changed': False}
+
+    def append_dependencies(self, root, manifest):
+        """Add references and retain selected archives atomically; never adopt/project.
+
+        A failed transaction may leave unreferenced CAS bytes, as normal blob
+        writes do; no partially committed documents survive. The existing
+        grace-period GC owns those bytes. Reader materialization and business
+        applicability remain separate; this operation is not strategy adoption.
+        """
+        with self.db.writer(), self.db.transaction():
+            if self.db.one("SELECT operation_id FROM operations WHERE status<>'COMMITTED' LIMIT 1"):
+                raise Conflict('reconcile pending operations before appending dependencies')
+            plan = self.plan_dependencies(root, manifest)
+            archive = self._dependency_archive()
+            previous_archive = dict(archive)
+            recycling_cleared = 0
+            for item in plan['files']:
+                if item['action'] == 'UNCHANGED':
+                    if item['retention_action'] == 'PROMOTE_KEY':
+                        self.db.execute("UPDATE documents SET retention_class='KEY',expires_ms=NULL WHERE document_key=%s",
+                                        (identity('strategy', item['path']),))
+                    recycling_cleared += self.db.execute('DELETE FROM document_recycling WHERE document_key=%s',
+                                                        (identity('strategy', item['path']),))
+                    continue
+                data, source = self._dependency_bytes(root, item)
+                digest = self.db.put_blob(data)
+                self.db.execute('INSERT INTO documents(document_key,namespace,path,kind,digest,link_target,'
+                                'byte_length,source_mtime_ns,recorded_ms,retention_class,expires_ms) '
+                                'VALUES(%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,NULL)',
+                                (identity('strategy', item['path']), 'strategy', item['path'], 'FILE', digest,
+                                 len(data), source.st_mtime_ns, millis(), 'KEY'))
+                recycling_cleared += self.db.execute('DELETE FROM document_recycling WHERE document_key=%s',
+                                                    (identity('strategy', item['path']),))
+            archive.update({v['path']: v['sha256'] for v in plan['files']})
+            if archive != previous_archive:
+                # Existing metadata/blob references keep these archive-only
+                # rows durable when the live compatibility view omits them.
+                # This is storage provenance, never permission or approval.
+                self.db.metadata('catalog.dependencies:strategy',
+                    {'schema': 'BTC_RESEARCH_DEPENDENCIES_V1',
+                     'files': [{'path': p, 'sha256': archive[p]} for p in sorted(archive)]}, write=True)
+            return {**plan, 'status': 'APPENDED',
+                    'appended': sum(v['action'] == 'APPEND' for v in plan['files']),
+                    'unchanged': sum(v['action'] == 'UNCHANGED' for v in plan['files']),
+                    'retention_promoted': plan['counts']['promote_key'],
+                    'recycling_cleared': recycling_cleared}
 
     @staticmethod
     def raw_directories(records):
@@ -133,6 +366,14 @@ class Catalog:
         if not root.is_dir():
             raise ValueError('namespace source does not exist')
         existing = {row['path']: row for row in self.db.iter_rows('SELECT * FROM documents WHERE namespace=%s', (namespace,))}
+        archived = self._dependency_archive() if namespace == 'strategy' else {}
+        for name, digest in archived.items():
+            row = existing.get(name)
+            if not row or row['kind'] != 'FILE' or row['digest'] != digest[7:]:
+                raise Conflict('archived dependency registration is missing or changed: ' + name)
+            source = root / name
+            if source.exists() or source.is_symlink():
+                self._dependency_bytes(root, {'path': name, 'sha256': digest})
         # A verified raw directory contains immutable CAS hardlinks. Its entry
         # clock and complete filename/manifest set detect additions, removal,
         # and recovery. Do not stat every historical original on every command.
@@ -181,7 +422,7 @@ class Catalog:
             # all document and retention decisions still come from MySQL.
             for row in group:
                 relative = row['path']
-                policy = 'ACTIVE' if is_protected(relative) else (default_retention or retention(relative))
+                policy = 'KEY' if relative in archived else 'ACTIVE' if is_protected(relative) else (default_retention or retention(relative))
                 ttl = RETENTION_DAYS[policy]
                 expires = row['source_mtime_ns'] // 1000000 + ttl * DAY if ttl else None
                 if row['retention_class'] != policy or row['expires_ms'] != expires:
@@ -234,6 +475,17 @@ class Catalog:
                 if name.endswith(('-wal', '-shm', '-journal', '.lock', '.sock')) or name.startswith('.staging-'):
                     continue
                 seen.add(relative)
+                if relative in archived:
+                    # Recheck at the actual scan point, then NEVER import or
+                    # reclassify this identity through the ordinary UPSERT or
+                    # SQLite path. A preflight/read race cannot change its bytes.
+                    self._dependency_bytes(root, {'path': relative, 'sha256': archived[relative]})
+                    row = existing[relative]
+                    if row['retention_class'] != 'KEY' or row['expires_ms'] is not None:
+                        self.db.execute("UPDATE documents SET retention_class='KEY',expires_ms=NULL WHERE document_key=%s",
+                                        (row['document_key'],))
+                    self.db.execute('DELETE FROM document_recycling WHERE document_key=%s', (row['document_key'],))
+                    continue
                 stat = path.lstat()
                 prior = existing.get(relative)
                 # A shared inode carries the CAS creation time. Retention uses
@@ -316,7 +568,7 @@ class Catalog:
             if shared and Path(directory).name == 'raw' and not dirs:
                 clock = Path(directory).stat()
                 candidates[relative_directory] = (set(files), clock.st_mtime_ns, clock.st_ctime_ns)
-        missing = (set(existing) | existing_databases) - seen
+        missing = (set(existing) | existing_databases) - seen - set(archived)
         for relative in missing:
             self.remove_sqlite(identity(namespace,relative))
             self.db.execute('DELETE FROM documents WHERE document_key=%s', (identity(namespace, relative),))
@@ -489,7 +741,7 @@ class Catalog:
         os.replace(temporary, destination)
         sync_directory(destination.parent)
 
-    def compare(self, namespace, root):
+    def compare(self, namespace, root, *, allow_archive_only=False):
         mismatches = []
         expected_paths = {r['path'] for r in self.db.rows('SELECT path FROM documents WHERE namespace=%s', (namespace,))}
         expected_paths.update(r['path'] for r in self.db.rows('SELECT path FROM legacy_databases WHERE namespace=%s', (namespace,)))
@@ -500,9 +752,26 @@ class Catalog:
             for name in files:
                 if name.endswith(('-wal','-shm','-journal','.lock','.sock')) or name.startswith('.staging-'): continue
                 actual_paths.add(str((Path(directory)/name).relative_to(root)))
-        mismatches.extend('path-set:'+p for p in sorted(expected_paths ^ actual_paths))
+        archive_only = set()
+        if allow_archive_only and namespace == 'strategy':
+            for name, digest in self._dependency_archive().items():
+                row = self.db.one('SELECT * FROM documents WHERE document_key=%s',
+                                  (identity(namespace, name),))
+                blob = self.db.blobs.path(digest[7:])
+                if (not row or row['kind'] != 'FILE' or row['digest'] != digest[7:]
+                        or row['namespace'] != namespace or row['path'] != name
+                        or row['link_target'] is not None):
+                    mismatches.append('archive-registration-changed:' + name)
+                    continue
+                if (not blob.is_file() or blob.is_symlink()
+                        or row['byte_length'] != blob.stat().st_size
+                        or fingerprint_file(blob) != digest[7:]):
+                    mismatches.append('archive-unavailable:' + name)
+                elif name not in actual_paths:
+                    archive_only.add(name)
+        mismatches.extend('path-set:'+p for p in sorted((expected_paths - archive_only) ^ actual_paths))
         for row in self.db.rows('SELECT * FROM documents WHERE namespace=%s', (namespace,)):
-            if row['kind']=='SQLITE':continue
+            if row['kind']=='SQLITE' or row['path'] in archive_only:continue
             path = safe_path(root, row['path'])
             if row['kind'] == 'LINK':
                 good = path.is_symlink() and os.readlink(path) == row['link_target']
@@ -537,4 +806,6 @@ class Catalog:
                 checked_databases.append(record['path'])
             finally:
                 connection.close()
-        return {'equal': not mismatches, 'mismatches': mismatches, 'checked_databases': checked_databases}
+        return {'equal': not mismatches, 'mismatches': mismatches, 'checked_databases': checked_databases,
+                'comparison_scope': 'LIVE_VIEW_AND_VERIFIED_ARCHIVES' if allow_archive_only else 'COMPLETE_NAMESPACE',
+                'archive_only': sorted(archive_only)}

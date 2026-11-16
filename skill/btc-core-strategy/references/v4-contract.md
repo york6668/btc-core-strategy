@@ -1,5 +1,22 @@
 当前新内容使用 revision 9，个人结果继续使用 revision 7 引入的 `recommendations.portfolio.risk_assessment`；`allocation_review`绑定`portfolio_risk_hash`，报告消费`portfolio_risk`。完整新契约见[完整闭环](closed-loop.md)；以下 revision 1–6 仅描述历史兼容，不为新研究强制生成动作。
 
+当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
+
+当前官方线程快照若只返回委托的 `functionCallOutput`，而未显示同一线程/回合的实际 `commandExecution`，MAIN 校验返回 `MAIN_SOURCE_RECORD_NOT_VISIBLE`。这只说明该响应未提供所需记录，不能区分可见性延迟、裁剪或能力缺失，更不能直接认定永久不支持；已实测运行中空投影在回合结束后补出真实命令和 FINAL。委托送达、独立 shell 工具返回成功及节点 ACTIVE 租约分别有其证明范围，不能合成为官方线程执行记录，也不能从进程环境变量或时间相邻推定调用归属。保留原空快照与后续真实原件，按已有原执行的实际进度做有界读取，不重复业务；确无可靠入口才报告准确能力缺口，不无限轮询、换回合、自发消息或手写执行条目。原有真实记录分支及研究作者验证不因此放宽。
+
+该精确线程条目是正式 MAIN 来源分支的项目契约，不是所有只读研究或候选预览的统一前置。隔离验证使用 `BTC_PREVIEW_EXECUTION_PROOF_V1` 分层记录：原 `functions.exec_command` 成功回执及原字节摘要、调用方记录的正常 enter 请求、匹配的节点配置/原运行租约/固定节点版本，以及实际验证源码的完整导出清单指纹。记录请求不等于平台认证命令；这些本地绑定和哈希不证明平台调用者。`claimed_agent_id` 仅声明承担编排职责者，`attribution={verified:false,thread_id:null,turn_id:null,call_id:null,limitation:...}` 与未知型号必须保持原含义。
+
+`execution_evidence.scope=ISOLATED_PREVIEW_EXECUTION` 仅由正常运行准备和专用 `storage.validate_preview`、`report-preview` 消费，仍执行事实、证据、时钟、真实研究作者/实际 APPROVAL、精确候选及全部金融语义检查。原 `validate_main`/commit、正式 report-review/登记不接受此证据；隔离 run 的 observe、main/report 写入阶段也明确拒绝，不将未知型号填成正式小时模型。main check-only 返回原证据范围及 report-preview 后续动作，不引导 commit。没有跳过校验的 CLI 开关，预览上下文与最终产物带回证据范围且不能登记成正式报告。
+
+不可变证据归档由 `storage.archive_evidence` 单一负责，使用 `evidence/` 下的归档锁；正式写入与研究登记已有项目锁时只按“项目→证据”顺序进入，不重入项目锁。独立归档只取证据锁，不反向申请项目锁；新旧策略写入同样复用这个归档入口，保留完整原件验证、原子目录发布及身份核对。归档成功不是研究完成或策略采用，损坏原件及拷贝期间身份变化继续拒绝。
+
+原生行情工具没有返回底层供应商网址时，不猜绑网页。仅支持明确的来源定位符 `tool://web.run/finance`：它标识实际工具接口，不是HTTPS供应商地址。raw使用 `BTC_NATIVE_FINANCE_CAPTURE_V1`，保存完整原生capture（started/ended/results）、与其中唯一成功quotes结果逐字相同的native_response，underlying_provider/provenance_url必须为null；semantics固定为 `TOOL_REPORTED_QUOTES_NOT_EXECUTION_OR_INDEPENDENT_VENDOR_VERIFICATION`。程序核真实查询时钟、成功行情格式、原件摘要与范围，其他tool定位符仍拒绝。
+
+该来源的PUBLIC_RAW只表示原始工具响应；origin始终是 `UNESTABLISHED:web.run.finance`，不增加独立供应商票数、不证明发行商报价、NAV、产品资格或执行价。source.start/end/retrieved_at绑定查询时段，成交时间与延时须另从原响应如实解释；不能用取数时间替代报价时间或把未知delay flag说成实时。观察到约15分钟时差时保留这一事实，未知年份、时区、供应商及场所限制不能靠元数据补成已验证。股票ETF、指数、证券服务内报价与永续不得互换。
+
+修正来源适配时，隔离验证可固定候选源码指纹执行同一业务入口；证明分别列出验证源码与原节点固定版本，不改 ACTIVE 租约、current 或恢复上下文，也不把候选执行说成已安装采用。此方式只验证复制数据上的候选代码；正式节点与正式采用仍沿原版本及原门禁。原平台拒绝、额度锁及权限不因预览证据而解除，缺失作者审批不能被平台归属未验证的说明替代。
+
+
 > 报告的分析依据、触发复核和日本每日反馈以[报告复核契约](report-care.md)为当前规则。新报告包含maintenance；旧格式保持兼容。
 
 历史内容 revision 5 使用七个 section 及唯一 current 指针；新增纯市场结果、分歧区接续、market→portfolio 分阶段材料、MARKET_UPDATE 与 dispute_zone 手机块，完整字段和流程见[独立市场与分歧区](market-state.md)。下述 revision 1—4 保留历史读取规则；该节 revision 5 描述仅供历史恢复，不补造旧记录。
@@ -143,6 +160,10 @@ Sol 映射候选时可用只读 `domain.validate(..., cycle_recheck_at=<独立�
 
 仅已确认偏好修订、账户事实未变时，domain.account_facts使用account_fact_changed_known=false、实际最新fact_owner_fingerprints，以及known_change_evidence=[{confirmation_type: USER_CONFIRMED_PREFERENCE_CHANGE, owner_id: ASSET_CONFIGURATION}]、local_record_status=PREFERENCE_RECORDED，user_input_requirement=NONE。该兼容分支只允许资产配置文件实际变更且操作/纠正记录未变；模型与最终Astra审阅负责确认内容确为偏好变化，不得隐藏成交、账户事实纠正或缺失事实。真实账户变更继续原FACT_SYNC契约；下一轮文件未变时不重复携带此次偏好变更标记。不得为满足旧校验把已记录偏好伪装成待用户同步的账户事实。
 
+revision8及以上已完成事实重评时，可使用account_fact_changed_known=true、local_record_status=FACTS_REASSESSED、user_input_requirement=NONE：这表示相对前一策略版本的事实Owner确实改变，且已记录并进入新的个人决策，并非要求用户再次提供同一资料。known_change_evidence仍须逐项等于真实变化的Owner，当前文件指纹、个人决策事实版本及domain/robustness/portfolio_analysis/recommendations/conclusion的实际ASSESSED来源必须一致。缺少新个人决定、沿用私人章节或指纹不符时不启用此分支；未完成处理的变化仍走FACT_SYNC_PENDING。原Astra确切候选批准及正式写入检查保持必要，旧v3接口不启用这一分支。
+
+下一轮须相对实际当前版本核对Owner：文件未变时不重复携带上一轮known-change、confirmation或local_record_status转换标记；最后已知配置及原确认保存在事实Owner和不可变历史，不因此清空。v4兼容层读取旧FACTS_REASSESSED基线时，须先核验真实历史版本内容身份、对应canonical domain及完成个人重评的原版本；此资格只用于解释旧基线，当前变化仍独立验证。旧v3加载入口默认保持严格；任何当前候选自报标志不得替代历史资格。
+
 完整周期报告以币安QQQ、VOO、BTC为用户对象，SPX/NDX保留底层研究身份；加密周期、企业利润、货币与资产重估是解释机制，方法见[核心策略](core-strategy.md#三类收益与核心报告)。保留BTC_CYCLE身份、六项实际审阅与唯一DecisionSnapshot；六项覆盖按适用资产说明，不用BTC数据替代美股。正文、业务语义、重要条件及建议统一映射，factor_checks/research_findings及maintenance维护其全部重要内容，而非仅手机稿。
 
 recommendations.lower_spot.allocation_percent承载经审阅的动态组合：非空、有效标识、比例正值且合计100，不固定成员名单。tiers缺省继承该组合；显式allocation_percent仅允许数值等同于侧级组合或{"BTC":"100"}独立机会，不接受未说明的残缺篮子。侧级仅含BTC时，缺省继承仍是组合，显式BTC分配仍保留独立BTC身份。upper_short不得带该字段。资金路径只计一次该档capital_u，有显式分配时额外派生spot_capital_by_asset_u。比较按数值规范化，展示及历史共识恢复保留资产归属；不回填旧档位或历史正文。美股与整体配置复用既有叙述及business_meaning，不新增当前指针或挪用BTC价格字段。
@@ -151,7 +172,7 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 完整周期请求使用稳定 `issue_key=BTC_CYCLE`，scope 至少包含 `/domain`、`/outlook`、`/robustness`、`/portfolio_analysis`、`/recommendations`、`/conclusion`、`/factor_assessment`。原始输入加 cycle_assignment 覆盖提示，市场历史锚保留原始期限与出处，初始输入不携带旧个人建议章节；先独立研究，不能把 Sol 当前观察或候选先传给 Astra。其他问题可用原专项接口，但不能成为完整周期基线。
 
-独立回答后，Sol 将结论映射到原七个 section，补齐事实、引用、组合和时间一致性。`research-reveal` 的 candidate 为 `{assessment:{domain,outlook,robustness,portfolio_analysis,recommendations,conclusion,factor_assessment,fact_version,temporal_scope}}`，可由 `v4.cycle.candidate(assembled_draft)` 机械提取。此时不发布。候选预检复用正式分析section的结构、稳定概念与去重检查，以及原建议数字/结构和证据适用时钟校验，from不得晚于候选knowledge_cutoff；完整证据与domain映射仍先对实际assembled draft做只读assessment.validate，不能只检查domain后把其余结构错误留到正式写入。正式生效以真实发布时钟为下界，详见[建议维护](recommendation-maintenance.md)。Astra 第二阶段必须实际读取对应候选，最终回答使用以下 JSON；这里的值均为填写说明，不能直接当成完成结果：
+独立回答后，Sol 将结论映射到原七个 section，补齐事实、引用、组合和时间一致性。`research-reveal` 的 candidate 为 `{assessment:{domain,outlook,robustness,portfolio_analysis,recommendations,conclusion,factor_assessment,fact_version,temporal_scope}}`，可由 `v4.cycle.candidate(assembled_draft)` 机械提取。此时不发布。候选预检复用正式分析section的结构、稳定概念与去重检查，以及原建议数字/结构和适用时钟校验：revision 7及以前沿用knowledge_cutoff，revision 8起使用knowledge_cutoff与真实investment_decision.decided_at的较晚时点，不倒填形成时间，未来起效与形成时已过期的可执行建议仍拒绝；完整证据与domain映射仍先对实际assembled draft做只读assessment.validate，不能只检查domain后把其余结构错误留到正式写入。正式生效以真实发布时钟为下界，详见[建议维护](recommendation-maintenance.md)。完整分析预检可通过原PUBLIC来源索引识别逐值相同的outlook与factor，核原证据包及补证来源后沿用该公开结果已经完成的生命周期验证；不把旧claim当作当前新形成，也不因此批准个人候选。其他私人、domain、引用与数字校验照常，正式采用仍需本候选真实APPROVAL。Astra 第二阶段必须实际读取对应候选，最终回答使用以下 JSON；这里的值均为填写说明，不能直接当成完成结果：
 
 ```json
 {
@@ -202,7 +223,9 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 5. 失真保存实际展示稿并进入CORRECTION_REQUIRED；BEGIN_CORRECTION最多一次，发送本地源稿要求原样展示，再绑定实际消息并回读。仍失败保留交付异常，不重启研究。超时或空回读用UNKNOWN；一次空结果、尚未索引或只看到发送前游标都不证明未发送。NOT_SENT仅用于尚未绑定请求且发送工具明确证明未派发，原缺席回读还须提供dispatch_evidence={outcome:NOT_DISPATCHED,record_ref,detail}，record_ref来自实际发送失败记录并列入record_refs；已绑定真实请求不能标未派发。
 6. 验收保存源稿、展示稿、实际消息关联与审阅，再推进reported-current。晚确认旧稿不得倒退基线。`repair-completion --delivery-id`只重验已完成交付，不重新发送。
 
-AUTHORED_REPORT_V1 的源稿与会话文本只允许单个文件结束 LF 差异；不改变内部换行、空格、语义或源稿哈希，presentation.text_match 记录 EXACT 或 TERMINAL_LF_ONLY，旧回执没有该字段仍按实际正文核验。末尾 LF 导致的旧 CORRECTION_REQUIRED 可重新 BIND_REQUEST 核正同一请求的实际文本，再以同一助手身份、原正文和完成时间 CONFIRM；原 journal 与尝试次数保留，不能借此替换另一请求、改稿或补造发送。其他更正沿原一次重发链。
+AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及原生回读将 Markdown `[标签](URL)` 编码为 `\uE200url\uE202标签\uE202URL\uE201` 的表示差异。只还原这个已核表示，标签、完整 URL、顺序及其余所有文字、数字、空格与内部换行必须逐字一致；不接受一般语义近似、任意引用标记或链接省略。source/display 原文与哈希不改，presentation.text_match 如实记录 EXACT、TERMINAL_LF_ONLY 或 PLATFORM_URL_MARKUP。旧回执没有字段仍按真实正文核验。
+
+上述表示差异导致的旧 CORRECTION_REQUIRED 可沿同一个请求、attempt、助手身份、原正文和完成时间重新 CONFIRM；只更正同一回执的核验结论，保留原 journal、失败观察和尝试次数，不重新发送。请求绑定本身仍保持原逐字要求；不得借此改稿、替换 URL/标签、换请求、补造发送或解除真正的 UNKNOWN/拒绝。其他更正沿原一次重发链。
 
 历史错误绑定到较早请求而卡在SENDING/UNKNOWN时，使用同一delivery的`RECONCILE_REQUEST`，不手改status、不再次发送。receipt为`{schema:BTC_REQUEST_RECONCILIATION_V1,previous_request:{record_ref,started_at,body},binding:<完整BTC_SENT_REQUEST_V1>,readback:<完整BTC_CLOUD_READBACK_V5>,reason}`。previous_request取实际云端记录，必须匹配原绑定且早于当前尝试；binding取当前尝试后真实请求；readback对应该请求的完成助手正文并通过全部语义核验。接口保留原绑定和缺席记录，新增恢复证据后原子确认；失败不修改状态，相同恢复证据可幂等重放。确认旧日报不替代今日反馈；随后重新审阅过时PENDING稿并完成当前日摘要。
 
@@ -293,7 +316,17 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 
 `research-orchestrated-independent`、`research-orchestrated-result`及原同作者amendment可将`--rollout`指向`BTC_DURABLE_AUTHOR_PROOF_V1`清单，保留原生JSONL路径。清单固定`provider=mcp__codex_app__read_thread`、`parent/child={path,sha256}`及真实`parent_turn_id/child_turn_id`；来源文件为同目录按原始响应字节摘要命名的JSON。原工具响应逐字保存，不按另一宿主格式重建日志。`--dispatch`取真实`subAgentActivity.id`，`--returned`取子线程实际`final_answer`消息ID。
 
-程序核官方durable父子关系、唯一started/interacted与对应完成活动、同一作者线程、成功终态、真实时钟及唯一FINAL；结果仍绑定原请求、冻结输入、补证截止、完整候选和原COMPLETE阶段claim。后续批准及修订重验原始来源字节，原PUBLIC和各后继阶段保留独立证明，不能将PORTFOLIO冒充APPROVAL。节点桥接只复制清单及两份摘要绑定的原始响应，不复制无关会话或改写事件。
+程序核官方durable父子关系、唯一started/interacted与对应完成活动、同一作者线程、成功终态、真实时钟及唯一FINAL；结果仍绑定原请求、冻结输入、补证截止、完整候选和原COMPLETE阶段claim。后续批准及修订重验原始来源字节，原PUBLIC和各后继阶段保留独立证明，不能将PORTFOLIO冒充APPROVAL。节点桥接只复制清单及摘要绑定的原始响应，不复制无关会话或改写事件。
+
+`BTC_DURABLE_NATIVE_CONTINUATION_PROOF_V1` 另行消费原生续接证据，不把原生发送伪装为协作活动。它仅适用于已完成原 PUBLIC 的同作者后继，不创建独立 PUBLIC：
+
+- `parent/child`、各自 turn ID、`dispatch_call_id/return_message_id` 绑定本次完整官方 `read_thread` 响应；`original={path,sha256,dispatch_call_id,return_message_id}` 指向同目录内容寻址的原协作 PUBLIC 证明，并重新验证其全部原件、原作者路径和线程。后继作者线程必须与原 PUBLIC 完全相同，fork 不视作同作者。
+- 父回合的确切 `mcpToolCall` 必须是成功、未截断的 `codex_app.send_message_to_thread`，实际参数目标为该原作者。接收端同一官方原响应中，`userMessage.content[].codexDelegation` 的原生结构字段 `sourceThreadId/input` 必须与发送线程和完整 prompt 逐字匹配；所选消息真实位于确切接收 turn 中，且在捕获窗口内发送和接收关联唯一。普通文本内的 XML/JSON 标签、助手转述或旧 `functionCallOutput` 的文本包装不能充当这些原生结构字段。
+- 正式原生发送可能只返回 threadId，并不要求回执带 turnId；调用投影未包含 result 也不否定已由上述原生入站记录证明的接收。已暴露的失败、错误、截断或矛盾 ID 仍拒绝。来源宿主按官方记录读取，不将发送端强写成 durable；跨宿主目标须由实际参数明确。调用完成、接收、原作者身份、新回合 FINAL、模型配置与业务准入分别核验；调用者回合后来中断不抹去已成功的调用和接收。
+- 此格式依据真实获准协调调用的两端原生记录，不把合成样本定义成平台合同。只读 `delivery` 核对只能证明对应消息接收，允许接收回合尚在执行；完整作者结果仍须原 PUBLIC 映射、成功终态及唯一 FINAL。接收核对不提供恢复许可，未观测历史不提升为全会话入站完整性；没有结构化接收证据时保持缺证，不按时间寻找最新回合或试发业务来制造证明。
+- 返回中明确记录实际派发方法和原 PUBLIC 身份映射；研究消费者另核原 PUBLIC 的 dispatch/return 证据摘要与本研究原记录完全一致，同一线程的另一份 PUBLIC 不能替代。未验证的入站消息、型号、effort及上下文继承保持未验证。原生回执不提供消息授权、不解除平台拒绝、不授予采用；原 guard 的派发前 CLAIMED_NEW 与登记时确切 COMPLETE 票据要求不变。CANCELED、UNKNOWN、错误阶段或证明摘要不符的票据不能使用。
+
+此来源适配只解析和核验已存在证据，不发送消息、不申请票据、不恢复任务，也不更改正式策略或投递状态。
 
 此路径的`verification_scope=DURABLE_AUTHOR_FINAL_AND_MAIN_INPUT_REVIEW`只证明所列范围。`source_verification`明确保留`runtime_model/runtime_effort/runtime_fork_turns=null`、`runtime_configuration_verified=false`及`inbound_messages_verified=false`；不以claim型号、提示语或作者自述补为平台事实。实际派发仍依项目Astra/max分工，MAIN按可得原输入、公开文件、读取轨迹及实际阶段审阅，说明未暴露部分；原独立性只能按这份证据强度表达。平台未导出历史配置不使真实完成成果失效，也不授权伪造来源、另跑研究、绕过锁或权限。
 
@@ -302,6 +335,8 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 同知识截止的纯正文纠错若仅改变 market_report、horizon.basis 或 factor.assessment，其他字段（包括全部 forward/lifecycle、方向与引用）逐值未变，则按原请求输入重新核验原冻结前瞻，不要求作者补造一次后验观察。原 claim 首次登记保持原样；截止时间变化或任一其他字段变化仍走正常后继校验，正文修正不构成预测兑现或续期。
 
 同一 durable MAIN 的正式映射及报告也不得把预期 Sol/high 写成已证实配置。其 provenance 使用真实 MAIN thread ID 作为 agent_id、实际 run_ref、model/effort=null，并提供 configuration_evidence={scope:DURABLE_MAIN_THREAD_TURN_AND_RUN_ENTRY,proof_path,proof_hash,runtime_configuration_verified:false}。BTC_DURABLE_MAIN_PROOF_V1 清单绑定官方原响应的 thread/turn、本节点配置所指 bin/btc-core 的独立 enter 命令及其完整成功 JSON 输出；run_ref、ACTIVE、固定发布目录与节点配置必须相符，不能由多行 shell 的整体退出码冒充入口成功。原响应为摘要命名的同目录文件。MAIN turn 可正在执行，不能强求提交本轮结果前先结束本轮。已暴露配置、错误或失败入口、改过的原件以及 thread/turn/run 错绑均不接受该未知分支；原 native/历史契约保留。调用方先用现有 copy_proof 固定清单及原响应到共享 native proof 目录，再将容器可读路径绑定到 identity；不假设嵌套 proof_path 会自动桥接。正式映射与 report-review 共用验证，明确传入运行身份时不再由 run_flow 的原生调度预期填充空字段。这份来源不证明未导出的模型配置，也不替代原研究作者的真实 APPROVAL。
+
+历史 MAIN completion 的来源按该官方原响应所记录的原节点入口与输出核验，不把当前读取节点的 release_root 倒填成旧作者节点。thread、turn、run、命令、完整输出与原件摘要绑定不变；新作者的准入仍须匹配当前配置节点。正常 enter 新输出以 node_path_binding 固定原声明目录及当时解析目录，历史校验消费该原始关系，不在读取机重新解析旧别名。没有此字段的旧源只接受原输出中已自洽的字面节点关系；旧别名关系缺证时保留不可验证，不猜造映射。当前作者仍核真实节点解析后的 node_config；此规则不接受任意配置路径。
 
 新完整链验收必须实际经过原 `research.request/read_input/_public_result` 的市场、前景和完整 `factor_assessment={items,summary}` 合同，冻结公开阶段后才读取个人事实并完成同一原研究的候选审阅、主Owner映射与报告消费。只把已有散文填成固定 semantic、旁路 factors 或造空 legacy Owner 的消费者回放，不能代替原链完成。事实、后续反馈和成稿须分别保留原身份及实际时钟；无新形成后市场事实时说明尚无自然后验。合成支持/部分/证伪/未知及范围测试单独标记，验收模型是否维持、降级、替代或撤回对应命题，不能只验反馈进入payload。独立语义审阅对照实际主因形成、一步前瞻、反证影响、原入口/消费者和正文；失败全文与实质正例均需判定，字段、关键词、测试通过不提供语义评分。
 
@@ -312,3 +347,5 @@ revision 9 的 investment_decision 另带 account_constraints，每个候选带 
 同作者实际 APPROVAL 若拒绝确切已揭示候选，并在 FINAL 中以路径和字节摘要绑定完整修订 manifest，可显式用 `--source-phase APPROVAL` 消费其中的后来公开子产物；不改旧票据相位，也不把拒绝变成新稿批准。程序核被拒候选/原公开 Owner/原全文摘要、实际 FINAL 与 manifest、公开稿和补充审阅的不可变副本，以及作者确实已读的匿名 raw 原字节和各自检索/读取时钟。只把这些公开 raw 加入原有效公开来源校验视图，不把新包创建或成稿时刻倒填成作者知识。`public_update_content_hash` 使用既有 `closed_loop.public_hash`（outlook/factor）；完整 JSON Owner 摘要另由正常接口计算。候选阶段复用同一可信 companion 验证，不在公开阶段读取私有全稿。新 Owner 标为 `DISCLOSED_SAME_AUTHOR_PUBLIC_UPDATE_FROM_APPROVAL`，结果登记、reveal、baseline/report-context 一致验证原来源关系；完整新候选仍需新的实际揭示、适用性核对和同作者真实审阅。重复同一实际 amend 返回原 Owner/首次冻结，不新造 lifecycle 或调用；普通 PUBLIC_CORRECTION 默认、native input-read 边界与正式批准要求保持。
 
 MAIN 的 ASSESSED 时点记录本次映射审阅，不重写已冻结研究的命题形成或输入时钟。正常采用可从既有 research_absorptions 反查实际已批准结果、完整候选及不可变公开 Owner：已审含义/正文、事实、候选时间范围和证据身份均匹配，并重验公开来源与 companion 后，assessment 和 publication 共用冻结公开读取语义。不得将研究 Owner 冒充 REUSED 的 DecisionSnapshot 祖先；新写或改动的命题仍校验自身当时冻结输入。程序通过不代替实际批准，运行记账和规范化也不能改变已审业务含义或延长有效期。
+
+个人决定尚未完成时，有限反馈仍须消费真实适用性限制；新版 decision_results 与 applicability 的该限制引用并存，不因投影改版互相排斥。该引用只交付已存在的限制，不使建议或价格可执行。公开来源中的普通版本号不等于内部控制字段；正文质量仍须实际语义审阅，关键词检查不能代替来源和含义判断。

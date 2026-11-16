@@ -19,7 +19,7 @@ WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'p
           'model.deep.claim', 'model.deep.finish', 'model.deep.reconcile', 'model.defect.open', 'model.defect.resolve',
           'task.submit', 'task.assess', 'task.start', 'task.finish', 'task.reconcile', 'task.repair',
           'schedule.tick', 'schedule.claim'}
-HOST_METHODS = {'core.execute', 'core.recover', 'reader.checkpoint', 'host.capacity'}
+HOST_METHODS = {'core.execute', 'core.recover', 'reader.status', 'host.capacity'}
 
 
 def invoke(database, method, params):
@@ -172,21 +172,14 @@ def dispatch(settings, request):
                 db.metadata('capacity.host.daily',(prior+[params])[-401:],write=True)
                 return {'recorded_day':params['day']}
         finally:db.close()
-    if method == 'reader.checkpoint':
-        from .catalog import Catalog
+    if method == 'reader.status':
+        if params:
+            raise ValueError('reader.status takes no arguments')
+        from .reader_store import status
         db = Database(settings)
         try:
-            with db.writer(), db.transaction():
-                if (db.metadata('writer') or {}).get('owner') != 'DOCKER':
-                    raise Conflict('reader checkpoint requires the active Docker writer')
-                result = Catalog(db).sync('reader', settings['reader_data'])
-                from .reader_prices import project
-                prices = project(db)
-                from . import scheduler
-                scheduling = scheduler.observe_reader(db, prices)
-                db.metadata('reader.checkpoint', {'at_ms': millis(), 'databases': result['sqlite']}, write=True)
-                return {'checkpointed': True, 'databases': result['sqlite'], 'prices': prices,
-                        'schedule': scheduling}
+            db.execute('START TRANSACTION READ ONLY')
+            return status(db)
         finally:
             db.close()
     if method not in READS | WRITES:

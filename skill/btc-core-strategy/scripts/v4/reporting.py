@@ -25,10 +25,37 @@ def raw_for_observation(root, observed):
     db = Path(root).parent / 'market_observation.sqlite3'
     with market._connect(db, readonly=True) as conn:
         row = conn.execute('SELECT payload FROM evidence WHERE evidence_id=?', (observed['market_evidence_id'],)).fetchone()
-    require(row is not None, 'reported observation raw evidence missing')
-    raw = json.loads(row[0])
+    if row is not None:
+        raw = json.loads(row[0])
+    else:
+        # An exported/isolated node can retain the exact observation and its
+        # frozen evidence archive without the source node's SQLite row. Read
+        # only that observation's bound archive, never a newer global market.
+        from . import evidence
+        identity = observed.get('context', {}).get('identity', {})
+        archive_id = identity.get('factor_evidence_id')
+        require(isinstance(archive_id, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', archive_id),
+                'reported observation raw evidence missing')
+        directory = Path(root) / 'evidence' / archive_id[7:]
+        package = evidence.validate(read(directory / 'evidence.json'), directory)
+        require(package['evidence_id'] == archive_id, 'observation evidence archive mismatch')
+        matched = {}
+        for source in package['sources']:
+            if source['trust'] != 'PUBLIC_RAW':
+                continue
+            value = read(directory / 'raw' / (source['raw_hash'][7:] + '.json'))
+            if (not isinstance(value, dict) or value.get('schema') != market.EVIDENCE_SCHEMA
+                    or value.get('evidence_id') != observed['market_evidence_id']):
+                continue
+            if identity.get('retrieval_id') and value.get('retrieval_id') != identity['retrieval_id']:
+                continue
+            market.validate_evidence(value)
+            matched[digest(value)] = value
+        require(len(matched) == 1, 'reported observation raw evidence missing or ambiguous in its bound archive')
+        raw = next(iter(matched.values()))
     market.validate_evidence(raw)
     require(raw['evidence_id'] == observed['market_evidence_id'], 'observation/raw mismatch')
+    require(raw['observed_hour'] == observed['observed_hour'], 'observation/raw hour mismatch')
     return raw
 
 
@@ -204,6 +231,11 @@ def context(root):
     current_facts = facts(root.parent.parent)
     identity = {'decision_id':decision['decision_id'], 'observation_id':observed['observation_id'],
                 'market_evidence_id':raw['evidence_id'], 'reported_identity':prior['identity'], 'display_delivery_id':prior.get('display_delivery_id'), 'fact_version':current_facts}
+    from .position_analysis import inputs
+    mode = inputs(root, root.parent.parent)
+    if mode is not None:
+        identity['position_analysis_policy_version'] = mode['policy']['version']
+        identity['position_analysis_economic_hash'] = mode['economic_input_hash']
     if separated:
         identity['factor_evidence_id'] = supplementary_id
     previous_path = root/'report-review-current.json'
@@ -228,11 +260,13 @@ def context(root):
     current_report_contract = separated and max(observed.get('revision', 5), decision['assessment'].get('revision', 5)) >= 6
     if current_report_contract:
         identity['report_contract_revision'] = REPORT_CONTRACT_REVISION
-    return {'schema':'BTC_REPORT_CONTEXT_V1', 'context_id':digest(identity), 'identity':identity,
+    value = {'schema':'BTC_REPORT_CONTEXT_V1', 'context_id':digest(identity), 'identity':identity,
             **({'report_contract_revision': REPORT_CONTRACT_REVISION} if current_report_contract else {}),
             **cycle_context, **({'market_revision':max(5, observed.get('revision', 5), decision['assessment'].get('revision', 5))} if separated else {}), 'evaluated_at':stamp, 'reported':prior, 'report_care':care, 'coverage':{'start':start or raw['observed_hour'],'end':raw['cutoff']},
             'coverage_display_revision':3,
-            'knowledge_cutoff':max([x['retrieved_at'] for x in raw['retrievals'].values()] + ([supplementary['cutoff']] if supplementary else []), key=instant),
+            'knowledge_cutoff':max([x['retrieved_at'] for x in raw['retrievals'].values()]
+                                   + ([supplementary['cutoff']] if supplementary else [])
+                                   + [decision['assessment']['temporal_scope']['knowledge_cutoff']], key=instant),
             'public_evidence': supplementary if separated else None,
             **({'collector_observations': collector_observations} if collector_observations else {}),
             'report_subjects': subjects(supplementary, observed['review'].get('dispute_zones', [])),
@@ -244,6 +278,7 @@ def context(root):
                                 'knowledge_cutoff':decision['assessment']['temporal_scope']['knowledge_cutoff'],
                                 'evidence_id':decision['assessment']['evidence_id']},
             'observation':{'observation_id':observed['observation_id'],'review':observed['review'], 'main_eligible':observed.get('main_eligible'),
+                           'observed_hour':observed['observed_hour'], 'market_cutoff':raw['cutoff'],
                            'baseline_decision_id':observed['context']['identity']['decision_id']},
             'metrics':metrics(raw,start), 'unreported':unreported[-240:], 'unreported_total':len(unreported),
             'unreported_truncated':len(unreported)>240,'pending_delivery':pending_deliveries,
@@ -252,15 +287,22 @@ def context(root):
             'delivery_obligations':obligations(root),
             'required_report_events':required_events(root, cycle_context.get('cycle_baseline')),
             'previous_silence':{k:previous[k] for k in ('action','reason','next_observation')} if previous else None}
+    if mode is not None:
+        value['position_analysis_input'] = mode
+    return value
 
 
 def authoring_guidance(ctx):
     """Reuse the report-stage method at every model-facing context entry."""
     from . import cycle
     from .report_care import AUTHORING
-    from .market_state import PUBLIC_ANALYSIS_REPORT_REVIEW
+    from .report_intent import DECISION_COVERAGE, RESULT_CONSUMPTION_REVIEW
     guidance = {'maintenance_authoring': deepcopy(AUTHORING),
-                'completed_analysis_review': PUBLIC_ANALYSIS_REPORT_REVIEW}
+                'completed_analysis_review': RESULT_CONSUMPTION_REVIEW,
+                'decision_content_baseline': deepcopy(DECISION_COVERAGE)}
+    if ctx.get('position_analysis_input') is not None:
+        from .position_analysis import INSTRUCTIONS
+        guidance['position_analysis_instructions'] = INSTRUCTIONS + '仅承接实际完成的方向处理；通用全账户/敞口执行检查不能变成本mode的数量前置。'
     if ctx.get('deep_report_policy_revision') == 1:
         guidance.update(cycle_report_instructions=cycle.REPORT_SCOPE_REVIEW,
                         method_references=cycle.method_references('report'))
@@ -273,14 +315,133 @@ def authoring_guidance(ctx):
                         reading_review_instructions=deepcopy(READING_REVIEW))
     if ctx.get('report_contract_revision', 1) >= 5:
         guidance['final_text_review'] = ('用run-advance --stage report --check-only导出实际候选，按返回review_read完整回读候选及冻结来源，逐句核对市场、产品身份与底层证据的实际归属，再填写具体quality_review及reviewed_candidate_hash；任何正文或绑定改变均重新核验，旧审阅不沿用。哈希仅绑定对象，不证明语义。冻结后逐字交付；外部聊天改写无法由项目程序控制。')
+    from .decision_design import public_case, revision, REPORT_INSTRUCTIONS as DECISION_REPORT_INSTRUCTIONS
+    if public_case((ctx.get('current_strategy') or {}).get('outlook')) is not None:
+        guidance.pop('cycle_report_instructions', None)
+        guidance.pop('method_references', None)
+        guidance.pop('maintenance_authoring', None)
+        guidance['decision_design_revision'] = revision(public_case(ctx['current_strategy']['outlook']))
+        guidance['body_authoring_instructions'] = DECISION_REPORT_INSTRUCTIONS
+        guidance['reading_review_instructions']['cycle_decision'] = ('逐项对照实际论证和最终原句：1–3月驱动传导/已定价与最强反证，真实资产机会及等待比较，配置与纪律的同一取舍。明确新证据可推翻旧论点、主线成立仍可能不值得买；程序/审批细节不进入正文。此项是模型语义审查，不是词句评分。')
+        if guidance['decision_design_revision'] >= 2:
+            from .report_intent import OPPORTUNITY_CHOICE_REVIEW
+            guidance['reading_review_instructions']['opportunity_choice'] = OPPORTUNITY_CHOICE_REVIEW
+            guidance['reading_review_instructions']['exposure_choice'] = ('逐项核对实际选择准则、目标风险、同周期路径下的候选得失及gap_effects；未知可能改变保留/减哪一侧/退出时，POLICY不能把它改成仅数量问题。比较是否足以按适用准则排序由模型裁决，不要求各情景必胜；列利弊不算排序成立。正文须与确切排序及条件一致。')
+        guidance['result_instructions'] = DECISION_REPORT_INSTRUCTIONS
+        guidance['completed_analysis_review'] = RESULT_CONSUMPTION_REVIEW + ('逐项核实六项原问题由哪个实际研究或个人决定回答，正文只取本轮必要信息。核存量与新增决策的区别、选择准则及证据是否真能排序；RANKED标签、列出得失、降低确信、未知或作者批准都不证明相对选择成立。CONDITIONAL与UNRANKED不得被报告升级为无条件持仓动作；允许经证实的风险约束或稳健准则支持减险，不要求所有路径必胜。')
     return guidance
+
+
+PREPARATION_FIELDS = ('schema', 'context_id', 'identity', 'knowledge_cutoff',
+                      'evaluated_at', 'report_contract_revision')
+
+
+def prepare_context(root, value):
+    """Archive the small actual clock/input binding at the authoring entry."""
+    if value.get('report_contract_revision', 1) < 8:
+        return value
+    binding = {key: deepcopy(value[key]) for key in PREPARATION_FIELDS}
+    identity = digest(binding)
+    path = Path(root) / 'report-preparations' / (identity[7:] + '.json')
+    if not path.exists():
+        try:
+            create(path, binding)
+        except FileExistsError:
+            pass
+    require(not path.is_symlink() and read(path) == binding,
+            'report preparation record damaged')
+    return dict(value, preparation_id=identity)
+
+
+def validate_preparation(root, value):
+    identity = value.get('preparation_id')
+    require(isinstance(identity, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', identity),
+            'actual authoring-entry report preparation required')
+    binding = {key: value.get(key) for key in PREPARATION_FIELDS}
+    require(digest(binding) == identity, 'prepared report clock or input was edited')
+    path = Path(root) / 'report-preparations' / (identity[7:] + '.json')
+    require(path.is_file() and not path.is_symlink(), 'report preparation is not recorded')
+    require(read(path) == binding, 'report preparation record damaged')
 
 
 def authoring_context(root):
     # Instructions are presentation metadata, not a new decision or identity.
-    value = context(root)
+    value = prepare_context(root, context(root))
     value.update(authoring_guidance(value))
     return value
+
+
+def preview_context(root, project, draft, evidence_dir, review_value, *, _clock=None):
+    """Validate an unadopted candidate through the normal checks, then author.
+
+    This writes only the existing immutable authoring-clock receipt. It never
+    publishes a strategy, rewrites current, creates an outbox item or releases
+    a failed approval. An exact actual approval remains part of validate_main.
+    """
+    from . import storage, sensing, evidence, closed_loop
+    from .decision_design import public_case
+    prior = storage.current(root)
+    accepted = storage.validate_preview(root, project, draft, evidence_dir, review_value, prior)
+    require(public_case(accepted['outlook']) is not None, 'candidate preview requires the decision design')
+    package = evidence.validate(read(Path(evidence_dir) / 'evidence.json'), evidence_dir)
+    raw = sensing.raw_market(evidence_dir, accepted)
+    require(raw is not None, 'preview requires the candidate exact public market package')
+    stamp = _clock or now()
+    version = facts(project)
+    require(version == accepted['fact_version'], 'persistent configuration changed before preview')
+    from .equity_products import subjects, REPORT_QUOTE_POLICY
+    identity = {'preview_draft_id': accepted['draft_id'], 'decision_id': None,
+                'baseline_decision_id': prior['decision_id'], 'fact_version': version,
+                'factor_evidence_id': package['evidence_id'], 'market_evidence_id': raw['evidence_id'],
+                'report_contract_revision': REPORT_CONTRACT_REVISION,
+                'report_quote_policy': digest(REPORT_QUOTE_POLICY)}
+    from .main_flow import validate_preview_provenance
+    execution = validate_preview_provenance(accepted['provenance'], project=project)
+    identity['execution_evidence_hash'] = digest(accepted['provenance'])
+    strategy = {'decision_id': None, 'owner_status': 'UNADOPTED_PREVIEW',
+                **{k: deepcopy(accepted.get(k)) for k in ('revision', 'conclusion', 'outlook', 'robustness',
+                    'portfolio_analysis', 'recommendations', 'factor_assessment', 'section_provenance')},
+                **accepted['temporal_scope'], 'evidence_id': accepted['evidence_id']}
+    ctx = {'schema': 'BTC_REPORT_PREVIEW_CONTEXT_V1', 'context_id': digest(identity), 'identity': identity,
+           'preview_only': True, 'execution_evidence': execution,
+           'evaluated_at': stamp, 'market_revision': accepted['revision'],
+           'report_contract_revision': REPORT_CONTRACT_REVISION, 'current_strategy': strategy,
+           'knowledge_cutoff': accepted['temporal_scope']['knowledge_cutoff'],
+           'coverage': {'start': raw['observed_hour'], 'end': raw['cutoff']},
+           'public_evidence': package, 'metrics': metrics(raw, None), 'observation': {},
+           'report_subjects': subjects(package, accepted['outlook'].get('dispute_zones', [])),
+           'report_quote_policy': deepcopy(REPORT_QUOTE_POLICY)}
+    # Run the real finished-result consumer now, not only after text is written.
+    ctx['decision_results'] = closed_loop.report_inputs(ctx)['decision_results']
+    ctx = prepare_context(root, ctx)
+    ctx.update(authoring_guidance(ctx))
+    return ctx
+
+
+def preview_candidate(root, project, draft, evidence_dir, review_value, spec, prepared):
+    """Render the exact reviewed candidate with no adoption/delivery effects."""
+    from . import storage, authored_report, closed_loop
+    validate_preparation(root, prepared)
+    require(prepared.get('preview_only') is True and prepared.get('schema') == 'BTC_REPORT_PREVIEW_CONTEXT_V1',
+            'candidate preview needs its actual preview authoring entry')
+    accepted = storage.validate_preview(root, project, draft, evidence_dir, review_value)
+    require(prepared['identity']['preview_draft_id'] == accepted['draft_id'], 'preview candidate changed')
+    require(prepared['identity']['baseline_decision_id'] == storage.current(root)['decision_id'], 'preview baseline changed')
+    require(facts(project) == prepared['identity']['fact_version'] == accepted['fact_version'], 'preview facts changed')
+    require(spec['context'] == prepared, 'preview must consume the exact prepared report context')
+    actual = preview_context(root, project, draft, evidence_dir, review_value, _clock=prepared['evaluated_at'])
+    require(actual == prepared, 'prepared preview differs from its actual candidate, evidence or methods')
+    # No caller-supplied replacement projection or private-to-public binding.
+    results = closed_loop.report_inputs(prepared)
+    require(results['decision_results'] == prepared['decision_results'], 'preview decision projection changed')
+    body, prices = authored_report.render(spec, {'assessment': accepted})
+    return {'schema': 'BTC_REPORT_CANDIDATE_PREVIEW_V1', 'preview_only': True,
+            'execution_evidence': prepared['execution_evidence'],
+            'adopted': False, 'delivered': False, 'draft_id': accepted['draft_id'],
+            'context_id': prepared['context_id'], 'evaluated_at': prepared['evaluated_at'],
+            'knowledge_cutoff': prepared['knowledge_cutoff'], 'body': body,
+            'body_hash': digest(body.encode()), 'price_status': prices,
+            'result_binding': results['result_binding']}
 
 
 def review(root, identity):
@@ -348,11 +509,20 @@ def validate_information(spec, ctx, assessment_fact_version, current_fact_versio
 
 
 def record(root, spec, *, prepared_context=None):
+    require(not (spec.get('context') or {}).get('preview_only') and not (prepared_context or {}).get('preview_only'), 'preview cannot be registered as a formal report')
     from . import storage
     from .common import replace
     with locked(root):
         ctx = context(root)
         if prepared_context is not None:
+            if ctx.get('report_contract_revision', 1) >= 8:
+                validate_preparation(root, prepared_context)
+                require(prepared_context.get('schema') == ctx['schema']
+                        and prepared_context.get('report_contract_revision') == ctx.get('report_contract_revision')
+                        and prepared_context.get('knowledge_cutoff') == ctx.get('knowledge_cutoff'),
+                        'prepared report context belongs to a different contract or locked input')
+                require(instant(prepared_context['evaluated_at']) >= instant(ctx['knowledge_cutoff']),
+                        'prepared report clock predates its known input')
             require(prepared_context['context_id'] == ctx['context_id'] and
                     prepared_context.get('identity') == ctx.get('identity'), 'stale prepared report context')
             require(instant(prepared_context['evaluated_at']) <= instant(ctx['evaluated_at']),

@@ -15,3 +15,9 @@ releases/
 .local/
 test_support/reader/
 skill/btc-core-strategy/tests/fixtures/
+
+# Temporary validation belongs to the local project lifecycle
+tests/
+**/tests/
+**/test_*.py
+test_support/

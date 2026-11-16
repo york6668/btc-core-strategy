@@ -200,7 +200,6 @@ class Series:
 
     def repair_seller_knowledge(self, *, source_digest):
         """Append a conservative chronology correction for a proven late download."""
-        import sqlite3
         if not isinstance(source_digest, str) or len(source_digest) != 64 or any(c not in '0123456789abcdef' for c in source_digest):
             raise ValueError('source_digest: expected SHA256')
         repairs = self.db.metadata('seller.knowledge-repairs') or {}
@@ -208,12 +207,9 @@ class Series:
             return {'unchanged': True, 'correction': repairs[source_digest]}
         source = self.db.value(source_digest)
         original = source.get('original_digest') if isinstance(source, dict) else None
-        sidecar = Path(self.db.settings['reader_data'])/'collector_evidence.sqlite3'
-        with sqlite3.connect(sidecar.as_uri()+'?mode=ro', uri=True) as connection:
-            columns = {column[1] for column in connection.execute('PRAGMA table_info(collector_attachments)')}
-            available_column = 'raw_available_at' if 'raw_available_at' in columns else 'NULL'
-            receipts = connection.execute('SELECT message_id,download_attempts,'+available_column+' FROM collector_attachments '
-                'WHERE raw_digest=?', (original,)).fetchall()
+        receipts = [(r['message_id'], r['download_attempts'], r['raw_available_at'])
+                    for r in self.db.rows('SELECT message_id,download_attempts,raw_available_at '
+                                          'FROM collector_attachments WHERE raw_digest=%s', (original,))]
         if not original or not any(attempts > 0 for _, attempts, _ in receipts):
             raise ValueError('no retained failed-download evidence for this source')
         row = self.db.one('SELECT MIN(known_ms) AS original_known_ms,MIN(recorded_ms) AS bound_ms,COUNT(*) AS n '

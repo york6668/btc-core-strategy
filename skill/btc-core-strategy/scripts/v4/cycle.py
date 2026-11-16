@@ -11,7 +11,7 @@ from pathlib import Path
 from .common import digest, exact, instant, now, read, require, text
 from . import market_state
 from .factors import OPPORTUNITY_COST_REVIEW
-from .report_intent import OUTLOOK, DISCIPLINE
+from .report_intent import OUTLOOK, DISCIPLINE, REPORT_SELECTION
 
 ISSUE_KEY = 'BTC_CYCLE'
 SECTIONS = ('domain', 'outlook', 'robustness', 'portfolio_analysis',
@@ -46,6 +46,7 @@ ANALYSIS_FOCUS_REVIEW = market_state.PUBLIC_ANALYSIS_REVIEW + (
     + OPPORTUNITY_COST_REVIEW
 )
 MAPPING_REVIEW = (
+    '先验收用户六点投资问题的实际答案及取舍，再核对映射；接口coverage的六个旧键只是兼容的技术覆盖，不能冒充用户确认的六点基线。条件罗列和主题出现不证明机会或持仓比较已完成。'
     '审阅实际 candidate、补充证据及事实版本，核对七个 section 与独立正文一致，并对照冻结公共命题与最终全文检查个人输入是否反向改变市场方向、同尺度拐点、依据、公开价值或验证关系；市场和个人归属标签不能代替依赖核验。'
     '按 report_boundary 区分内部完整分析与用户正文；映射和汇报不重新排序因子或另立解释，正文呈现已经形成的综合判断。'
     '继承旧版本的假设、证据缺口、宏观字段、建议目的与期限也须回到本轮来源和作者判断；正文修订同步更新全部受影响映射，不只替换摘要，历史依据保留其日期而不冒充当前结论。'
@@ -58,6 +59,7 @@ MAPPING_REVIEW = (
     '绑定本人已撰写且本次已读的冻结正文，二选一，避免重复输出全文。需修改时由你重写正文并再次审阅实际候选。'
 )
 REPORT_SCOPE_REVIEW = (
+    '以下baseline_review和通知模式只判断交付必要性；正文内容及验收仍先由六点投资问题的完成答案决定，不按旧报告或变化清单出题。'
     '先核验当前市场变化并完成对结论、风险和安排的影响判断，再独立判断深评和报告；新数据、新冲突或未知解除不自动要求汇报。'
     '报告围绕框架识别的当前周期状态、方向、价值与风险，开头承接当前周期判断及主导依据；普通日内变化留在内部，不以短线剩余期限、回收或破位替换主结论。'
     'baseline_review 先指出当前重要含义在 reported.display 的对应原句，未出现则明确未展示；'
@@ -86,7 +88,7 @@ SPOT_RISK_REVIEW = (
 CORE_REPORT_REVIEW += market_state.CYCLE_THESIS_REVIEW
 CORE_REPORT_REVIEW += OUTLOOK + DISCIPLINE
 MAPPING_REVIEW += OUTLOOK + DISCIPLINE
-REPORT_SCOPE_REVIEW += OUTLOOK + DISCIPLINE
+REPORT_SCOPE_REVIEW += REPORT_SELECTION
 APPLICABILITY_REVIEW += market_state.CYCLE_THESIS_REVIEW
 
 from .closed_loop import INSTRUCTIONS as CLOSED_LOOP_REVIEW
@@ -226,6 +228,8 @@ def validate_candidate(value, resolve=None, lifecycle_root=None, project=None, f
                                  value['assessment']['temporal_scope']['knowledge_cutoff'], resolver,
                                  revision, public_hash(value['assessment']) if revision >= 6 else None,
                                  value['assessment']['fact_version'], project)
+    from .decision_design import validate_link
+    validate_link(value['assessment'], project)
     # Revision 9 has a real owner/evidence preflight in research.reveal. Frozen
     # review readback preserves that exact candidate rather than inventing a
     # new prior assessment or a dummy evidence owner.
@@ -294,6 +298,29 @@ def adopted(root, assessment):
         require(review_output(req, disclosed, saved['analysis'], saved) == proof, 'cycle review proof changed')
         found.append((saved, disclosed))
     return max(found, key=lambda pair: (instant(pair[0]['market_cutoff']), instant(pair[0]['completed_at']))) if found else (None, None)
+
+
+def registered_frozen_public(root, draft):
+    """Read exact public content already owned by research, not a new approval."""
+    from . import decision_design, research
+    case = decision_design.public_case(draft.get('outlook'))
+    if case is None:
+        return None
+    index = Path(root) / 'research/public_case_sources' / (digest(case)[7:] + '.json')
+    if not index.exists() and not index.is_symlink():
+        return None
+    phase = decision_design.validate_case_source(root, case)
+    original = phase['market_result']
+    if (draft['outlook'] != original['outlook']
+            or draft['factor_assessment'] != original['factor_assessment']):
+        return None
+    require(instant(case['knowledge_cutoff']) <= instant(draft['temporal_scope']['knowledge_cutoff']),
+            'registered PUBLIC uses evidence after the MAIN cutoff')
+    # Preserve original raw inputs and actual correction provenance. A supplied
+    # id or matching case alone cannot grant historical validation privileges.
+    decision_design.case_resolver(root, phase, case)
+    research._verify_market_amendment(phase, root)
+    return phase
 
 
 def approved_frozen_public(root, draft):
@@ -466,7 +493,19 @@ def validate_report_basis(spec, ctx):
         require(basis['status'] == 'CURRENT' and basis.get('report_narrative'),
                 'cycle summary needs a current Astra authored report')
     elif binding['mode'] == 'LIMITED_FEEDBACK':
-        require(basis['status'] != 'CURRENT' or not basis.get('report_narrative'),
+        # Public research and its personal application have separate lifecycles.
+        # This context is produced by the normal report entry, not by a report
+        # author's assertion that work is pending. Reuse the finished-result
+        # consumer for expiry, fact/policy mismatch and missing personal work.
+        public_gap = basis['status'] != 'CURRENT' or not basis.get('report_narrative')
+        personal_gap = basis.get('portfolio_status') == 'FACTS_CHANGED'
+        if not public_gap and ctx.get('market_revision', 0) >= 6 and 'current_strategy' in ctx:
+            from .closed_loop import report_inputs
+            # Economic input equality can make unrelated historical quantity
+            # edits irrelevant to this directional analysis. Do not override
+            # that result with the broader legacy fact-version label.
+            personal_gap = report_inputs(ctx)['applicability']['portfolio']['outcome'] != 'VALID'
+        require(public_gap or personal_gap,
                 'limited feedback requires a real report applicability gap')
     if not basis.get('report_narrative'):
         require(spec.get('maintenance', {}).get('kind') != 'DEEP_REVIEW',
