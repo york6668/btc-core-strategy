@@ -19,6 +19,7 @@ from .codec import Conflict, encode, fingerprint, millis, sync_directory
 from .database import Database
 from .entities import Entities
 from .projection import Projection
+from .model_identity import astra_max
 
 
 RESEARCH_REGISTRATION_COMMANDS = {'research-independent', 'research-orchestrated-independent',
@@ -47,7 +48,7 @@ def validate_deep_result_admission(db, argv, release):
     from . import deep_gate
     state = deep_gate._state(db)
     claim = deep_gate.records(state).get(claim_id)
-    if not claim or claim['state'] != 'COMPLETE' or claim['model'] != 'gpt-6-astra':
+    if not claim or claim['state'] != 'COMPLETE' or not astra_max(claim['model']):
         raise Conflict('original completed Astra claim required for research registration')
     if any(v['state'] == 'OPEN' and deep_gate._affected(v['scope'], 'btc/research')
            for v in state['faults'].values()):

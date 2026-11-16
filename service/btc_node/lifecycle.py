@@ -431,32 +431,63 @@ def measure_capacity(db, *, now=None):
         'physical_measured_at_ms': millis(), 'allocated_file_bytes': real_bytes})
 
 
-def prune_backups(root, *, now_ms, keep_days):
+def expired_backup_stage(db, root, path, cutoff):
+    from .backup import PIN_PREFIX
+    if not re.fullmatch(r'\.backup-[a-z0-9_]{8}', path.name):
+        return False
+    progress = path/'in-progress.json'
+    if progress.is_symlink() or not progress.is_file():
+        return False
+    try:
+        value = json.loads(progress.read_bytes())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(value, dict) or value.get('format') != 'BTC_BACKUP_PROGRESS_V1':
+        return False
+    pin, started = value.get('pin'), value.get('snapshot_ms')
+    if not isinstance(pin, str) or not re.fullmatch(re.escape(PIN_PREFIX)+r'[a-f0-9]{32}', pin):
+        return False
+    destination = value.get('destination')
+    if not isinstance(destination, str) or not Path(destination).is_absolute():
+        return False
+    if Path(destination).parent.resolve() != root.resolve() or type(started) is not int or not 0 < started < cutoff:
+        return False
+    lease = db.one('SELECT IS_USED_LOCK(%s) AS owner', (pin,))
+    return lease is not None and lease['owner'] is None
+
+
+def prune_backups(root, *, now_ms, keep_days, db=None):
     root = Path(root)
     # Renaming first makes deletion intent survive a process/VM interruption,
     # including one after rmtree has already removed the backup manifest.
-    # Only this reserved namespace is resumable; incomplete backups stay put.
+    # Only this reserved namespace is resumable; unrecognized stages stay put.
     for path in root.iterdir():
         if re.fullmatch(r'\.pruning-[a-f0-9]{32}', path.name) and not path.is_symlink() and path.is_dir():
             shutil.rmtree(path)
             sync_directory(root)
-    backups=[]
+    cutoff = now_ms-keep_days*DAY
+    backups, abandoned, removed = [], [], []
     for path in root.iterdir():
         manifest=path/'manifest.json'
-        if path.is_symlink() or not path.is_dir() or not manifest.is_file():continue
+        if path.is_symlink() or not path.is_dir() or manifest.is_symlink():
+            continue
+        if not manifest.exists():
+            if db is not None and expired_backup_stage(db, root, path, cutoff):
+                abandoned.append(path)
+            continue
+        if not manifest.is_file():
+            continue
         value=json.loads(manifest.read_bytes())
         if value.get('format')!='BTC_MYSQL_BACKUP_V1':continue
         created=int(value.get('created_ms',manifest.stat().st_mtime_ns//1000000))
         backups.append((created,path))
-    removed=[]
-    for created,path in sorted(backups)[:-2]:
-        if created < now_ms-keep_days*DAY:
-            retired = root / ('.pruning-' + uuid.uuid4().hex)
-            os.rename(path, retired)
-            sync_directory(root)
-            shutil.rmtree(retired)
-            sync_directory(root)
-            removed.append(path.name)
+    for path in [path for created,path in sorted(backups)[:-2] if created < cutoff] + abandoned:
+        retired = root / ('.pruning-' + uuid.uuid4().hex)
+        os.rename(path, retired)
+        sync_directory(root)
+        shutil.rmtree(retired)
+        sync_directory(root)
+        removed.append(path.name)
     return removed
 
 
@@ -487,9 +518,10 @@ def daily(db):
         keep_days = int(db.settings.get('backup_retention_days', 7))
         # Named migration/recovery backups obey the same lifetime as daily
         # backups; a non-date directory name must not retain raw data forever.
-        prune_backups(root,now_ms=millis(),keep_days=keep_days)
+        pruned = prune_backups(root,now_ms=millis(),keep_days=keep_days,db=db)
     result=maintain(db, apply=db.settings.get('maintenance_enabled', False), measure_files=False)
     if db.settings.get('maintenance_enabled'):
+        result['pruned_backups'] = pruned
         with db.writer(),db.transaction(): db.metadata('maintenance.daily',{'day':day,'result':result},write=True)
     return result
 
@@ -501,6 +533,11 @@ def loop_daily(db):
     the attempt record makes a crash before the daily marker fail closed after
     Docker restarts the process. Both live in the existing MySQL authority.
     """
+    with db.wait_for_writer():
+        return _loop_daily(db)
+
+
+def _loop_daily(db):
     from .deep_gate import check_scope, open_fault
     if not check_scope(db, scope='btc/maintenance')['allowed']:
         raise Conflict('known maintenance defect blocks daily work')

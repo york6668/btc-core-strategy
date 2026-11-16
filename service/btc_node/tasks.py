@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .codec import Conflict, encode, fingerprint, millis
 from . import deep_gate
+from .model_identity import astra_max
 
 
 NAME = 'tasks.BTC'
@@ -241,7 +242,7 @@ def start(db, *, task_id, attempt_id, release_id, claim_id=None, model=None):
     if task['attempts'] >= 2:
         raise Conflict('attempt limit reached; repair and register a changed input')
     if task['kind'] == 'DEEP':
-        if model != 'gpt-6-astra':
+        if not astra_max(model):
             raise Conflict('BTC cycle deep research requires the approved Astra model')
         _text(claim_id, 'claim_id')
         claim = deep_gate.claim(db, claim_id=claim_id, issue_id=task['issue_id'],

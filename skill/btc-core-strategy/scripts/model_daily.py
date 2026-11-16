@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+from model_identity import astra_max
 
 
 class Blocked(RuntimeError):
@@ -107,7 +108,7 @@ def require_success(issue_id, scope, phase, claim_id, rollout_path):
     record = current.get('claims', {v['claim_id']: v for v in current['days'].values()}).get(claim_id)
     if (not record or record['state'] != 'COMPLETE' or not record.get('result_ref')
             or record['issue_id'] != issue_id or record['scope'] != scope
-            or record['phase'] != phase or record['model'] != 'gpt-6-astra'
+            or record['phase'] != phase or not astra_max(record['model'])
             or record['result_ref'] != sha256(rollout_path)):
         raise Blocked('completed original Astra claim for issue and phase required')
     return record

@@ -155,8 +155,8 @@ def create(db, destination):
                 cleanup_deferred = True
             finally:
                 db.one('SELECT RELEASE_LOCK(%s) AS released', (pin,))
-        # Keep an interrupted stage and its progress marker for diagnosis.
-        # It is never a completed backup and requires explicit review/cleanup.
+        # Keep a failed stage for diagnosis. After the backup retention period
+        # the daily sweep may retire its marked, ownerless staging directory.
     return {'backup':str(destination), 'pin_cleanup_deferred':cleanup_deferred, **manifest}
 
 

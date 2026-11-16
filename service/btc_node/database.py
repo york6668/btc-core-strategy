@@ -23,6 +23,7 @@ class Database:
                                           autocommit=False,
                                           cursorclass=pymysql.cursors.DictCursor)
         self.blobs = Blobs(settings['objects'])
+        self._wait_on_writer_contention = False
 
     def close(self):
         self.connection.close()
@@ -77,19 +78,34 @@ class Database:
             raise
 
     @contextmanager
+    def wait_for_writer(self):
+        """Keep the scheduled maintenance attempt alive across normal contention."""
+        previous = self._wait_on_writer_contention
+        self._wait_on_writer_contention = True
+        try:
+            yield
+        finally:
+            self._wait_on_writer_contention = previous
+
+    @contextmanager
     def writer(self, timeout=30):
         # Serializes service writers and GC across CLI/MCP/server processes.
         self.connection.rollback()
-        row = self.one('SELECT GET_LOCK(%s,%s) AS acquired',
-                       ('btc-node:' + self.settings['mysql']['database'], timeout))
-        if not row or row['acquired'] != 1:
-            raise Conflict('another node writer is active; retry the same operation')
+        lock = 'btc-node:' + self.settings['mysql']['database']
+        while True:
+            row = self.one('SELECT GET_LOCK(%s,%s) AS acquired', (lock, timeout))
+            if row and row['acquired'] == 1:
+                break
+            # 0 means the lock wasn't granted. Nothing in this phase has
+            # executed, so retry only admission. NULL, I/O errors, and errors
+            # after entering the context remain real failures.
+            if not self._wait_on_writer_contention or not row or row['acquired'] != 0 or timeout <= 0:
+                raise Conflict('another node writer is active; retry the same operation')
         try:
             yield
         finally:
             self.connection.rollback()
-            self.one('SELECT RELEASE_LOCK(%s) AS released',
-                     ('btc-node:' + self.settings['mysql']['database'],))
+            self.one('SELECT RELEASE_LOCK(%s) AS released', (lock,))
 
     def put_blob(self, data):
         digest = self.blobs.put(data)

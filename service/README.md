@@ -70,6 +70,10 @@ Docker Reader 和分析投影增量处理原频道已收到的附件价格历史
 
 Reader 原附件沿同一次日维护退出。按接收与已知成功取回时间保留 30 天；仍未完成投影、存在价格原件或证据引用、或者是无法安全归类的当前孤立附件时，保留原件。到期且无这些依赖的附件留下过期状态，避免回退至旧报告；移除附件对 CAS 的引用。CAS 再按现有 48 小时缓冲及其他引用规则删除物理文件；备份按原保留期轮换。删除 MySQL 行后其表空间可复用。
 
+日维护遇到其他正常写入占用 MySQL 写锁时，只等待当前阶段的入锁。已经完成的备份、清理和容量写入不重放；进程中断、连接失败或阶段本身执行失败仍按原故障流程核对。
+
+备份保留期也适用于有本节点进度记录、没有有效清单且没有活动写入租约的中断备份目录。清理只处理已确认的过期残留；有效备份和正在写入的目录按原规则保留。
+
 故障过程材料通过 `failure.get` / `failure.resolve` 接续。兼容导入识别 `failure-receipt.json`、`*-failure.json`、`*-error.json` 中的失败记录；没有证据绑定的明确关闭时保持 ACTIVE。关闭要求当前 document_key、原文 digest、expected_version、已成功提交的核心恢复或验收修复 operation_id 和原因；文件旧、后续运行成功或接口登记本身均不推断恢复。14 天从本次实际关闭确认计时，重复关闭不延后；同路径新故障恢复 OPEN。原文、关闭证据和历史仍由精简记录引用保存，文件回收仍检查依赖和 48 小时缓冲。
 
 默认备份目录位于证据挂载内的 `objects/.backups`，使同一不可变内容可以通过硬链接复用；不同 bind mount 即使显示相同设备号也可能返回 EXDEV 并退回整份复制。旧节点可在维护空闲时迁入同一挂载并保留原路径软链接；逐份校验数据库归档、清单及内容哈希后才合并相同内容，备份名称、恢复入口和保留期限不变。活跃 CAS 删除自己的链接不会删除备份链接；容量按 inode 去重统计，不能把备份逻辑大小当作新增磁盘用量。
@@ -93,3 +97,5 @@ Reader 原附件沿同一次日维护退出。按接收与已知成功取回时�
 `acceptance.status.scope=LOCAL_NATURAL_ACCEPTANCE` 只表示本机自然验收；源码发布、采集节点迁移、云端环境发布和全新任务验证分别核实，不由本机状态推导，也不作为其他操作的一概前置条件。卖竭投影保留附件前30天原料但不将预热行写成派生观测，避免滚动导出边界撤销旧有效值。
 
 `prices.query` 的投影 `provenance.retrieval.raw_ref` 对应 `original_digest` 保存的实际原件：reader 附件使用 `/measurements/seller_exhaustion_daily`，冻结快照使用 `/assets/BTC/datasets/seller_exhaustion_daily`。引用哈希绑定该位置的原值，不能用规范化后的结构替代原件。已存错误引用通过显式写操作 `prices.repair_seller_references`（`limit`、`after` 分页）追加修正；原观测、原获知时间和原引用不变，不增加数值修订。查询仅在 `as_of` 不早于修正获知时间时提供附加 `reference_correction`，其中 `corrected_ref` 可按 `original_digest` 解析。缺原件或原料不一致明确返回 `gaps`，不猜测修正，也不阻断正常市场分析。
+
+研究 claim 的 model 字符串与实际作者证明分别处理：共享 model_identity 按型号及 effort 解释裸型号或组合表示，Astra 裸型号沿本项目既有 Astra/max 请求契约；不会由 claim 推定实际运行。原字符串和身份保留，等价表示只用于相同请求去重及准入，不能产生第二次调用；真实原生派发、完成作者、effort、scope、phase、input 与结果哈希仍各自校验。宿主发布包和 Docker service 都消费这份源码，必须分别安装并核对实际字节。
