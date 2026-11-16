@@ -98,4 +98,4 @@ Reader 原附件沿同一次日维护退出。按接收与已知成功取回时�
 
 `prices.query` 的投影 `provenance.retrieval.raw_ref` 对应 `original_digest` 保存的实际原件：reader 附件使用 `/measurements/seller_exhaustion_daily`，冻结快照使用 `/assets/BTC/datasets/seller_exhaustion_daily`。引用哈希绑定该位置的原值，不能用规范化后的结构替代原件。已存错误引用通过显式写操作 `prices.repair_seller_references`（`limit`、`after` 分页）追加修正；原观测、原获知时间和原引用不变，不增加数值修订。查询仅在 `as_of` 不早于修正获知时间时提供附加 `reference_correction`，其中 `corrected_ref` 可按 `original_digest` 解析。缺原件或原料不一致明确返回 `gaps`，不猜测修正，也不阻断正常市场分析。
 
-研究 claim 的可选 model 字段记录当次请求选择，不是执行资格或实际型号证明。源码不指定研究或主执行者的型号、推理档位；真实作者、输入、阶段、完成和结果摘要分别核验。按 issue/scope/phase/input 防重复，型号表示或选择变化不会重开已完成研究；保留原 claim 字节和历史用量。原生证据已暴露的运行配置如实记录，未暴露的保持未知。宿主发布包和 Docker service 都消费这份源码，必须分别安装并核对实际字节。
+研究 claim 的可选 model 字段记录当次请求选择，不是执行资格或实际型号证明。真实作者、输入、阶段、完成和结果摘要分别核验。按 issue/scope/phase/input 防重复，型号表示或选择变化不会重开已完成研究；保留原 claim 字节和历史用量。原生证据已暴露的运行配置如实记录，未暴露的保持未知。宿主发布包和 Docker service 都消费这份源码，必须分别安装并核对实际字节。
