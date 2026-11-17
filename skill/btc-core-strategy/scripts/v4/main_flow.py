@@ -186,8 +186,8 @@ def reported_assessment(root):
 def domain_validation_baseline(root, prior, draft):
     """Replay a carried domain against its original transition baseline.
 
-    Its old final-event receipt is historical, not another cycle completion.
-    The current cycle still has to be reviewed when its real deadline arrives.
+    An unchanged carrier covered by the adopted cycle review stays historical.
+    Other event chains retain their current deadline checks.
     """
     from .storage import domain_baseline
     from .common import now
@@ -204,10 +204,19 @@ def domain_validation_baseline(root, prior, draft):
                 baseline = dict(baseline, _cycle_recheck_at=saved['cycle_review']['recheck_at'])
         return baseline
     validate_publication(root, prior, draft)
-    cycle = draft['domain']['event']['cycle']
-    final = next(e for e in cycle['events'] if e['event_id'] == cycle['final_expiry_event_id'])
-    require(instant(final['due_at']) > max(instant(now()), instant(draft['temporal_scope']['knowledge_cutoff'])),
-            'current final event requires a fresh main domain review, not historical reuse')
+    from . import cycle
+    saved, disclosed = cycle.adopted(root, draft) if cycle.enabled(root) else (None, None)
+    chain = draft['domain']['event']['cycle']
+    final = next(e for e in chain['events'] if e['event_id'] == chain['final_expiry_event_id'])
+    # A deadline that was still future at the actual review remains current
+    # work when it later expires; an old approval cannot turn it into history.
+    review_deadline = (saved['cycle_review']['recheck_at']
+        if saved is not None and draft.get('revision', 1) >= 5
+        and disclosed['candidate']['assessment']['domain']['event'] == draft['domain']['event']
+        and instant(final['due_at']) <= instant(saved['completed_at']) else None)
+    if review_deadline is None:
+        require(instant(final['due_at']) > max(instant(now()), instant(draft['temporal_scope']['knowledge_cutoff'])),
+                'current final event requires a fresh main domain review, not historical reuse')
     seen = set()
     def verified_ancestor(identity):
         require(identity not in seen, 'historical domain ancestor cycle')
@@ -220,6 +229,8 @@ def domain_validation_baseline(root, prior, draft):
     require(origin.get('parent_id'), 'reused domain has no original transition baseline')
     parent = verified_ancestor(origin['parent_id'])
     baseline = dict(domain_baseline(root, parent))
+    if review_deadline is not None:
+        baseline['_cycle_recheck_at'] = review_deadline
     # Replay the actual original publication, not its older market/source
     # cutoff. A maintenance plan can honestly form after its locked inputs.
     # This clock is derived only from the immutable ancestor snapshot; it is

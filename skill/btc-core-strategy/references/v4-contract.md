@@ -66,7 +66,7 @@ v4 模型评估中的 `UNRESOLVED_PRICE_OBSERVATION` 可用 `evidence_dimension=
 
 `event.cycle.opened_at` 是观察维护计划实际形成壁钟，允许晚于旧锁定行情/资料截止，但不得晚于可信执行 clock；published_at/retrieved_at 仍不得超出原 observation/pricing 来源截止。未来官方日程仍须真实原来源，日期未知保留未知；公开自选观察窗口不冒充官方日程。新链仍须 2–4 个有据且严格顺序的 future pending，全部晚于真实 clock；旧 final 的原 due/completion/身份及原 deadline 消费门不变，不能把新计划当成价格周期延续。
 
-复用已正式保存的 domain 时，唯一受控 historical replay clock 从真实原始祖先 DecisionSnapshot.created_at 取值，重现该次实际 publication 的壁钟，而非较早的资料截止。这是内部不可变历史校验时钟，调用者不能提供或改变；当前 REUSED final 到期门仍先用真正 now，新的 ASSESSED domain 仍用真正 now。来源截止和旧事件截止始终原样，不能用历史模式采用新安排。
+复用已正式保存的 domain 时，唯一受控 historical replay clock 从真实原始祖先 DecisionSnapshot.created_at 取值，重现该次实际 publication 的壁钟，而非较早的资料截止。这是内部不可变历史校验时钟，调用者不能提供或改变。已采纳的真实完整周期审阅覆盖同一逐值未变事件，且该事件在审阅完成时已经到期，REUSED 沿前述历史载体规则承接其原复核上下文；先核实际祖先、整段复用和已批候选，不把旧 final 截止重新升为当前重评前置，也不重复要求已经消费的事实 Owner 确认。审阅时仍有效而后来到期的事件、其余 REUSED final 及新事件仍使用真正 now；当前周期含义、个人决定和执行建议的适用期继续独立核验。来源截止、旧事件状态、原确认与研究复核时钟始终原样，不能用历史模式采用新安排或宣称旧事件已完成。
 
 ## 动态因子评估
 
