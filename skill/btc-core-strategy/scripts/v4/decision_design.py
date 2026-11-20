@@ -18,7 +18,7 @@ BASKET_ALLOCATION_SCHEMA = 'BTC_ALLOCATION_CHOICE_V5'
 MONTHLY_PLAN_SCHEMAS = (MONTHLY_ALLOCATION_SCHEMA, BASKET_ALLOCATION_SCHEMA)
 PLAN_SCHEMAS = (ALLOCATION_SCHEMA, *MONTHLY_PLAN_SCHEMAS)
 PORTFOLIO_PLAN_INSTRUCTIONS = (
-    '新个人判断使用BTC_ALLOCATION_CHOICE_V3或适用的月度V4，保留原候选和纪律，形成内部portfolio_plan。'
+    '新个人判断使用本轮返回的decision_contract，保留原候选和纪律，形成内部portfolio_plan。'
     'opportunities逐项接冻结机会，填写opportunity_id、stance（PARTICIPATE/WAIT/AVOID/UNRESOLVED）、'
     'rationale、trade_off、change_condition。说明现价下本组合的选择及代价。'
     'interactions按每个实际exposure_decisions.scope关联相关opportunity_ids，'
@@ -27,7 +27,7 @@ PORTFOLIO_PLAN_INSTRUCTIONS = (
     'investment_decision.summary给出已经综合的取舍和决定性理由，allocation_choice.change_conditions留下会改变总体决定的条件。'
 )
 MONTHLY_PLAN_INSTRUCTIONS = (
-    '有类型化月度政策时使用BTC_ALLOCATION_CHOICE_V4。在portfolio_plan.monthly_plan形成真实月度建议。'
+    '有类型化月度政策时按本轮decision_contract在portfolio_plan.monthly_plan形成真实月度建议。'
     '输入预算只作规划；无需实况资金、当月投入或执行确认。常规定投与额外BTC分别给出金额、标的价值依据和改变条件，'
     '明确暂缓额度，分配加暂缓等于本月预算。尊重常规定投长期用途，当前风险不足以值得投入时给真实暂缓原因。'
     '政策含regular_baskets时，组内比例乘所在组的预算，配置目标不随市场判断在标的间转移。'
@@ -44,12 +44,12 @@ MONTHLY_PLAN_INSTRUCTIONS = (
 )
 
 BASKET_PLAN_INSTRUCTIONS = (
-    '使用BTC_ALLOCATION_CHOICE_V5并保留analysis_scope及原short_position投影。'
+    '保留analysis_scope及原short_position投影。组合数量、成员、权重、预算和用途按当期有效的已确认配置。'
     '先对每个已确认组合回答本月继续还是跳过及其理由，再决定金额。长期定投以该组原计划为基准，'
     '比较全额、跳过和有实际依据的小额或分批。跳过须说明小额参与为何也不划算；'
     '继续但偏离原金额时须说明增减该笔资金的风险、放弃的收益和为什么选这个金额。'
-    '使用同一冻结市场、相同期限、可比价格和原组内权重，先比较等额投入的组别风险收益，'
-    '再按各组原预算比较金额。检验共同下跌、美股先修复、加密先修复及适用的同步修复；'
+    '使用同一冻结市场、相同期限、可比价格和各组有效权重，多组适用时先比较等额投入的组别风险收益，'
+    '再按各组预算比较金额。按实际风险来源检验各组共同承压、分别修复及同步修复的适用情景。'
     '把真正能改变选择的路径接到每组风险、收益来源和等待代价，证据能量化时量化。'
     '减投会降低损益幅度，不能据此证明择组正确；历史短窗和未经证实的净成本不能代签月度效果。'
     '每组用独立的exposure_decisions.scope比较候选，规划候选用RESEARCH_OR_POLICY，组合比较仍在同一决定汇合。'
@@ -60,9 +60,9 @@ BASKET_PLAN_INSTRUCTIONS = (
     'SKIP和UNRESOLVED的amount_basis为null。basis回答为什么，change_condition说明什么证据会改判。'
     'comparison_scope引用该组的定投比较，comparison_amounts按候选ID写该组的可比方案金额，覆盖原预算及零投入，'
     '本轮金额与所选候选一致。evaluation_window_id引用该组独立的事前验证窗口。'
-    '窗口记录可比行情起点、实际可核的后继过程、原计划及等额对照和预期被支持或推翻的依据。'
-    '到实际进展时用judgement-evaluate按原窗口比较择组和金额，未证成交及成本时只核同口径的方案毛价格影响。'
-    'regular.deferred是两组尚未安排的规划额度，regular.basis解释资金联动、保留额度及其机会成本。'
+    '窗口记录可比行情起点、实际可核的后继过程、原计划、适用的等额对照和预期被支持或推翻的依据。'
+    '到实际进展时用judgement-evaluate按原窗口复核选择和金额，未证成交及成本时只核同口径的方案毛价格影响。'
+    'regular.deferred是尚未安排的规划额度，regular.basis解释资金联动、保留额度及其机会成本。'
     'extra_btc{opportunity_id,amount,value_zone:{status,lower,upper,quote_unit,basis},change_condition}；'
     '若政策含extra_currency，extra_btc另填currency并使用该单位。价值区尚未成立时额外金额为零。'
     'short_compensation{scope,basis,change_condition}按熊市净补偿、反抽拖累及净成本比较。'
@@ -95,7 +95,7 @@ PERSONAL_INSTRUCTIONS = (
     'allocation_choice把动态配置与持仓纪律作为同一个决定：比较保留现状、调整和等待中的适用备选，给出本轮总体取舍、所选候选依据及改变条件；不能仅罗列如果怎样就怎样。'
     '后续部分更新只更新有证据变化的部分，沿用其余最后已知事实并保留时间/来源；冲突或时效不足限制依赖它的结论，不能清空已知配置、假定已平仓或永久沿用原规模。没有肯定持仓证据的项目才可按未持有作分析假设。'
     '目标不是已成交，建议不更新事实。未知净值、可用资金、规模或保证金不造精确权重/数量；方向性选择与可执行范围分别判断，不因缺数放弃能完成的机会取舍。配置目标、实际风险和持仓纪律必须互相一致；市场论点不受个人输入改变。'
-    'V2的exposure_decisions逐个真实决策范围区分新增风险与存量管理，先说明当前敞口、目标风险及本次选择准则，再比较同一周期路径下候选的收益、损失、成本和等待机会成本。'
+    'exposure_decisions逐个真实决策范围区分新增风险与存量管理，先说明当前敞口、目标风险及本次选择准则，再比较同一周期路径下候选的收益、损失、成本和等待机会成本。'
     '准则可以是相对价值、已知风险约束、配置用途或有依据的稳健取舍；不必证明所有情景必胜。不把建议的稳健准则伪称用户既有约束。条件偏好写conditional_preferences，不进入本轮selected_ids，不能为选它把ACTION缺口降成VALUE。'
     '不宜新增、短期反弹、未知预算或不能证明续持最好，单独都不能推出减险，也不能推出续持。列出得失不等于完成排序；只有所选准则及证据支持时RANKED，依赖明确前提时CONDITIONAL，证据不足则UNRANKED且不选择该范围动作。'
     '未决只约束其依赖范围，其他有据选择继续；目标风险可定性或未决，不造精确比例。事实引用、候选和周期路径必须可追溯，报告不得把条件排序写成无条件动作。'
@@ -111,7 +111,7 @@ REPORT_INSTRUCTIONS = (
     '维持总体取舍和实际先决条件。持仓尚未确认时只承接内部有据的条件选择。'
 )
 PUBLIC_INSTRUCTIONS += (
-    '原六点是持续有效的内容责任而非固定栏目。V2 path_comparison必须比较真实主路径和竞争路径，即使总体UNCLEAR，也解释机制传导、延续和早期转折证据及其区别、现价体现与反证。'
+    '原六点是持续有效的内容责任而非固定栏目。path_comparison必须比较真实主路径和竞争路径，即使总体UNCLEAR，也解释机制传导、延续和早期转折证据及其区别、现价体现与反证。'
     'path_comparison的ranking为RANKED或UNRANKED，preferred_ids与排序一致；不足以排序时说明具体鉴别缺口，不免除比较，不强造中性或概率。'
 )
 PUBLIC_INSTRUCTIONS += OPPORTUNITY_CHOICE_REVIEW
