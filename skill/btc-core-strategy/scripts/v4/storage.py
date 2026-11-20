@@ -224,6 +224,8 @@ def _validate_main(root, project, draft, evidence_dir, review, prior=None, *, pu
     check('facts', lambda: require(facts(project) == draft['fact_version'], 'facts changed before main publication'))
     from .position_analysis import require_current_scope
     check('personal_analysis_scope', lambda: require_current_scope(root, project, draft))
+    from .decision_design import validate_new_choice
+    check('portfolio_plan', lambda: validate_new_choice(draft, previous))
     for side in ('upper_short', 'lower_spot'):
         if draft['recommendations'][side]['status'] == 'RECOMMENDED':
             check(side + '_expiry', lambda side=side: require(instant(draft['recommendations'][side]['validity']['until']) > instant(now()), 'recommendation expired during main assessment'))

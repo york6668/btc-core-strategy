@@ -55,10 +55,15 @@ def policy(value, version, at, project=None):
     else:
         require(isinstance(value['source_refs'], list) and value['source_refs'], 'policy sources required')
     if extra:
-        from .position_analysis import validate_spec
-        validate_spec(value['position_analysis'], project, version)
-        observed = value['position_analysis']['baseline']['observed_at']
-        require(observed is None or instant(observed) <= instant(value['recorded_at']), 'source snapshot cannot postdate its policy record')
+        from .position_analysis import PORTFOLIO_MODE, validate_spec
+        spec = validate_spec(value['position_analysis'], project, version)
+        if spec['schema'] == PORTFOLIO_MODE:
+            short = spec['short_position']
+            clocks = (short['observed_at'], (short['entry_reference'] or {}).get('observed_at'))
+        else:
+            clocks = (spec['baseline']['observed_at'],)
+        require(all(stamp is None or instant(stamp) <= instant(value['recorded_at']) for stamp in clocks),
+                'personal source cannot postdate its policy record')
 
 
 def decision(assessment):
@@ -358,10 +363,11 @@ def finished(value):
         return None
     result = {k:deepcopy(value[k]) for k in ('status', 'summary', 'priorities', 'supported_judgements', 'gaps', 'issues', 'evaluation_windows', 'review_conditions', 'decided_at', 'valid_until')}
     result['validation_limits']=validation_limits(value)
-    from .position_analysis import directional
+    from .position_analysis import PORTFOLIO_MODE, directional
     if directional(value):
         result['analysis_scope'] = value['analysis_scope']
-        result['price_baseline'] = deepcopy(value['policy']['economic_inputs'])
+        if value['analysis_scope'] != PORTFOLIO_MODE:
+            result['price_baseline'] = deepcopy(value['policy']['economic_inputs'])
         result['analysis_limits'] = ['No position quantities, account total PnL, execution payload or leverage safety conclusion.']
     if 'allocation_choice' in value:
         result['allocation_choice'] = deepcopy(value['allocation_choice'])

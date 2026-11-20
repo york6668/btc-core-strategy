@@ -503,10 +503,14 @@ def read_input(root, request_id, phase='independent', candidate_id=None, indepen
                 'contract': 'allocation/risk/investment market_result_hash binds digest({outlook,factor_assessment}); the research phase hash also includes market_report and is not that binding.',
             }
             if req.get('decision_design_revision', 0) >= 1:
-                from .decision_design import PERSONAL_INSTRUCTIONS
+                from .decision_design import ALLOCATION_SCHEMA, PERSONAL_INSTRUCTIONS, PORTFOLIO_PLAN_INSTRUCTIONS
                 value['instructions'] = PERSONAL_INSTRUCTIONS
                 value['decision_design_revision'] = req['decision_design_revision']
-                value['decision_contract'] = ('investment_decision.allocation_choice: BTC_ALLOCATION_CHOICE_V' + str(req['decision_design_revision']) + '; exact frozen cycle_case hash and current fact version; normal investment candidates/selection remain its decision source. V2 compares incumbent and incremental choices under explicit criteria and the same cycle paths; unresolved ranking is not a holding instruction.')
+                allocation_schema = ALLOCATION_SCHEMA if req['decision_design_revision'] >= 2 else 'BTC_ALLOCATION_CHOICE_V1'
+                if allocation_schema == ALLOCATION_SCHEMA:
+                    value['instructions'] += PORTFOLIO_PLAN_INSTRUCTIONS
+                value['decision_contract'] = ('investment_decision.allocation_choice: ' + allocation_schema
+                    + '; frozen cycle_case and current facts bind the portfolio and holding choices. Unresolved ranking is not a holding instruction.')
             else:
                 value['instructions'] = INSTRUCTIONS
             if req.get('workflow_revision',4) >= 8:
@@ -770,7 +774,10 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
         from . import cycle
         if req['issue_key'] == cycle.ISSUE_KEY:
             from .position_analysis import require_current_scope
+            from .decision_design import validate_new_choice
+            from .storage import current
             require_current_scope(root, Path(root).parent.parent, candidate.get('assessment', {}))
+            validate_new_choice(candidate['assessment'], (current(root) or {}).get('assessment'))
             cycle.validate_candidate(candidate)
         supplement = _review_evidence(root, req, candidate, additional) if additional else None
         fact_context = _review_facts(root, req, candidate)
@@ -782,7 +789,6 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
             # Resolve every mapping reference before spending a final research author
             # turn on it. The same check runs on actual disclosure.
             from . import evidence, factors
-            from .storage import current
             from .run_flow import refs_in
             from .common import Invalid
             directory = Path(root) / 'evidence' / (supplement or req)['evidence_id'][7:]
@@ -817,9 +823,20 @@ def reveal(root, request_id, independent_id, candidate, additional=None, *, chec
                        'method_references': cycle.method_references('mapping')}}
                       if req['issue_key'] == cycle.ISSUE_KEY else {})
         if req.get('decision_design_revision', 0) >= 1:
-            from .decision_design import PUBLIC_INSTRUCTIONS, PERSONAL_INSTRUCTIONS, REPORT_INSTRUCTIONS
+            from .decision_design import (BASKET_ALLOCATION_SCHEMA, BASKET_PLAN_INSTRUCTIONS, MONTHLY_ALLOCATION_SCHEMA,
+                                          MONTHLY_PLAN_INSTRUCTIONS, PERSONAL_INSTRUCTIONS, PORTFOLIO_PLAN_INSTRUCTIONS,
+                                          PUBLIC_INSTRUCTIONS, REPORT_INSTRUCTIONS)
+            instructions = PUBLIC_INSTRUCTIONS + PERSONAL_INSTRUCTIONS
+            if req['decision_design_revision'] >= 2:
+                instructions += PORTFOLIO_PLAN_INSTRUCTIONS
+                from .investment import decision
+                allocation = (decision(candidate['assessment']) or {}).get('allocation_choice') or {}
+                if allocation.get('schema') == BASKET_ALLOCATION_SCHEMA:
+                    instructions += BASKET_PLAN_INSTRUCTIONS
+                elif allocation.get('schema') == MONTHLY_ALLOCATION_SCHEMA:
+                    instructions += MONTHLY_PLAN_INSTRUCTIONS
             assignment = {'review_assignment': {'decision_design_revision': req['decision_design_revision'],
-                'instructions': PUBLIC_INSTRUCTIONS + PERSONAL_INSTRUCTIONS + REPORT_INSTRUCTIONS,
+                'instructions': instructions + REPORT_INSTRUCTIONS,
                 'method_references': {'decision_design': str(Path(__file__).resolve().parents[2] / 'references/decision-design.md')}}}
         return _save(root, 'candidates', 'candidate_id', {'schema': 'BTC_RESEARCH_CANDIDATE_V4', 'request_id': request_id,
             'independent_id': independent_id, 'agent_id': phase['agent_id'], 'candidate': candidate,

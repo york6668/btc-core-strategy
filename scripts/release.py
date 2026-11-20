@@ -121,10 +121,16 @@ def activate(config, revision):
         metadata = check_release(target)
         formal = Path(config['project_dir']) / '.strategy/v4/current/decision.json'
         if formal.exists():
-            content_revision = (read(formal).get('assessment') or {}).get('revision', 1)
-            readable = metadata.get('content_contract', {}).get('read_revisions', [1, 2, 3, 4, 5])
-            if content_revision not in readable:
+            assessment = read(formal).get('assessment') or {}
+            contract = metadata.get('content_contract', {})
+            if assessment.get('revision', 1) not in contract.get('read_revisions', [1, 2, 3, 4, 5]):
                 raise ValueError('target code cannot read current assessment revision; preserve code and data')
+            portfolio = (assessment.get('recommendations') or {}).get('portfolio') or {}
+            decision = portfolio.get('investment_decision') or {}
+            allocation_schema = (decision.get('allocation_choice') or {}).get('schema')
+            readable_schemas = contract.get('allocation_choice_schemas', ('BTC_ALLOCATION_CHOICE_V1', 'BTC_ALLOCATION_CHOICE_V2'))
+            if allocation_schema is not None and allocation_schema not in readable_schemas:
+                raise ValueError('target code cannot read current allocation choice; preserve code and data')
         previous = selected(root).name if (root / 'current').exists() else None
         if previous == revision:
             activation = read(root / 'activation.json') if (root / 'activation.json').exists() else {}

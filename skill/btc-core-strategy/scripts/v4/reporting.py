@@ -302,7 +302,8 @@ def authoring_guidance(ctx):
                 'decision_content_baseline': deepcopy(DECISION_COVERAGE)}
     if ctx.get('position_analysis_input') is not None:
         from .position_analysis import INSTRUCTIONS
-        guidance['position_analysis_instructions'] = INSTRUCTIONS + '仅承接实际完成的方向处理；通用全账户/敞口执行检查不能变成本mode的数量前置。'
+        mode = ctx['position_analysis_input']
+        guidance['position_analysis_instructions'] = mode.get('instructions', INSTRUCTIONS) + '仅承接实际完成的个人决策。'
     if ctx.get('deep_report_policy_revision') == 1:
         guidance.update(cycle_report_instructions=cycle.REPORT_SCOPE_REVIEW,
                         method_references=cycle.method_references('report'))
@@ -315,7 +316,8 @@ def authoring_guidance(ctx):
                         reading_review_instructions=deepcopy(READING_REVIEW))
     if ctx.get('report_contract_revision', 1) >= 5:
         guidance['final_text_review'] = ('用run-advance --stage report --check-only导出实际候选，按返回review_read完整回读候选及冻结来源，逐句核对市场、产品身份与底层证据的实际归属，再填写具体quality_review及reviewed_candidate_hash；任何正文或绑定改变均重新核验，旧审阅不沿用。哈希仅绑定对象，不证明语义。冻结后逐字交付；外部聊天改写无法由项目程序控制。')
-    from .decision_design import public_case, revision, REPORT_INSTRUCTIONS as DECISION_REPORT_INSTRUCTIONS
+    from .decision_design import (BASKET_ALLOCATION_SCHEMA, MONTHLY_PLAN_SCHEMAS, public_case, revision,
+                                  uses_portfolio_plan, REPORT_INSTRUCTIONS as DECISION_REPORT_INSTRUCTIONS)
     if public_case((ctx.get('current_strategy') or {}).get('outlook')) is not None:
         guidance.pop('cycle_report_instructions', None)
         guidance.pop('method_references', None)
@@ -329,6 +331,46 @@ def authoring_guidance(ctx):
             guidance['reading_review_instructions']['exposure_choice'] = ('逐项核对实际选择准则、目标风险、同周期路径下的候选得失及gap_effects；未知可能改变保留/减哪一侧/退出时，POLICY不能把它改成仅数量问题。比较是否足以按适用准则排序由模型裁决，不要求各情景必胜；列利弊不算排序成立。正文须与确切排序及条件一致。')
         guidance['result_instructions'] = DECISION_REPORT_INSTRUCTIONS
         guidance['completed_analysis_review'] = RESULT_CONSUMPTION_REVIEW + ('逐项核实六项原问题由哪个实际研究或个人决定回答，正文只取本轮必要信息。核存量与新增决策的区别、选择准则及证据是否真能排序；RANKED标签、列出得失、降低确信、未知或作者批准都不证明相对选择成立。CONDITIONAL与UNRANKED不得被报告升级为无条件持仓动作；允许经证实的风险约束或稳健准则支持减险，不要求所有路径必胜。')
+        if uses_portfolio_plan(ctx['current_strategy']):
+            guidance.pop('decision_content_baseline')
+            guidance['completed_analysis_review'] = (
+                '用正文原句核对独立行情段是否先交付1–3个月主情景、竞争路径、相对支持度及改变条件，再进入组合取舍。'
+                '逐项对照冻结cycle_case和本轮market_summary；已形成的行情内容漏写时修稿后复核。'
+                '再对照完成的组合决定核实金额、范围与条件。'
+                '未确认的持仓只表达原条件分支，变更安排所依赖的主结论在上游完成。'
+            )
+            from .investment import decision
+            choice = (decision(ctx['current_strategy']) or {}).get('allocation_choice') or {}
+            if choice.get('schema') in MONTHLY_PLAN_SCHEMAS:
+                guidance['body_authoring_instructions'] += (
+                    '本月方案适用时，先把公开市场的相对判断接到整体资金安排，交代所选组合相对全投、等待或实际比较过的备选省下什么风险、放弃什么收益。'
+                    '先写常规定投，再写独立BTC和适用的存量、空单条件。常规定投给出本轮计划金额及改变条件，完整月度方案交代合计留存。'
+                    '独立BTC写明本轮金额，暂停也写零；解释现价为何值得参与或等待、价值区间是否成立，以及触及后哪项证据会改变金额。'
+                    '未成立的区间只按原证据说明观察带，已成立的条件区保留触发所需证据。金额属于规划。'
+                )
+                guidance['reading_review_instructions']['overall_choice'] = (
+                    '引用正文原句核对本轮资金优先级、组合代价和改变条件。按原决定对照常规定投计划金额、留存和额外BTC金额及区间条件；'
+                    '小数、零额及未确认状态保持原含义。确认空单条件解释了它何时改善月度容错，并保持与本轮适用性复核一致。'
+                    '已做决策但正文仍需读者自行推算或从条件猜出安排时，修稿后复核。'
+                )
+                if choice['schema'] == BASKET_ALLOCATION_SCHEMA:
+                    guidance['body_authoring_instructions'] += (
+                        '完整月度稿按组先明确本月继续或跳过，再给该组决定性理由、原预算、本轮金额和改判条件。'
+                        '分批继续说明为何选这一金额；有真实排序缺口只说明该组未决和缺证据，不把未安排金额写成跳过。'
+                        '完整稿覆盖所有已确认组；有界更新只写所涉组。已送达稿缺逐组取舍时按实际新增的决策含义复核送达必要性。'
+                    )
+                    guidance['reading_review_instructions']['overall_choice'] += (
+                        '逐组核对正文原句、decision和basis。继续时区分按计划和减少批次，跳过时解释小额为何仍不划算。'
+                        '核实同额择组与本月金额比较支持该选择，不能用投入更少带来的损失更小代替择组依据。'
+                        '将实际改判条件接到对应组，月度决定与其有效性复核时点分别表达。'
+                    )
+                if 'short_position' in choice:
+                    guidance['body_authoring_instructions'] += (
+                        '各组已确定的计划给出金额、原预算和改变条件，未决说明实际缺口。风险和取舍按组表达。'
+                        '空单先交代在仓状态和该状态下月度计划能否计入补偿。若有仓，用本轮有来源的下行补偿、反抽拖累和未来成本解释条件性留、减、退；'
+                        '若无仓按无补偿方案。开仓价缓存不证明在仓；另有匹配保护证据时只在确实改变取舍的范围说明。'
+                        '本轮有匹配的个人适用性复核时，引用其实际复核结论解释改变，区分它与原方案的历史比较。实质改动资金安排回到个人决定阶段。'
+                    )
     return guidance
 
 

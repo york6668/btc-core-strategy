@@ -249,11 +249,58 @@ def report_brief(ctx):
         basis = brief.get('cycle_baseline') or {}
         brief['cycle_baseline'] = {k: basis.get(k) for k in
             ('status', 'market_status', 'portfolio_status', 'result_id', 'report_hash', 'recheck_at')}
-        brief.update(report_inputs(ctx))
+        results = report_inputs(ctx)
+        from .decision_design import uses_portfolio_plan
+        if uses_portfolio_plan(ctx['current_strategy']):
+            brief['decision_results'] = portfolio_report_view(results['decision_results'])
+            brief['applicability'] = results['applicability']
+            brief['result_binding'] = results['result_binding']
+        else:
+            brief.update(results)
     if brief.get('reported'):
         brief['reported']['input_role'] = 'DELIVERED_HISTORY_ONLY'
     brief.update(reporting.authoring_guidance(ctx))
     return brief
+
+
+def portfolio_report_view(primary):
+    """The decision-facing view of an already validated portfolio plan."""
+    value = {k: deepcopy(primary[k]) for k in (
+        'market_summary', 'public_applicability', 'personal_applicability',
+        'valid_until', 'limitations', 'validation_limits', 'investment_decision_hash')}
+    case = primary['cycle_case']
+    thesis = case['thesis']
+    outlook = {k: deepcopy(case[k]) for k in ('as_of', 'knowledge_cutoff', 'horizon')}
+    outlook['thesis'] = {k: thesis[k] for k in ('status', 'conclusion', 'confidence', 'priced_in')}
+    for key in ('strongest_alternative', 'strongest_falsifier'):
+        outlook['thesis'][key] = {k: thesis[key][k] for k in ('argument', 'implication')}
+    paths = case.get('path_comparison')
+    if paths is not None:
+        outlook['path_comparison'] = {k: deepcopy(paths[k])
+                                     for k in ('ranking', 'preferred_ids', 'basis', 'unresolved')}
+        outlook['path_comparison']['paths'] = [
+            {k: path[k] for k in ('id', 'mechanism', 'continuation', 'early_turn', 'invalidation')}
+            for path in paths['paths']]
+    value['cycle_case'] = outlook
+    choice = primary['allocation_choice']
+    if choice is not None:
+        value.update(portfolio_summary=primary['portfolio_summary'],
+                     change_conditions=deepcopy(primary['change_conditions']),
+                     has_selected_candidate=bool(choice['selected_ids']),
+                     conditional_scopes=[item['scope'] for item in choice['exposure_decisions']
+                                         if item['ranking'] == 'CONDITIONAL'])
+        value['holding_discipline'] = [
+            {k: item[k] for k in ('candidate_id', 'decision', 'change_condition', 'execution_limit')}
+            for item in choice['holding_discipline']]
+        monthly = choice['portfolio_plan'].get('monthly_plan')
+        if monthly is not None:
+            value['monthly_plan'] = deepcopy(monthly)
+            for basket in value['monthly_plan']['regular'].get('baskets', []):
+                for field in ('comparison_scope', 'comparison_amounts', 'evaluation_window_id'):
+                    basket.pop(field, None)
+        if 'short_position' in choice:
+            value['short_position_status'] = choice['short_position']['status']
+    return value
 
 
 def report_body_brief(ctx, result_path):
@@ -263,6 +310,20 @@ def report_body_brief(ctx, result_path):
     value = {k: deepcopy(ctx.get(k)) for k in ('context_id', 'evaluated_at',
         'knowledge_cutoff', 'market_revision', 'report_contract_revision',
         'report_subjects', 'report_quote_policy')}
+    from .decision_design import uses_portfolio_plan
+    if uses_portfolio_plan(ctx['current_strategy']):
+        value['decision_results'] = portfolio_report_view(results['decision_results'])
+        if 'monthly_plan' in value['decision_results']:
+            portfolio_review = results['applicability']['portfolio']
+            value['applicability'] = {'portfolio': {
+                k: deepcopy(portfolio_review[k])
+                for k in ('outcome', 'explanation', 'limitations', 'issue_reviews') if k in portfolio_review}}
+        value['evaluation_time'] = authored_report.evaluation_time(ctx)
+        value['result_binding'] = deepcopy(results['result_binding'])
+        if result_path is not None:
+            value['full_results_ref'] = str(result_path)
+        value['body_authoring_instructions'] = reporting.authoring_guidance(ctx)['body_authoring_instructions']
+        return value
     assessment = results['market_result'].get('market_assessment') or {}
     rows = []
     for item in assessment.get('markets', []):
@@ -287,6 +348,9 @@ def report_body_brief(ctx, result_path):
         ('status', 'summary', 'priorities', 'supported_judgements', 'selected_ids',
          'candidates', 'gaps', 'validation_limits', 'review_conditions',
          'decided_at', 'valid_until')} if whole else None)
+    if whole and 'analysis_scope' in whole:
+        value['investment_decision'].update(
+            analysis_scope=whole['analysis_scope'], analysis_limits=deepcopy(whole['analysis_limits']))
     value['applicability'] = deepcopy(results['applicability'])
     value['execution_plans'] = deepcopy(results['execution_plans'])
     risk_key = 'portfolio_risk' if 'portfolio_risk' in results else 'allocation_decision'
@@ -310,7 +374,11 @@ def report_review_view(payload, ctx, checked):
     """Complete final body, with quantities excluded from its financial inputs."""
     value = {'candidate': deepcopy(payload), 'reviewed_candidate_hash': checked['reviewed_candidate_hash'],
              'instructions': reporting.authoring_guidance(ctx)}
-    if ctx.get('position_analysis_input') is not None:
+    from .decision_design import uses_portfolio_plan
+    if uses_portfolio_plan(ctx['current_strategy']):
+        value['candidate'].pop('context', None)
+        value['author_context'] = report_body_brief(ctx, None)
+    elif ctx.get('position_analysis_input') is not None:
         value['candidate'].pop('context', None)
         value['author_context'] = report_brief(ctx)
         value['full_context_role'] = 'PROGRAM_BINDING_AND_ON_DEMAND_TECHNICAL_AUDIT_NOT_DIRECTIONAL_INPUT'
@@ -976,7 +1044,8 @@ def advance(run_path, stage, input_path=None, root=None, project=None, template_
             # also binds its current context and review notes without overwriting history.
             material = save(d / ('report-review-' + digest(review_material)[7:] + '.json'), review_material)
             on_demand = {}
-            if ctx.get('position_analysis_input') is not None:
+            from .decision_design import uses_portfolio_plan
+            if ctx.get('position_analysis_input') is not None or uses_portfolio_plan(ctx['current_strategy']):
                 full_material = material
                 view = report_review_view(payload, ctx, checked)
                 material = save(d / ('report-review-author-' + digest(view)[7:] + '.json'), view)

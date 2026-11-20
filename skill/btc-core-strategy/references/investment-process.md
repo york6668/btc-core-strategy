@@ -5,11 +5,21 @@
 
 本方法承担规划、选择、实施可行性和反馈的责任，不要求机构委员会、优化器、自动交易或固定模块清单。原 DecisionSnapshot/current 仍是唯一正式结论 Owner；三份本地确认文件仍是个人事实 Owner。参考 CFA [投资管理流程](https://www.cfainstitute.org/sites/default/files/-/media/documents/article/refresher-readings-free/rr-2018-l2v6r47.pdf)、[资产配置](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/overview-asset-allocation)。
 
+## 按月度组合作个人决策
+
+用原 `investment-policy` 记录 `position_analysis.schema = MONTHLY_PORTFOLIO_PLANNING_V1`，承接已确认的 `monthly_plan`、`non_quantity_constraints` 和 `source_level`。按同一冻结市场比较两组方案和资金留存、额外 BTC、存量之间的影响，候选比较的结果重新进入投资决定。纯规划候选使用 `DIRECTIONAL_ANALYSIS` 和 `RESEARCH_OR_POLICY`。
+
+各组的 `comparison_scope` 和 `evaluation_window_id` 绑定原投资决定里的组别比较和事前窗口。用相同的可比价格起点和后续区间对照各组按原预算定投的方案，再按等额投入比较两组的修复、回撤和机会成本。把择组、金额及当时理由是否被实际进展支持分别说明。仅由投入更少减少的损失归为新增敞口变化。缺成交及成本时只核方案毛价格影响。实际进展后用原 `judgement-evaluate` 记录来源及结果，下一次个人评估读取原窗口和其反馈。
+
+`short_position` 包含 `status`、`instrument`、`product`、`observed_at`、`source_refs` 和可空的 `entry_reference`。状态 `PRESENT/ABSENT` 来自用户明确确认及其时点，`UNKNOWN` 保留实际未确认。产品未知时填 null。缓存价格由用户告知，字段为 `price currency observed_at source_ref`，只在原来源与标的范围内使用。单独收到报价时保留仓位状态及其来源，仅替换该价格缓存；收到明确仓位变化时更新对应状态和时点，缓存的适用对象若已变化则在新版本清空，旧值留原版本。按原政策版本维护这两类输入。
+
+有仓比较月度净补偿及反抽成本，无仓按无空头方案，状态未确认只给条件分支。没有缓存价可完成组级方案及空单前瞻分析。依据和内部比较留在投资决定，报告承接实际采用的组级计划和改变条件。
+
 ## 按开仓价基线的非执行方向分析
 
 原事实/纠正 Owner 明确采用按价格分析、排除持仓数量时，在原 `investment-policy` 输入中记录可选 `position_analysis`，schema 为 `PRICE_BASELINE_DIRECTIONAL_V1`。它不是新账本、预算、账户确认或交易授权，不解析本方法 Markdown 作为规则。旧政策、原决定、历史数量和已过期限均保留原字节。
 
-本 scope 只读正常 producer 的无量投影：独立冻结市场、最后已知产品/方向、平台**开仓价**、币种/原源时点/来源等级及真正非数量约束。不输入或使用数量、由量派生的集中度、总体规模、账户绝对风险，也不能省掉 gap 却继续以“若实质集中则减”为条件。旧全事实路径、旧投资 summary、数量型判断与全账户 completeness 不进入金融输入。完整内部绑定和原 Owner 保留供程序校验；历史问题按原身份机械承接，不作本轮 ACTION 前提。投影不是 OS 隔离或历史记忆清除证明。
+本 scope 只读正常 producer 的无量投影：独立冻结市场、最后已知产品/方向、平台**开仓价**、币种、台账时点、非数量约束和已确认的月度规划政策。持仓数量及其派生集中度、总体规模和账户绝对风险不参与方向决策。月度规划预算可用于提出投入金额；是否执行、可用资金、当月实际投入由用户自行评估。
 
 `baseline` 精确字段为 `instrument product direction entry_price currency observed_at price_type time_basis time_precision source_refs entry_price_ref`。`price_type` 仅接受 `PLATFORM_OPENING_PRICE`；专用 `entry_price_ref` 须含确切价格标量，支持有结构的千位逗号，不允许 mark/现价替代。`observed_at` 是 `SOURCE_SNAPSHOT_TIME` 或 `SOURCE_UPLOAD_TIME`，按 `MINUTE/SECOND/DAY` 原精度保留；未知时两字段均 `UNKNOWN`、时间为 null，不将上传分钟叫成交时刻。源句因数量行移动时，只在同文件唯一逐字原句上重定位并保留原引用；改变或歧义回对应来源，不按同数字猜接。
 
