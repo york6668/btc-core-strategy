@@ -4,7 +4,7 @@
 
 # 状态与计划投影契约（strategy revision 3）
 
-本文件保存历史正式策略 revision 3 的精确 Schema。当前 revision 5 通过 v4 兼容层复用字段、数值、引用、时间与资产事实校验；下面的固定因子组合、因子数量及特定因果时序模式仅用于旧版回读，不裁决 revision 5 的市场充分性、归因或周期状态，当前规则见[独立市场与分歧区](market-state.md)。历史 revision 3 接口中，独立小时观察库的 Schema 与读写接口由[连续市场观察](market-observation.md)单独承载：它拥有 PRE_WRITE、证据来源与命题、projection sidecar、状态/计划 metadata、确定性报告 renderer、FINAL/UNAVAILABLE 收据和 CLI 分支参数。`core-strategy.md`只拥有策略推理语义并路由到这里，不得复制或另行解释字段、endpoint、payload、allowlist 或命令组合。磁盘上的`strategy_contract.py`实现及各子命令当前`--help`是可执行事实；本文必须与其同步，冲突时失败关闭并先修正文档或实现。
+本文件保存历史正式策略 revision 3 的精确 Schema。独立市场评估通过兼容层复用字段、数值、引用、时间与资产事实校验；下面的固定因子组合、因子数量及特定因果时序模式仅用于旧版回读，不裁决 revision 5 的市场充分性、归因或周期状态，当前规则见[独立市场与分歧区](market-state.md)。历史 revision 3 接口中，独立小时观察库的 Schema 与读写接口由[连续市场观察](market-observation.md)单独承载：它拥有 PRE_WRITE、证据来源与命题、projection sidecar、状态/计划 metadata、确定性报告 renderer、FINAL/UNAVAILABLE 收据和 CLI 分支参数。`core-strategy.md`只拥有策略推理语义并路由到这里，不得复制或另行解释字段、endpoint、payload、allowlist 或命令组合。磁盘上的`strategy_contract.py`实现及各子命令当前`--help`是可执行事实；本文必须与其同步，冲突时失败关闭并先修正文档或实现。
 
 ## 单向 Owner 关系
 

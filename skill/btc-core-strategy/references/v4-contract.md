@@ -1,4 +1,4 @@
-当前新内容使用 revision 9，个人结果继续使用 revision 7 引入的 `recommendations.portfolio.risk_assessment`；`allocation_review`绑定`portfolio_risk_hash`，报告消费`portfolio_risk`。完整新契约见[完整闭环](closed-loop.md)；以下 revision 1–6 仅描述历史兼容，不为新研究强制生成动作。
+本文件描述各接口及其历史兼容。适用版本由固定发布的兼容声明及本轮正常入口确定。个人风险、组合决定与报告的消费关系见[完整闭环](closed-loop.md)。早期修订章节用于原对象回读和恢复。
 
 当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
 
@@ -224,7 +224,7 @@ recommendations.lower_spot.allocation_percent承载经审阅的动态组合：�
 
 ## 独立源稿和展示稿
 
-当前新稿通过 report-review / run-advance 的 AUTHORED_REPORT_V1 最终正文路径生成，规则见[手机表达](mobile-report.md)。以下 `report-source --decision --layout --constraints --author-review --output` 为历史 CONCISE_V1 兼容路径：用同一已发布评估生成BTC_REPORT_SOURCE_V3，含decision_id、layout、body、body_hash、semantic_hash、constraints、author_review。layout是[历史简报表达](report-expression.md)的CONCISE_V1。constraints每项={id,kind,source_text}，kind包含direction、position、amount、unit、condition、deadline、negation、uncertainty、limitation、judgement；覆盖该旧格式实际业务断言，包括表格每档位置/金额配对、完整条件和限制。author_review={role:MAIN,agent_id,source_hash,coverage_review,faithfulness_review}，审阅当前实际源稿，不能只写通过。
+AUTHORED_REPORT_V1 最终正文由 report-review / run-advance 路径生成，规则见[手机表达](mobile-report.md)。以下 `report-source --decision --layout --constraints --author-review --output` 为历史 CONCISE_V1 兼容路径：用同一已发布评估生成BTC_REPORT_SOURCE_V3，含decision_id、layout、body、body_hash、semantic_hash、constraints、author_review。layout是[历史简报表达](report-expression.md)的CONCISE_V1。constraints每项={id,kind,source_text}，kind包含direction、position、amount、unit、condition、deadline、negation、uncertainty、limitation、judgement；覆盖该旧格式实际业务断言，包括表格每档位置/金额配对、完整条件和限制。author_review={role:MAIN,agent_id,source_hash,coverage_review,faithfulness_review}，审阅当前实际源稿，不能只写通过。
 
 `enqueue --decision --destination --source`重验来源渲染字节、语义、重要变化覆盖和当前版本。新artifact为BTC_REPORT_V5；无应报告差异返回NOT_DUE，不能为推送改变策略。目的地仍为现有项目g-p-699c8dbabddc8191a71598adfdc3cd14、任务6a95a45c-cb24-83ee-a64a-52eee69f4fe7。
 
@@ -292,13 +292,13 @@ AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及�
 
 外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 revision 7 的 risk_assessment、可选风险应对及独立 strategy_advice，风险结论不要求操作清单。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。
 
-旧冻结 report_contract_revision=4 及新报告 report_contract_revision=5 保留契约3的首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings及 quality_review.market_independence，并增加 decision_delivery、evidence_priority、maintenance_separation、narrative_focus 四项实际全文阅读审阅；它们分别核对直接结论与取舍、关键证据优先、内部维护没有挤占正文、重复结论没有掩盖主线。生成入口与校验共用同一审阅键集合，模型按手机表达方法对照正文与冻结结果作实质裁决，程序不判断文风、字数或投资结论。允许忠实改写冻结判断，旧冻结契约继续原验证。新稿5在正式记录前 --check-only 导出完整候选和 review_read，模型实际回读全文与绑定来源完成审阅，填入 reviewed_candidate_hash；哈希仅绑定该候选，不证明语义通过。补填审阅说明或更新滚动时钟产生独立不可变材料，不改正文身份；任何正文、证据范围或冻结结果改动重新预检与审阅。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。
+报告修订 4 和 5 保留修订 3的首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings及 quality_review.market_independence，并增加 decision_delivery、evidence_priority、maintenance_separation、narrative_focus 四项实际全文阅读审阅；它们分别核对直接结论与取舍、关键证据优先、内部维护没有挤占正文、重复结论没有掩盖主线。生成入口与校验共用同一审阅键集合，模型按手机表达方法对照正文与冻结结果作实质裁决，程序不判断文风、字数或投资结论。允许忠实改写冻结判断，旧冻结契约继续原验证。修订 5 引入在正式记录前使用 --check-only 导出完整候选和 review_read，模型实际回读全文与绑定来源完成审阅，填入 reviewed_candidate_hash；哈希仅绑定该候选，不证明语义通过。补填审阅说明或更新滚动时钟产生独立不可变材料，不改正文身份；任何正文、证据范围或冻结结果改动重新预检与审阅。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。
 
 ## revision 8 兼容与完整组合决定
 
 外层schema与唯一current不变，可读1–8；新内容在 recommendations.portfolio 中保留 risk_assessment/strategy_advice，增加 investment_decision，字段与语义按[投资决策及反馈](investment-process.md)。每个市场期限新增 momentum、price_attractiveness、strategy_applicability，因素新增 decision_review；均是模型形成的业务判断，程序不计算方向或解析方法文档。allocation_review 增加 investment_decision_hash 与逐项 issue_reviews；正式判断缺失/过期不能声明VALID，旧未决不能被required=false关闭。报告绑定同时覆盖综合结果，只传完成的取舍与必要限制；旧上下文仍按原格式恢复。账本与评价只作为已有事实/决定的源绑定视图，不升级为账户事实或第二策略Owner。
 
-新稿报告契约5通过run-advance --stage report --check-only导出实际全文候选及review_read；预检不记录正式报告、不发送，也不证明语义。实际通读来源和全文后填写具体quality_review和reviewed_candidate_hash，再记录同一正文。改写使旧绑定失效；旧冻结3/4及UNKNOWN仍按原内容恢复。完整职责、有限反馈边界及最终接口统一见[手机表达](mobile-report.md)，不在汇报阶段重新研究。
+正文契约5引入通过 `run-advance --stage report --check-only` 导出实际全文候选及 `review_read` 的预检；预检不记录正式报告、不发送，也不证明语义。实际通读来源和全文后填写具体quality_review和reviewed_candidate_hash，再记录同一正文。改写使旧绑定失效；旧冻结3/4及UNKNOWN仍按原内容恢复。完整职责、有限反馈边界及最终接口统一见[手机表达](mobile-report.md)，不在汇报阶段重新研究。
 
 ## 月度组合决定与报告绑定
 
@@ -310,7 +310,7 @@ AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及�
 
 ## 内容 revision 9：可验证预期与后继依赖
 
-新入口使用 revision 9，原 revision 1–8 的不可变记录按原接口读取和恢复；它们没有原始形成及检验记录时只提供事后复核，不补填为前瞻通过。既有 DecisionSnapshot、研究与观察继续拥有结论，`market-lifecycle/claims` 仅保存首次公开记录的原条件及保守时间，不是第二份策略或结论 Owner。
+内容 revision 9 引入原始形成与验证记录。原 revision 1–8 的不可变记录按原接口读取和恢复；它们没有原始形成及检验记录时只提供事后复核，不补填为前瞻通过。既有 DecisionSnapshot、研究与观察继续拥有结论，`market-lifecycle/claims` 仅保存首次公开记录的原条件及保守时间，不是第二份策略或结论 Owner。
 
 升级后的小时观察可以继续复核确实来自旧存储的 `forward`：保留其原 judgement/realization 窗口、conditions 和 invalidations，只更新实际 observed_window、prior_check 与说明，结果仍为 `POSTHOC_ONLY`。新 horizon、新预期或已注册预期的继承必须使用 revision 9 lifecycle；不得为旧记录伪造 formed_at、首次登记、后验样本或支持结论。预检按原持久对象与本轮候选的身份逐项比较，不能只用新建空状态测试升级。公开 raw refs 必须从实际引用索引携带完整 `source_id/pointer/value_hash`；缺散列时退回本轮材料修正，不从相似历史引用猜测或自动补写。
 
