@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 from urllib.parse import parse_qsl, urlsplit
 
 from . import deep_gate, fact_views, trading_archive
@@ -44,15 +43,17 @@ def run_record(db, run_ref):
     return run, release
 
 
-def node_config(db):
-    return json.loads(Path(db.settings['container_node_config']).read_bytes())
-
-
 def destination(db):
-    value = node_config(db).get('report_destination')
-    if not isinstance(value, dict) or not value.get('thread_id'):
-        raise Conflict('the original reporting destination is not configured')
-    return value
+    from . import trading_delivery
+
+    source = db.settings.get('host_node_config')
+    try:
+        config = json.loads(Path(source).read_bytes()) if isinstance(source, str) and source else None
+        if not isinstance(config, dict) or config.get('schema') != 'BTC_NODE_CONFIG_V1':
+            raise ValueError('host node configuration is unavailable')
+        return trading_delivery.validate_destination(config.get('report_destination'))
+    except (OSError, ValueError) as error:
+        raise Conflict('the authorized reporting destination is unavailable from the host node configuration') from error
 
 
 def material_key(run_ref):
@@ -110,13 +111,17 @@ def public_context(db, run):
     snapshot = material(db, run)
     market = db.value(snapshot['market'])
     current = decisions.current_market(db, MARKET)
+    review = decisions.decision_state(db, current, at=run['known_at']) if current else None
+    archive = trading_archive.context(db, scope='PUBLIC', at=run['known_at'])
+    targets = archive.pop('review_targets', [])
+    if current:
+        targets.extend({'subject': current['payload']['subject'], **condition} for condition in review['conditions'])
     return {'as_of': snapshot['public_known_at'], 'market_cutoff': snapshot['public_cutoff'],
             'market_evidence': {'type': 'BLOB', 'digest': snapshot['market']},
             'windows': market['windows'], 'gaps': market['gaps'], 'retrievals': market['retrievals'],
             'limitations': market['limitations'], 'current_market': current,
             'auxiliary': db.value(snapshot['auxiliary']), 'auxiliary_evidence': {'type': 'BLOB', 'digest': snapshot['auxiliary']},
-            'review': decisions.decision_state(db, current, at=run['known_at']) if current else None,
-            'archive': trading_archive.context(db, scope='PUBLIC'),
+            'review': review, 'review_targets': targets, 'archive': archive,
             'research': research_records(db, 'PUBLIC')}
 
 
@@ -216,12 +221,14 @@ def personal_context(db, run, release):
     scope, status = policies(db, release)
     files = confirmed_files(db)
     records = {subject: decisions.current_decision(db, subject) for subject in scope}
+    review = {subject: personal_state(db, record, scope[subject], files, run) for subject, record in records.items()}
     return {'market': reference(market), 'facts': files,
             'market_inputs': decisions.market_inputs(market),
             'policy_status': status, 'policies': scope,
             'current': records,
-            'review': {subject: personal_state(db, record, scope[subject], files, run)
-                       for subject, record in records.items()},
+            'review': review,
+            'review_targets': [{'subject': subject, **condition}
+                               for subject, state in review.items() for condition in state['conditions']],
             'research': research_records(db, 'PERSONAL'),
             'archive': trading_archive.context(db, scope='PERSONAL')}
 
@@ -419,17 +426,16 @@ def register_notification(db, record, notification):
     if (not isinstance(notification, dict) or 'reason' not in notification
             or set(notification) - {'reason', 'kind', 'due_at'}):
         raise ValueError('provide the actual reason for a material feedback obligation')
-    delivery.require_report(db, destination=destination(db), subject=record['payload']['subject'],
+    delivery.require_report(db, subject=record['payload']['subject'],
                             trigger_ref=record['digest'], **notification)
 
 
-def report_records(db, run, release, refs, *, complete=False):
-    from . import trading_decisions as decisions
+def validate_report_decisions(db, run, release, refs, *, complete=False):
     market = frozen_market(db, run)
     applicable, status = policies(db, release)
     if complete and status['state'] != 'CURRENT':
         raise Conflict('recheck the confirmed policies before issuing a complete personal report')
-    by_subject = {}
+    subjects = set()
     files = confirmed_files(db)
     for ref in refs:
         record = Entities(db).get(ref['kind'], ref['object_id'])
@@ -439,40 +445,17 @@ def report_records(db, run, release, refs, *, complete=False):
             continue
         subject = (record.get('payload') or {}).get('subject')
         policy = applicable.get(subject)
-        if (not policy or subject in by_subject or record.get('scope') != 'PERSONAL'
+        if (not policy or subject in subjects or record.get('scope') != 'PERSONAL'
                 or not ref['object_id'].startswith('trading/personal/')):
             raise ValueError('report references must address the active market or a distinct applicable personal decision')
         state = personal_state(db, record, policy, files, run)
         if state['status'] not in {'CURRENT', 'UNRESOLVED'}:
             raise Conflict('reassess this decision against its actual evidence before reporting it')
-        by_subject[subject] = record
+        subjects.add(subject)
     if reference(market) not in refs:
         raise ValueError('report needs the independent market judgement it presents')
-    if complete and set(applicable) != set(by_subject):
+    if complete and set(applicable) != subjects:
         raise Conflict('complete personal feedback needs each currently applicable decision')
-    return by_subject
-
-
-def validate_basket_excerpts(subjects, assertions):
-    from .trading_decisions import CHOICES
-    excerpts = {item['subject']: item['source_text'] for item in assertions}
-    if len(excerpts) != len(assertions):
-        raise ValueError('each cited basket requires one distinct passage')
-    used = set()
-    for subject, record in subjects.items():
-        if record['payload']['policy']['kind'] != 'MONTHLY':
-            continue
-        result = record['payload']['result']
-        excerpt = excerpts.get(subject, '')
-        wording = {'CONTINUE': '本月继续', 'SKIP': '本月跳过', 'UNRESOLVED': '待复核'}
-        if result['decision'] not in CHOICES['MONTHLY'] or wording[result['decision']] not in excerpt:
-            raise ValueError('the reviewed body must state the actual monthly choice in its own excerpt')
-        if any(excerpt in other or other in excerpt for other in used):
-            raise ValueError('a single recommendation passage cannot stand for two separate baskets')
-        used.add(excerpt)
-        if result['amount'] is not None and result['decision'] == 'CONTINUE':
-            if not re.search(r'(?<![\d.])' + re.escape(result['amount']) + r'(?![\d.])', excerpt.replace(',', '')):
-                raise ValueError('show the approved contribution in the same group excerpt')
 
 
 def feedback(db, run, release, action, params):
@@ -515,26 +498,25 @@ def feedback(db, run, release, action, params):
             if validity is None:
                 raise ValueError('limited public risk feedback needs its own useful lifetime')
             support = risk_support(db, run, params['event_ref'], validity)
-            if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage', 'assertions')):
+            if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage')):
                 raise Conflict('independent public risk feedback has only its own public event obligation')
-            subjects = {}
         else:
-            subjects = report_records(db, run, release, refs, complete=complete)
-        validate_basket_excerpts(subjects, params.get('assertions', []))
+            validate_report_decisions(db, run, release, refs, complete=complete)
         context = delivery.context(db, destination=target, at=run['known_at'])
         obligations = set(params.pop('obligation_ids', []))
         if purpose == 'DAILY':
             if not context['daily_due']:
                 raise Conflict('the daily feedback has a confirmed receipt already')
-            obligation = delivery.require_report(db, destination=target, subject='daily-feedback',
-                                                 trigger_ref=context['day'], reason=params['reason'], kind=purpose)
+            obligation = delivery.require_report(db, subject='daily-feedback', trigger_ref=context['day'],
+                                                 reason=params['reason'], kind=purpose, legacy_destination=target)
         else:
             event = plain(params['event_ref'], 'original material event reference')
             if not (event in {item['digest'] for item in refs}
                     or db.metadata('trading.public.' + event.removeprefix('sha256:'))):
                 raise ValueError('refer to the actual changed decision or stored event evidence')
-            obligation = delivery.require_report(db, destination=target, subject='material-feedback',
-                trigger_ref=identity(sorted(refs, key=encode), event), reason=params['reason'], kind=purpose)
+            obligation = delivery.require_report(db, subject='material-feedback',
+                trigger_ref=identity(sorted(refs, key=encode), event), reason=params['reason'], kind=purpose,
+                legacy_destination=target)
         params.pop('event_ref', None)
         obligations.add(obligation['obligation_id'])
         return delivery.prepare(db, destination=target, run_ref=run['ref'], complete=complete,
@@ -546,7 +528,7 @@ def feedback(db, run, release, action, params):
         if existing.get('support'):
             risk_support(db, run, **existing['support'])
         else:
-            report_records(db, run, release, existing['decisions'], complete=existing['complete'])
+            validate_report_decisions(db, run, release, existing['decisions'], complete=existing['complete'])
         return delivery.begin(db, destination=target, run_ref=run['ref'], **params)
     raise ValueError('unsupported trading operation')
 

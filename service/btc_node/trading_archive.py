@@ -34,23 +34,48 @@ def _archive_method(db, release):
     return release
 
 
-def _public_history(root, as_of):
+def _owner_at(root, as_of):
+    from v4 import storage
+    from v4.common import digest
+
+    owner = storage.current(root)
+    seen = set()
+    while owner and millis(owner['created_at']) > millis(as_of):
+        parent = owner['parent_id']
+        if parent is None:
+            return None
+        if not re.fullmatch(r'[a-f0-9]{64}', parent) or parent in seen:
+            raise ValueError('original decision parent identity is invalid')
+        seen.add(parent)
+        path = root / 'versions' / parent / 'decision.json'
+        if path.resolve().parent.parent != (root / 'versions').resolve():
+            raise ValueError('original decision parent escapes the archive')
+        previous = json.loads(path.read_bytes())
+        if (previous['decision_id'] != parent
+                or digest({k: v for k, v in previous.items() if k != 'decision_id'}) != 'sha256:' + parent
+                or millis(previous['created_at']) > millis(owner['created_at'])):
+            raise ValueError('original decision parent no longer matches its source')
+        owner = previous
+    return owner
+
+
+def _public_history(root, as_of, owner):
     try:
-        from v4 import forward_lifecycle, market_state, storage
+        from v4 import forward_lifecycle, market_state
         from v4.common import digest
 
-        owner = storage.current(root)
         if not owner:
             return {'status': 'NO_ORIGINAL_DECISION', 'conditions': []}
-        if millis(owner['created_at']) > millis(as_of):
-            return {'status': 'ORIGINAL_DECISION_NOT_YET_KNOWN', 'conditions': []}
         assessment = owner['assessment']
         public = market_state.public_content(assessment)
         if not public:
             return {'status': 'NO_INDEPENDENT_PUBLIC_RECORD', 'conditions': []}
         market = public['outlook']['market_assessment']
+        cutoff = assessment['temporal_scope']['knowledge_cutoff']
+        if not millis(cutoff) <= millis(owner['created_at']) <= millis(as_of):
+            raise ValueError('original decision has invalid knowledge and formation clocks')
         basis = {'prior_decision': owner['decision_id'], 'formed_at': owner['created_at'],
-                 'knowledge_cutoff': assessment['knowledge_cutoff'], 'market_assessment': market,
+                 'knowledge_cutoff': cutoff, 'market_assessment': market,
                  'public_case': market.get('cycle_case'), 'factor_assessment': public['factor_assessment']}
     except READ_ERRORS:
         return {'status': 'PUBLIC_BASELINE_UNKNOWN', 'conditions': []}
@@ -85,6 +110,81 @@ def _public_history(root, as_of):
             except READ_ERRORS:
                 conditions.append({**condition, 'status': 'ORIGINAL_CONDITION_UNKNOWN'})
     return {'status': 'ORIGINAL_PUBLIC_EVIDENCE', 'basis': basis, 'conditions': conditions}
+
+
+def _public_review_targets(db, public, *, root, source, known_at, as_of):
+    targets, gaps = [], set()
+    if 'basis' not in public:
+        return targets, gaps
+    from . import trading_decisions as decisions
+    from v4 import forward_lifecycle
+    from v4.common import digest
+
+    basis = public['basis']
+    selected = {}
+    for item in public['conditions']:
+        if item['status'] == 'ORIGINALLY_REGISTERED':
+            selected[item['claim_id']] = item
+        elif item['status'] not in ('POSTHOC_ONLY', 'REGISTRATION_NOT_YET_KNOWN'):
+            gaps.add(item['status'])
+    for item in tuple(selected.values()):
+        lifecycle = item['original_forward']['lifecycle']
+        for dependency in lifecycle.get('dependencies', []):
+            try:
+                claim_id = dependency['claim_hash']
+                expectation_id = dependency['expectation_id']
+                if claim_id in selected:
+                    expectations = selected[claim_id].get('dependent_expectations')
+                    if expectations is not None:
+                        expectations.add(expectation_id)
+                    continue
+                registration = forward_lifecycle.registration(root, claim_id)
+                if not registration or millis(registration['registered_at']) > millis(as_of):
+                    raise ValueError('original dependent condition cannot be verified')
+                selected[claim_id] = {**item, 'claim_id': claim_id, 'registration': registration,
+                                      'dependent_expectations': {expectation_id}}
+            except READ_ERRORS:
+                gaps.add('ORIGINAL_DEPENDENCY_UNKNOWN')
+    failures = {}
+    try:
+        for result in forward_lifecycle.persisted_failures(root, set(selected), as_of):
+            review = result['review']
+            for outcome in review['outcomes']:
+                if outcome['verdict'] == 'FALSIFIED':
+                    key = review['prior_claim_hash'], outcome['expectation_id']
+                    failures[key] = {'outcome': 'REFUTED', 'recorded_at': result['recorded_at'],
+                                     'source_digest': result['recorded_in'], 'review_digest': digest(review)}
+    except READ_ERRORS:
+        gaps.add('ORIGINAL_REVIEW_HISTORY_UNKNOWN')
+    for item in selected.values():
+        try:
+            registration = item['registration']
+            claim = registration['claim']
+            expected = item.get('dependent_expectations')
+            conditions = []
+            for part in claim['expectations']:
+                if expected is not None and part['id'] not in expected:
+                    continue
+                condition = {'id': part['id'], 'criterion': part['mechanism'], 'scope': part['scope'],
+                             'support': part['support'], 'falsification': part['falsification'],
+                             'review_at': claim['scale']['end'], 'observation_end': claim['scale']['end'],
+                             'observation_relations': [relation for relation in claim.get('observation_relations', [])
+                                                       if part['id'] in relation['expectation_ids']]}
+                if (prior := failures.get((item['claim_id'], part['id']))) is not None:
+                    condition['original_review'] = prior
+                conditions.append(condition)
+            provenance = {'decision_id': basis['prior_decision'], 'claim_id': item['claim_id'],
+                          'source_digest': registration['owner']['hash'], 'source_release': source,
+                          'knowledge_cutoff': basis['knowledge_cutoff'], 'data_cutoff': claim['data_cutoff'],
+                          'formed_at': claim['formed_at'], 'registered_at': registration['registered_at'],
+                          'process': claim['scale']['process']}
+            if conditions:
+                targets.append(decisions.save_review_target(
+                    db, subject=item['market'] + '/' + item['horizon'], source_key=item['claim_id'],
+                    provenance=provenance, conditions=conditions, valid_until=claim['scale']['end'], known_at=known_at))
+        except READ_ERRORS:
+            gaps.add('ORIGINAL_CONDITION_UNKNOWN')
+    return targets, gaps
 
 
 def _entity_references(db, as_of):
@@ -122,25 +222,69 @@ def _research_index(db, references):
 
 
 def capture(db, *, release, as_of):
-    """Capture original references inside the existing single writer transaction."""
-    manifest = db.metadata(ARCHIVE)
-    if manifest is not None:
+    """Recover the cutover evidence once under the original source and cutoff."""
+    original_pointer = db.one('SELECT digest FROM node_metadata WHERE name=%s', (ARCHIVE,))
+    saved = db.value(original_pointer['digest']) if original_pointer else None
+    manifest = saved
+    if manifest and manifest.get('continuity', {}).get('status') == 'CAPTURED':
         return
     from .execution import load_methods
 
-    original = _archive_method(db, Path(release))
-    load_methods(original)
-    references = _entity_references(db, as_of)
-    public = _public_history(_archive_root(db), as_of)
-    issues = _research_index(db, references)
-    requirements = db.rows("""SELECT r.requirement_key,r.cause_key,r.cause_version,r.opened_ms,r.reason,
+    if manifest is None:
+        original = _archive_method(db, Path(release))
+        references = _entity_references(db, as_of)
+        requirements = db.rows("""SELECT r.requirement_key,r.cause_key,r.cause_version,r.opened_ms,r.reason,
                                      e.scope,e.kind,e.object_id
                                 FROM review_requirements r JOIN entities e USING(entity_key)
                                WHERE r.resolved_ms IS NULL AND r.opened_ms<=%s AND e.object_id NOT LIKE %s
                             ORDER BY r.opened_ms,r.requirement_key""", (millis(as_of), 'trading/%'))
-    db.metadata(ARCHIVE, {'captured_at': stamp(as_of), 'source_release': original.name,
-                         'public': public, 'research': issues, 'references': references,
-                         'review_requirements': requirements}, write=True)
+        manifest = {'captured_at': stamp(as_of), 'source_release': original.name,
+                    'research': _research_index(db, references), 'references': references,
+                    'review_requirements': requirements}
+    else:
+        source = manifest['source_release']
+        if not COMMIT.fullmatch(source):
+            raise Conflict('the original release identity of the cutover archive is invalid')
+        original = Path(db.settings['release_root']).resolve() / source
+        if 'original_capture' not in manifest:
+            # The metadata writer pins this exact existing CAS object for
+            # backup/maintenance, even after the active archive is enriched.
+            manifest = {**manifest, 'original_capture': original_pointer['digest']}
+
+    original_cutoff = manifest['captured_at']
+    root = _archive_root(db)
+    load_methods(original)
+    try:
+        try:
+            if (original.resolve().parent != Path(db.settings['release_root']).resolve()
+                    or json.loads((original / 'RELEASE.json').read_bytes())['commit'] != original.name):
+                raise ValueError('original release does not match its archived identity')
+            owner = _owner_at(root, original_cutoff)
+            prior = (manifest.get('public') or {}).get('basis')
+            if prior and (owner is None or owner['decision_id'] != prior['prior_decision']):
+                raise ValueError('the original decision no longer matches the cutover archive')
+            if owner is None and (manifest.get('public') or {}).get('status') == 'PUBLIC_BASELINE_UNKNOWN':
+                raise ValueError('the source of an incomplete archive is still missing')
+        except READ_ERRORS:
+            owner = None
+            public = {'status': 'PUBLIC_BASELINE_UNKNOWN', 'conditions': []}
+        else:
+            public = _public_history(root, original_cutoff, owner)
+        targets, gaps = _public_review_targets(
+            db, public, root=root, source=original.name, known_at=as_of, as_of=original_cutoff)
+    finally:
+        load_methods(Path(release))
+    if public['status'] == 'PUBLIC_BASELINE_UNKNOWN':
+        gaps.add('PUBLIC_BASELINE_UNKNOWN')
+        if 'basis' in manifest.get('public', {}):
+            public = manifest['public']
+    existing = manifest.get('continuity', {}).get('targets', [])
+    by_id = {target['object_id']: target for target in (*existing, *targets)}
+    continuity = {'status': 'CAPTURED' if not gaps else 'INCOMPLETE',
+                  'targets': list(by_id.values()), 'gaps': sorted(gaps)}
+    updated = {**manifest, 'public': public, 'continuity': continuity}
+    if updated != saved:
+        db.metadata(ARCHIVE, updated, write=True)
 
 
 def _native_states(db, issues, scope):
@@ -157,7 +301,7 @@ def _native_states(db, issues, scope):
                          for value in claims.values() if value.get('issue_id') in ids]}
 
 
-def context(db, *, scope):
+def context(db, *, scope, at=None):
     """The service calls PERSONAL only after the current run's market freeze."""
     if scope not in ('PUBLIC', 'PERSONAL'):
         raise ValueError('the archive read requires PUBLIC or PERSONAL scope')
@@ -166,13 +310,17 @@ def context(db, *, scope):
         return {'status': 'ARCHIVE_NOT_CAPTURED'}
     issues = manifest['research']
     native = _native_states(db, issues, scope)
-    requirements = [item for item in manifest['review_requirements'] if item['scope'] == scope]
     if scope == 'PUBLIC':
+        from . import trading_decisions as decisions
+
+        continuity = manifest.get('continuity') or {}
+        review_targets = decisions.review_targets(db, continuity.get('targets', []), at=at or stamp())
         allowed = {'issue_id', 'request_id', 'independent_id', 'requested_at', 'public_completed_at'}
         research = [{key: value for key, value in item.items() if key in allowed}
                     for item in issues if item.get('independent_id')]
-        return {**manifest['public'], 'captured_at': manifest['captured_at'], 'research': research,
-                'native_research': native, 'review_requirements': requirements}
+        public = {key: value for key, value in manifest['public'].items() if key != 'conditions'}
+        return {**public, 'captured_at': manifest['captured_at'], 'research': research,
+                'native_research': native, 'review_targets': review_targets, 'review_gaps': continuity.get('gaps', [])}
     records = []
     for ref in manifest['references']:
         if ref['scope'] != scope:
@@ -183,7 +331,7 @@ def context(db, *, scope):
         except READ_ERRORS:
             records.append({**ref, 'status': 'ORIGINAL_OBJECT_UNKNOWN'})
     return {'status': 'ORIGINAL_PERSONAL_EVIDENCE', 'captured_at': manifest['captured_at'],
-            'records': records, 'native_research': native, 'review_requirements': requirements}
+            'records': records, 'native_research': native}
 
 
 def inspect_research(db, *, release, scope, request_id, phase, evidence_id=None):

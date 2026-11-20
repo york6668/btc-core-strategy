@@ -32,6 +32,8 @@ core 计算解释器固定为 Python 3.12.14，与节点保留的冻结行情生
 
 `python3 service/setup_node.py --node <现有 node.json> --data <节点专属目录> --docker <实际 Docker CLI> --compose-project <节点名>` 只准备关闭的接入配置。使用生成的 compose.env 与覆盖文件启动 mysql/core，检查实际健康。镜像从本仓库 service 源码构建；reader/collector 镜像由 market-roles 的 `roles/containers/build.py` 从源码白名单导出构建。
 
+报告目的地由宿主节点配置持有。核心服务通过现有运行目录的只读挂载读取该原件；节点设置记录配置路径，容器执行配置不提供报告目的地。使用目录挂载使宿主原子替换配置后，后续读取仍取得同一来源。已有稿件及发送尝试各自保留冻结时的原目的地。配置不可用时，事实、判断和反馈待办仍在正式服务中接续。
+
 在没有新写入者的边界短暂停止原调度，使用 `service/snapshot.py --project <项目> --destination <新快照目录>` 获取一致性快照，再恢复原调度。导入与对照阶段不执行分析 CLI、不发送消息。为原生导入配置本机地址、专属数据库端口、凭据文件和快照项目路径，运行：
 
 ```sh

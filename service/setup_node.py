@@ -49,12 +49,14 @@ def prepare(node_path, data, docker, compose_project, source):
     container_node.pop('frozen_market_python_version', None)
     container_node.pop('docker_service', None)
     container_node.pop('reader_data_dir', None)
+    container_node.pop('report_destination', None)
     write(data / 'container-node.json', container_node)
     settings = {'mysql': {'host': 'mysql', 'user': 'btc', 'database': 'btc', 'password_file': '/run/secrets/mysql_password'},
                 'objects': str(project), 'require_shared_evidence': True,
                 'socket': '/run/btc/btc.sock', 'journal': str(data / 'journal'),
                 'project': str(project), 'release_root': str(Path(node['release_root']) / 'releases'),
                 'container_node_config': str(data / 'container-node.json'),
+                'host_node_config': str(node_path.resolve()),
                 'observation_db': node['observation_db'], 'maintenance_enabled': False,
                 'recycle_grace_hours': 48, 'compatibility_root': str(native_project / '.strategy'),
                 # Keep immutable backup content on the evidence mount. A sibling

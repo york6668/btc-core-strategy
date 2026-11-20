@@ -12,6 +12,7 @@ from .entities import Entities
 
 REPORT = 'trading/report/'
 OBLIGATION = 'trading/feedback/'
+PERSONAL_FEEDBACK = 'trading-personal-feedback'
 DAY = ZoneInfo('Asia/Tokyo')
 HASH = re.compile(r'[a-f0-9]{64}')
 URL_TOKEN = re.compile(r'\ue200url\ue202([^\ue200\ue201\ue202]+)\ue202(https?://[^\ue200\ue201\ue202]+)\ue201')
@@ -29,7 +30,7 @@ def _exact(value, fields, label):
         raise ValueError(label + ' has invalid fields')
 
 
-def _destination(value):
+def validate_destination(value):
     fields = 'thread_id project_id' if isinstance(value, dict) and 'project_id' in value else 'thread_id'
     _exact(value, fields, 'configured report destination')
     for key, val in value.items():
@@ -38,7 +39,7 @@ def _destination(value):
 
 
 def _channel(destination):
-    return identity('trading-report-destination', _destination(destination)['thread_id'])
+    return identity('trading-report-destination', validate_destination(destination)['thread_id'])
 
 
 def _identifier(value, prefix):
@@ -59,7 +60,8 @@ def _put(db, key, original, payload, reason, *, active=True, dependencies=()):
     moment = stamp()
     return Entities(db).put({
         'kind': 'DELIVERY', 'object_id': key, 'scope': 'PERSONAL',
-        'product': _channel(payload['destination']), 'active': active,
+        'product': _channel(payload['destination']) if 'destination' in payload else PERSONAL_FEEDBACK,
+        'active': active,
         'known_at': moment, 'observed_at': moment, 'payload': payload,
         'change_reason': reason, 'source_ref': payload.get('trigger_ref', key),
         'method_version': db.settings.get('release_id', 'transactional-delivery'),
@@ -77,8 +79,8 @@ def _body(db, value):
 
 def _records(db, destination):
     channel = _channel(destination)
-    rows = db.rows('SELECT object_id FROM entities WHERE kind=%s AND scope=%s AND product=%s AND active=1',
-                   ('DELIVERY', 'PERSONAL', channel))
+    rows = db.rows('SELECT object_id FROM entities WHERE kind=%s AND scope=%s AND product IN (%s,%s) AND active=1',
+                   ('DELIVERY', 'PERSONAL', channel, PERSONAL_FEEDBACK))
     for row in rows:
         item = Entities(db).get('DELIVERY', row['object_id'])
         if item is not None:
@@ -246,7 +248,7 @@ def context(db, *, destination, at=None):
 
 def inherit_open(db, *, destination, legacy_root, retain=()):
     """Capture original unsatisfied reports once, and carry only reviewed meanings."""
-    destination = _destination(destination)
+    destination = validate_destination(destination)
     legacy_root = Path(legacy_root)
     key = _inheritance_key(destination)
     archived = db.metadata(key)
@@ -278,35 +280,46 @@ def inherit_open(db, *, destination, legacy_root, retain=()):
         if original is None:
             raise Conflict('the requested original review has no captured outstanding obligation')
         reason = _text(review['reason'], 'actual continuing impact of the archived feedback')
-        ref = original['review_id']
-        identifier = OBLIGATION + identity(_channel(destination), 'ARCHIVED', ref)
-        prior = Entities(db).get('DELIVERY', identifier)
-        if prior is None:
-            value = {'obligation_id': identifier, 'destination': destination, 'subject': 'retained feedback',
-                     'trigger_ref': ref, 'reason': reason, 'kind': 'ARCHIVED', 'created_at': stamp(),
-                     'due_at': original['original_due_at'], 'report_id': None, 'status': 'OPEN',
-                     'legacy': original}
-            _put(db, identifier, None, value, 'Carry the reviewed outstanding meaning')
-        inherited.append(identifier)
+        value = _require_obligation(db, kind='ARCHIVED', subject='retained feedback',
+                                    trigger_ref=original['review_id'], reason=reason,
+                                    due_at=original['original_due_at'], legacy=original,
+                                    legacy_destination=destination)
+        if value['status'] == 'OPEN':
+            inherited.append(value['obligation_id'])
     return {**archived, 'inherited': inherited}
 
 
-def require_report(db, *, destination, subject, trigger_ref, reason, kind='UPDATE', due_at=None):
-    destination = _destination(destination)
+def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=None, legacy_destination=None):
     _text(subject, 'feedback subject')
     _text(trigger_ref, 'original feedback trigger')
     _text(reason, 'why feedback is needed')
     if kind not in {'UPDATE', 'DAILY', 'RISK', 'CORRECTION'}:
         raise ValueError('invalid feedback purpose')
     due_at = stamp(due_at) if due_at is not None else None
-    key = OBLIGATION + identity(_channel(destination), kind, subject, trigger_ref)
-    prior = Entities(db).get('DELIVERY', key)
+    return _require_obligation(db, kind=kind, subject=subject, trigger_ref=trigger_ref,
+                               reason=reason, due_at=due_at, legacy_destination=legacy_destination)
+
+
+def _obligation_id(value):
+    return OBLIGATION + identity(value['kind'], value['subject'], value['trigger_ref'])
+
+
+def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None):
+    payload = {'subject': subject, 'trigger_ref': trigger_ref, 'reason': reason, 'kind': kind, 'due_at': due_at,
+               'created_at': stamp(), 'report_id': None, 'status': 'OPEN'}
+    identifier = _obligation_id(payload)
+    objects = Entities(db)
+    prior = objects.get('DELIVERY', identifier)
+    if not prior and legacy_destination is not None:
+        channel = _channel(legacy_destination)
+        legacy_identity = (channel, kind, trigger_ref) if kind == 'ARCHIVED' else (channel, kind, subject, trigger_ref)
+        prior = objects.get('DELIVERY', OBLIGATION + identity(*legacy_identity))
     if prior:
         return prior['payload']
-    payload = {'obligation_id': key, 'destination': destination, 'subject': subject, 'trigger_ref': trigger_ref,
-               'reason': reason, 'kind': kind, 'due_at': due_at, 'created_at': stamp(), 'report_id': None,
-               'status': 'OPEN'}
-    _put(db, key, None, payload, 'Record required feedback')
+    payload['obligation_id'] = identifier
+    if legacy is not None:
+        payload['legacy'] = legacy
+    _put(db, identifier, None, payload, 'Record required feedback')
     return payload
 
 
@@ -315,18 +328,17 @@ def get(db, *, report_id):
     return {**value, 'body': _body(db, value)}
 
 
-def prepare(db, *, destination, body, reviewed_body_hash, decisions, obligation_ids, reason,
-            run_ref, complete, assertions=(), supersedes=None, support=None, legacy_coverage=None):
-    destination = _destination(destination)
+def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref, complete,
+            supersedes=None, support=None, legacy_coverage=None):
+    destination = validate_destination(destination)
     for value, name in ((body, 'frozen report body'), (reason, 'report reason'), (run_ref, 'original run')):
         _text(value, name)
     if type(complete) is not bool:
         raise ValueError('report coverage must state whether it is complete')
     if SECRET.search(body):
         raise ValueError('report contains private credential material')
-    body_hash = fingerprint(body.encode('utf-8'))
-    if not isinstance(reviewed_body_hash, str) or reviewed_body_hash.removeprefix('sha256:') != body_hash:
-        raise Conflict('report body differs from the reviewed candidate')
+    body_bytes = body.encode('utf-8')
+    body_hash = fingerprint(body_bytes)
     if support is not None:
         _exact(support, 'event_ref valid_until', 'limited public report evidence')
         if (complete or decisions
@@ -339,11 +351,6 @@ def prepare(db, *, destination, body, reviewed_body_hash, decisions, obligation_
     if not isinstance(obligation_ids, list) or not obligation_ids or len(set(obligation_ids)) != len(obligation_ids):
         raise ValueError('report requires distinct open feedback obligations')
     decisions = sorted(decisions, key=encode)
-    for item in assertions:
-        _exact(item, 'subject source_text', 'report assertion')
-        _text(item['subject'], 'assertion subject')
-        if _text(item['source_text'], 'linked excerpt') not in body:
-            raise Conflict('reviewed decision excerpt is missing from the report')
     if supersedes is not None:
         _exact(supersedes, 'report_id reason', 'report replacement')
         _text(supersedes['reason'], 'material reason for replacement')
@@ -360,7 +367,8 @@ def prepare(db, *, destination, body, reviewed_body_hash, decisions, obligation_
     old = _by_id(db, supersedes['report_id'], REPORT) if supersedes else None
     for row in obligations:
         entry = row['payload']
-        if not row['active'] or _channel(entry['destination']) != _channel(destination):
+        bound = entry.get('destination')
+        if not row['active'] or (bound is not None and _channel(bound) != _channel(destination)):
             raise Conflict('only open obligations for the original approved destination may be covered')
         if entry['kind'] == 'DAILY' and not complete:
             raise Conflict('a limited update cannot satisfy the complete daily report')
@@ -381,12 +389,12 @@ def prepare(db, *, destination, body, reviewed_body_hash, decisions, obligation_
         if (prior_report['decisions'] == decisions and set(prior_report['obligation_ids']) == set(obligation_ids)
                 and prior_report['status'] != 'CORRECTION_REQUIRED'):
             raise Conflict('replacement requires changed related decisions or a documented communication correction')
-    if db.put_blob(body.encode('utf-8')) != body_hash:
-        raise Conflict('stored report bytes differ from the reviewed body')
+    if db.put_blob(body_bytes) != body_hash:
+        raise Conflict('stored report bytes differ from the submitted body')
     payload = {'report_id': key, 'destination': destination, 'body_hash': body_hash,
                'decisions': decisions, 'obligation_ids': obligation_ids, 'reason': reason,
                'run_ref': run_ref, 'complete': complete, 'status': 'PENDING', 'created_at': stamp(), 'attempt': None,
-               'attempt_count': 0, 'assertions': list(assertions), 'supersedes': supersedes}
+               'attempt_count': 0, 'supersedes': supersedes}
     if support is not None:
         payload['support'] = support
     if legacy_coverage:
@@ -562,6 +570,91 @@ def _close_obligation(db, obligation, completed_at, report_id):
     _put(db, obligation['object_id'], obligation,
          {**payload, 'report_id': report_id, 'status': 'DELIVERED', 'completed_at': completed_at,
           'delivered_after_due': late}, 'Close feedback from actual displayed report', active=False)
+
+
+def _verified_coverage(db, destination, original, obligation, proof):
+    fields = 'obligation_digest report_id receipt_ref reason'
+    exact = isinstance(proof, dict) and 'covered_by' in proof
+    _exact(proof, fields + (' covered_by' if exact else ' excerpts'), 'review of actually displayed coverage')
+    _text(proof['reason'], 'why the actual display covers the original obligation')
+    if proof['obligation_digest'] != obligation['digest']:
+        raise Conflict('the original feedback changed since its review')
+    delivery = _by_id(db, proof['report_id'], REPORT)['payload']
+    receipt = delivery.get('receipt') or {}
+    assistant = receipt.get('assistant') or {}
+    if (delivery['status'] != 'DELIVERED' or _channel(delivery['destination']) != _channel(destination)
+            or not proof['receipt_ref'] or assistant.get('record_ref') != proof['receipt_ref']
+            or _confirmed_display(db, delivery, receipt) == 'MISMATCH'):
+        raise Conflict('the original obligation needs a real, completed display in the authorized destination')
+    value = obligation['payload']
+    if exact:
+        covered = _by_id(db, proof['covered_by'], OBLIGATION)['payload']
+        if (covered['status'] != 'DELIVERED' or covered['report_id'] != delivery['report_id']
+                or covered['obligation_id'] not in delivery['obligation_ids']
+                or _obligation_id(covered) != _obligation_id(value)):
+            raise Conflict('the delivered obligation does not represent the original feedback')
+    else:
+        # A report can cover an earlier public market notification when its
+        # later decision and actual displayed wording are both pinned.
+        sources = db.rows('SELECT e.object_id,v.version FROM entity_versions v JOIN entities e '
+                          'ON e.entity_key=v.entity_key WHERE e.kind=%s AND e.scope=%s AND v.digest=%s',
+                          ('DECISION', 'PUBLIC', value['trigger_ref']))
+        has_successor = any(ref['kind'] == 'DECISION' and ref['object_id'] == row['object_id']
+                            and ref['version'] > row['version']
+                            for row in sources for ref in delivery['decisions'])
+        excerpts = proof['excerpts']
+        if (value['kind'] != 'UPDATE' or delivery['run_ref'] != original['run_ref'] or not has_successor
+                or not isinstance(excerpts, list) or not excerpts
+                or any(_text(part, 'reviewed original display excerpt') not in assistant['body'] for part in excerpts)):
+            raise Conflict('the coverage needs the actual successor public decision and displayed passages')
+    return delivery['report_id']
+
+
+def void_misbound(db, *, destination, report_id, expected_digest, evidence_ref, coverage):
+    """Retire a proven wrong-destination draft that never began an attempt."""
+    _text(expected_digest, 'original frozen report record digest')
+    _text(evidence_ref, 'original wrong-binding evidence')
+    if not isinstance(coverage, dict):
+        raise ValueError('coverage must name the exact original feedback reviewed')
+    row = _by_id(db, report_id, REPORT)
+    original = row['payload']
+    decision = {'original_digest': expected_digest, 'evidence_ref': evidence_ref, 'coverage': coverage}
+    previous = original.get('retirement')
+    if original['status'] == 'VOID_MISBOUND' and previous and all(previous.get(key) == value
+                                                                for key, value in decision.items()):
+        return {'report_id': report_id, 'status': original['status'], 'continuations': previous['continuations']}
+    if (row['digest'] != expected_digest or not row['active'] or original['status'] != 'PENDING'
+            or original['attempt_count'] != 0 or original.get('attempt') is not None or original.get('receipt')
+            or original.get('superseded_by') or _channel(original['destination']) == _channel(destination)):
+        raise Conflict('only the original unattempted wrong-destination report can be retired')
+    if not set(coverage) <= set(original['obligation_ids']):
+        raise Conflict('coverage includes unrelated feedback')
+    continuations = {}
+    for identifier in original['obligation_ids']:
+        obligation = _by_id(db, identifier, OBLIGATION)
+        value = obligation['payload']
+        if (not obligation['active'] or value['status'] != 'OPEN' or value['report_id'] != report_id
+                or value.get('destination') != original['destination']):
+            raise Conflict('the wrong-destination draft no longer owns the original obligation')
+        if identifier in coverage:
+            matched_report = _verified_coverage(db, destination, original, obligation, coverage[identifier])
+            result = {'outcome': 'COVERED_IN_AUTHORIZED_DESTINATION', 'report_id': matched_report}
+        else:
+            kept = {key: item for key, item in value.items() if key != 'destination'}
+            replacement = _obligation_id(kept)
+            if Entities(db).get('DELIVERY', replacement):
+                raise Conflict('review the existing equivalent obligation before retiring the wrong destination')
+            kept.update(obligation_id=replacement, report_id=None, original_obligation=identifier)
+            _put(db, replacement, None, kept, 'Carry outstanding feedback from a wrong-destination draft')
+            result = {'outcome': 'RETAINED', 'obligation_id': replacement}
+        continuations[identifier] = result
+        _put(db, identifier, obligation, {**value, 'status': 'VOID_MISBOUND', 'continuation': result},
+             'Retire feedback bound to the unattempted wrong destination', active=False)
+    retired = {**original, 'status': 'VOID_MISBOUND',
+               'retirement': {**decision, 'continuations': continuations}}
+    _put(db, report_id, row, retired, 'Retire the unattempted wrong-destination report',
+         active=False, dependencies=_body_dependency(retired))
+    return {'report_id': report_id, 'status': retired['status'], 'continuations': continuations}
 
 
 def reconcile_archived(db, *, destination, report_id, receipt):

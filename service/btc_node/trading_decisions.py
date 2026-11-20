@@ -16,6 +16,7 @@ from .entities import Entities
 MARKET_PREFIX = 'trading/market/'
 PERSONAL_PREFIX = 'trading/personal/'
 REVIEW_PREFIX = 'trading/review/'
+HISTORICAL_PREFIX = MARKET_PREFIX + 'archived/'
 CHOICES = {
     'MONTHLY': {'CONTINUE', 'SKIP', 'UNRESOLVED'},
     'OPPORTUNITY': {'PARTICIPATE', 'WAIT', 'AVOID', 'UNRESOLVED'},
@@ -130,7 +131,8 @@ def _bound_record(objects, reference, *, current=False):
             or type(reference.get('version')) is not int or not isinstance(reference.get('digest'), str)):
         raise ValueError('invalid trading decision reference')
     record = objects.get(kind, object_id, version=None if current else reference['version'])
-    if record is None or any(record[key] != reference[key] for key in ('version', 'digest')):
+    if (record is None or any(record[key] != reference[key] for key in ('version', 'digest'))
+            or (current and not record['active'])):
         raise Conflict('bound trading decision does not match its saved record')
     return record
 
@@ -140,8 +142,13 @@ def _save(objects, *, kind, object_id, scope, payload, evidence, run, expected_v
     version = previous['version'] if previous else 0
     if type(expected_version) is not int or expected_version != version:
         raise Conflict('the affected trading decision changed before submission')
-    if kind != 'REVIEW' and previous and previous['payload'] == payload:
-        return previous
+    if kind != 'REVIEW' and previous:
+        prior = previous['payload']
+        if {key: value for key, value in prior.items() if key != 'condition_sources'} == payload:
+            return previous
+        carried = _carry_conditions(objects, previous, payload['result']['conditions'], at=run['known_at'])
+        if carried:
+            payload = {**payload, 'condition_sources': carried}
     # The business horizon belongs to the decision itself. Generic expiry
     # handling must not require closing an unrelated or unverified forecast.
     known = run['known_at']
@@ -312,7 +319,94 @@ def _review_id(record, condition_id):
     return REVIEW_PREFIX + identity(record['kind'], record['object_id'], record['version'], condition_id)
 
 
-def _later_evidence(database, objects, evidence, *, original, cutoff):
+def save_review_target(database, *, subject, source_key, provenance, conditions, valid_until, known_at):
+    """Project verified original conditions without adopting another current market view."""
+    data_time = millis(provenance['data_cutoff'])
+    formed = millis(provenance['formed_at'])
+    registered = millis(provenance['registered_at'])
+    if not data_time <= formed <= registered <= millis(known_at):
+        raise ValueError('original registration has inconsistent market and knowledge clocks')
+    if valid_until is not None and millis(valid_until) <= formed:
+        raise ValueError('original condition window ends before formation')
+    objects = Entities(database)
+    object_id = HISTORICAL_PREFIX + identity(source_key)
+    previous = objects.get('DECISION', object_id)
+    payload = {'subject': _text(subject, 'original market subject'), 'original': provenance,
+               'result': {'conditions': conditions, 'valid_until': valid_until}}
+    if previous and previous['payload'] == payload:
+        return binding(previous)
+    if previous:
+        past = previous['payload']
+        if (past['original'] != provenance or past['result']['valid_until'] != valid_until
+                or [_condition_basis(c) for c in past['result']['conditions']] != [_condition_basis(c) for c in conditions]):
+            raise Conflict('original condition or registration differs from the saved evidence')
+    objects.put({'kind': 'DECISION', 'object_id': object_id, 'scope': 'PUBLIC',
+                 'active': False, 'payload': payload, 'observed_at': provenance['data_cutoff'],
+                 'known_at': known_at, 'source_ref': source_key, 'method_version': provenance['source_release'],
+                 'change_reason': 'Carry verified original market conditions'},
+                expected_version=previous['version'] if previous else 0)
+    return binding(objects.get('DECISION', object_id))
+
+
+def _condition_basis(condition):
+    return {key: value for key, value in condition.items() if key != 'original_review'}
+
+
+def _condition_lineage(objects, record, condition, versions):
+    lineage = [record]
+    basis = _condition_basis(condition)
+    for previous_version in range(record['version'] - 1, 0, -1):
+        if previous_version not in versions:
+            versions[previous_version] = objects.get(record['kind'], record['object_id'], version=previous_version)
+        previous = versions[previous_version]
+        if not previous or not any(_condition_basis(item) == basis for item in previous['payload']['result']['conditions']):
+            break
+        lineage.append(previous)
+    return lineage
+
+
+def _condition_history(objects, record, condition, *, at, versions):
+    condition_id = condition['id']
+    source = record['payload'].get('condition_sources', {}).get(condition_id)
+    if source:
+        origin = _bound_record(objects, source['target'])
+        if (origin['kind'] != record['kind'] or origin['object_id'] != record['object_id']
+                or origin['version'] >= record['version']):
+            raise Conflict('a carried condition must refer to the original scope')
+        reviews = [objects.get('REVIEW', _review_id(origin, condition_id), as_of=at)]
+        archived = source.get('prior_review')
+        if archived:
+            prior = objects.get('REVIEW', archived['object_id'], version=archived['version'])
+            if not prior or binding(prior) != archived:
+                raise Conflict('the recovered review does not match its exact recorded result')
+            if prior['known_ms'] <= millis(at):
+                reviews.append(prior)
+    else:
+        lineage = _condition_lineage(objects, record, condition, versions)
+        origin = lineage[-1]
+        reviews = [objects.get('REVIEW', _review_id(item, condition_id), as_of=at) for item in lineage]
+    latest = max((review for review in reviews if review),
+                 key=lambda r: (r['known_ms'], r['recorded_ms']), default=None)
+    return origin, latest
+
+
+def _carry_conditions(objects, previous, conditions, *, at):
+    prior = {condition['id']: condition for condition in previous['payload']['result']['conditions']}
+    carried, versions = {}, {}
+    for condition in conditions:
+        condition_id = condition['id']
+        original = prior.get(condition_id)
+        if original is None or _condition_basis(original) != _condition_basis(condition):
+            continue
+        origin, review = _condition_history(objects, previous, original, at=at, versions=versions)
+        source = {'target': binding(origin)}
+        if review and review['object_id'] != _review_id(origin, condition_id):
+            source['prior_review'] = binding(review)
+        carried[condition_id] = source
+    return carried
+
+
+def _later_evidence(database, objects, evidence, *, original, cutoff, observation_end=None):
     for reference in evidence:
         if reference['type'] == 'OBSERVATION':
             sample = database.one('SELECT observed_ms,known_ms FROM observations WHERE observation_key=%s '
@@ -327,7 +421,8 @@ def _later_evidence(database, objects, evidence, *, original, cutoff):
             sample = {'observed_ms': millis(tagged['observed_at']), 'known_ms': millis(tagged['known_at'])}
         else:
             continue  # An undated blob or a prior judgement is supporting material only.
-        if sample and original < sample['observed_ms'] <= sample['known_ms'] <= cutoff:
+        if (sample and original < sample['observed_ms'] <= sample['known_ms'] <= cutoff
+                and (observation_end is None or sample['observed_ms'] <= millis(observation_end))):
             return True
     return False
 
@@ -335,27 +430,41 @@ def _later_evidence(database, objects, evidence, *, original, cutoff):
 def record_review(database, *, target, condition_id, outcome, explanation, evidence, run,
                   impact='KEEP', next_review_at=None):
     objects = Entities(database)
-    original = _bound_record(objects, target)
-    condition = next((item for item in original['payload']['result']['conditions'] if item['id'] == condition_id), None)
+    selected = _bound_record(objects, target)
+    condition = next((item for item in selected['payload']['result']['conditions'] if item['id'] == condition_id), None)
     if condition is None or outcome not in OUTCOMES or impact not in {'KEEP', 'REVISE'}:
         raise ValueError('review must address an original condition and its effect')
     if outcome == 'UNKNOWN' and impact != 'KEEP':
         raise ValueError('missing evidence cannot revise the original judgement by itself')
     known = _time(run.get('known_at'), 'review knowledge cutoff')
-    formed = max(original['known_ms'], original['recorded_ms'])
-    if known <= formed:
+    original, last = _condition_history(objects, selected, condition, at=run['known_at'], versions={})
+    current = objects.get(selected['kind'], selected['object_id'], as_of=run['known_at'])
+    if current and current['version'] > selected['version']:
+        for item in current['payload']['result']['conditions']:
+            if _condition_basis(item) == _condition_basis(condition):
+                active_origin, active_review = _condition_history(objects, current, item, at=run['known_at'], versions={})
+                if binding(active_origin) == binding(original) and active_review:
+                    last = active_review
+                break
+    archived = original['payload'].get('original')
+    formed = (max(millis(archived['formed_at']), millis(archived['registered_at'])) if archived
+              else max(original['known_ms'], original['recorded_ms']))
+    if selected['known_ms'] > known or known <= formed:
         raise ValueError('a review must occur after the original judgement was formed')
     references = _evidence(evidence, required=outcome != 'UNKNOWN')
-    if outcome != 'UNKNOWN' and not _later_evidence(database, objects, references, original=formed, cutoff=known):
-        raise ValueError('a factual outcome requires actual observations after the original judgement')
+    if outcome != 'UNKNOWN' and not _later_evidence(
+            database, objects, references, original=formed, cutoff=known, observation_end=condition.get('observation_end')):
+        raise ValueError('a factual outcome requires actual later observations within the original condition window')
     if next_review_at is not None:
         if outcome not in {'PARTIAL', 'NOT_TRIGGERED', 'UNKNOWN'} or _time(next_review_at, 'next review') <= known:
             raise ValueError('only open review outcomes can have a later recheck')
     object_id = _review_id(original, condition_id)
     previous = objects.get('REVIEW', object_id)
-    revision_required = impact == 'REVISE' or bool(previous and previous['payload']['revision_required'])
+    prior_revision = (last['payload'].get('revision_reviewed_ms', last['known_ms'])
+                      if last and last['payload']['revision_required'] else None)
+    revision_reviewed = known if impact == 'REVISE' else prior_revision
     meaning = {'subject': binding(original), 'condition_id': condition_id, 'outcome': outcome, 'impact': impact,
-               'revision_required': revision_required,
+               'revision_required': revision_reviewed is not None, 'revision_reviewed_ms': revision_reviewed,
                'explanation': _text(explanation, 'review explanation'), 'next_review_at': next_review_at}
     return _save(objects, kind='REVIEW', object_id=object_id, scope=original['scope'], payload=meaning,
                  evidence=[{'type': 'BLOB', 'digest': original['digest'], 'relation': 'ORIGINAL_JUDGEMENT'}, *references],
@@ -373,20 +482,27 @@ def decision_state(database, record, *, at, policy=None):
     if record['known_ms'] > as_of:
         return {'status': 'NOT_YET_KNOWN', 'conditions': []}
     checks = []
+    requires_revision = False
+    versions = {}
     for condition in result['conditions']:
-        review = objects.get('REVIEW', _review_id(record, condition['id']), as_of=at)
+        origin, review = _condition_history(objects, record, condition, at=at, versions=versions)
         last = review['payload'] if review else None
+        if last and last['revision_required']:
+            requires_revision |= last.get('revision_reviewed_ms', review['known_ms']) >= record['known_ms']
         deadline = last['next_review_at'] if last and last['next_review_at'] else condition['review_at']
-        original_deadline = millis(condition['review_at'])
-        open_check = (last is None or last['outcome'] in {'PARTIAL', 'UNKNOWN'} or bool(last['next_review_at'])
-                      or (last['outcome'] == 'NOT_TRIGGERED' and review['known_ms'] < original_deadline))
-        checks.append({**condition, 'next_review_at': deadline, 'review': last,
-                       'due': open_check and millis(deadline) <= as_of,
-                       'prior_due_unchecked': original_deadline <= as_of and review is None,
+        original_deadline = millis(condition['review_at']) if condition['review_at'] else None
+        open_check = (last is None and 'original_review' not in condition
+                      or last is not None and (last['outcome'] in {'PARTIAL', 'UNKNOWN'} or bool(last['next_review_at'])
+                                               or (last['outcome'] == 'NOT_TRIGGERED' and
+                                                   (original_deadline is None or review['known_ms'] < original_deadline))))
+        checks.append({**condition, 'target': binding(record), 'origin': binding(origin), 'next_review_at': deadline, 'review': last,
+                       'pending': open_check, 'due': open_check and deadline is not None and millis(deadline) <= as_of,
+                       'prior_due_unchecked': original_deadline is not None and original_deadline <= as_of and review is None,
                        'reviewed_ms': review['recorded_ms'] if review else None})
+    if 'original' in payload:
+        return {'status': 'HISTORICAL', 'conditions': checks}
     expired = millis(result['valid_until']) <= as_of
     policy_changed = policy is not None and payload.get('policy', {}).get('basis') != policy.get('basis')
-    requires_revision = any(item['review'] and item['review']['revision_required'] for item in checks)
     if expired:
         status = 'EXPIRED'
     elif policy_changed or requires_revision:
@@ -401,3 +517,12 @@ def decision_state(database, record, *, at, policy=None):
         market = objects.get('DECISION', source['object_id'], as_of=at)
         state['market_changed'] = bool(market and binding(market) != source)
     return state
+
+
+def review_targets(database, references, *, at):
+    objects = Entities(database)
+    records = [_bound_record(objects, target) for target in references]
+    return [{'subject': record['payload']['subject'], 'original': record['payload']['original'],
+             **condition}
+            for record in records
+            for condition in decision_state(database, record, at=at)['conditions']]
