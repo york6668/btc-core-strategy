@@ -255,6 +255,10 @@ def execute(settings, request):
                 raise Conflict('recover the interrupted writer before accepting another command')
             if (db.metadata('writer') or {}).get('owner') != 'DOCKER':
                 raise Conflict('comparison mode does not execute legacy commands')
+            active_release = Path(settings['release_root']).parent / 'current' / 'RELEASE.json'
+            if (not readonly and active_release.is_file()
+                    and json.loads(active_release.read_bytes()).get('data_schema') == 'BTC_NODE_DIRECT'):
+                raise Conflict('the deployed trading workflow owns current state; use archived evidence and original recovery')
             validate_deep_result_admission(db, argv, release)
             mysql_native = 'connect_if_configured' in (release / 'skill/btc-core-strategy/scripts/market_observation.py').read_text()
             original = Path(settings['observation_db'])

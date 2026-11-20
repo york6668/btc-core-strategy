@@ -113,10 +113,54 @@ PARAMETERS = {
             ['object_id','category','fields','source_refs'])}}, ['market_binding','fact_version','items']),
 }
 
+OBJECT = {'type': 'object'}
+OBJECTS = {'type': 'array', 'items': OBJECT}
+STRINGS = {'type': 'array', 'items': TEXT}
+TRADING_FIELDS = {
+    'open': ({'market': OBJECT}, ['market']),
+    'public': ({}, []),
+    'personal_ready': ({}, []),
+    'personal': ({}, []),
+    'seed_policy': ({}, []),
+    'policy': ({'subject':TEXT, 'kind':TEXT, 'fields':OBJECT, 'refs':OBJECTS, 'expected_version':VERSION,
+                'active':{'type':'boolean'}}, ['subject','kind','fields','refs','expected_version']),
+    'feedback': ({}, []),
+    'inherit_feedback': ({'retain': OBJECTS}, []),
+    'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS}, ['outcome','reason','evidence']),
+    'source': ({'digest': TEXT}, ['digest']),
+    'research_archive': ({'scope': SCOPE, 'request_id': TEXT, 'phase': TEXT, 'evidence_id':TEXT},
+                         ['scope','request_id','phase']),
+    'research_result': ({'object_id': TEXT, 'version': VERSION, 'digest': TEXT}, ['object_id','version','digest']),
+    'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
+                 ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
+    'market': ({'evidence': OBJECTS, 'result': OBJECT, 'expected_version': VERSION,
+                'market': OBJECT, 'reason': TEXT, 'notification': OBJECT}, ['evidence']),
+    'personal_decision': ({'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
+                           'facts': OBJECT, 'fact_refs': OBJECTS, 'result': OBJECT, 'evidence': OBJECTS,
+                           'market_refs': STRINGS, 'notification': OBJECT},
+                          ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence']),
+    'review': ({'target': OBJECT, 'condition_id': TEXT, 'outcome': TEXT, 'explanation': TEXT, 'evidence': OBJECTS,
+                'impact': TEXT, 'next_review_at': TIME}, ['target', 'condition_id', 'outcome', 'explanation', 'evidence']),
+    'research': ({'scope': SCOPE, 'subject': TEXT, 'question': TEXT, 'evidence': OBJECTS,
+                  'expected_version': VERSION, 'outcome': OBJECT},
+                 ['scope', 'subject', 'question', 'evidence', 'expected_version']),
+    'report': ({'purpose': TEXT, 'event_ref': TEXT, 'body': TEXT, 'reviewed_body_hash': TEXT, 'complete': {'type': 'boolean'},
+                'valid_until': TIME,
+                'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS, 'assertions': OBJECTS,
+                'supersedes': OBJECT, 'legacy_coverage': OBJECT},
+               ['purpose', 'body', 'reviewed_body_hash', 'decisions', 'reason']),
+    'begin_delivery': ({'report_id': TEXT, 'anchor_ref': TEXT, 'expected_destination': OBJECT},
+                       ['report_id', 'anchor_ref', 'expected_destination']),
+    'record_delivery': ({'report_id': TEXT, 'action': TEXT, 'receipt': OBJECT}, ['report_id', 'action', 'receipt']),
+}
+PARAMETERS.update({'trading.' + action: obj({'run_ref': TEXT, **fields}, ['run_ref', *required])
+                   for action, (fields, required) in TRADING_FIELDS.items()})
+
 
 def validate_object_read(method, params):
     """Enforce the advertised read shapes before phase checks or Python calls."""
-    if method not in {'object.get', 'object.list', 'object.history', 'conditions.due', 'context.personal'}:
+    if (not method.startswith('trading.')
+            and method not in {'object.get', 'object.list', 'object.history', 'conditions.due', 'context.personal'}):
         return
 
     def check(value, schema, path):
@@ -124,7 +168,7 @@ def validate_object_read(method, params):
         types = expected if isinstance(expected, list) else [expected]
         matches = {'object': isinstance(value, dict), 'string': isinstance(value, str),
                    'integer': type(value) is int, 'boolean': type(value) is bool,
-                   'null': value is None}
+                   'null': value is None, 'array': isinstance(value, list)}
         if not any(matches[t] for t in types):
             raise ValueError(path + ': expected ' + ' or '.join(types))
         if 'enum' in schema and value not in schema['enum']:
@@ -134,7 +178,10 @@ def validate_object_read(method, params):
         if type(value) is int:
             if ('minimum' in schema and value < schema['minimum']) or ('maximum' in schema and value > schema['maximum']):
                 raise ValueError(path + ': integer outside allowed bounds')
-        if isinstance(value, dict):
+        if isinstance(value, list) and 'items' in schema:
+            for index, item in enumerate(value):
+                check(item, schema['items'], path + '[' + str(index) + ']')
+        if isinstance(value, dict) and 'properties' in schema:
             properties = schema['properties']
             for name in schema['required']:
                 if name not in value:

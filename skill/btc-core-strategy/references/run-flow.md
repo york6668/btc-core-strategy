@@ -1,4 +1,6 @@
-# 节点增量入口（旧小时任务兼容）
+# 历史节点运行接口
+
+此处记录历史发布中固定过的接口，用于原件核对及恢复。当前职责及命令从[交易系统闭环](closed-loop.md)和[项目主任务入口](../../../tasks/hourly.md)取得。下文的“新内容”和“正常入口”指该历史接口适用时期。
 
 当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
 
@@ -111,7 +113,7 @@ revision 5 深评独立阶段先交付纯市场 JSON，冻结后在同一研究�
 
 ## revision 7 风险结果与建议
 
-新 CLI run-prepare 使用 revision 7 市场→组合→观察→报告材料，细节见[完整闭环](closed-loop.md)。market 阶段复用观察校验；按正常路径预检、回读并审阅实际公开候选，再冻结同一内容。结构、引用、时间和上下文绑定由程序重验，语义范围由模型核验；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 的 allocation_review 绑定 portfolio_risk_hash 和 strategy_advice_hash；主评估由真实 risk_assessment 进入 revision 7，风险应对可为空，原有机会建议独立保留。旧 allocation_decision 仅按原版本恢复，不自动转换为新风险结论。
+该历史发布的 CLI run-prepare 使用 revision 7 市场→组合→观察→报告材料。market 阶段复用观察校验；按正常路径预检、回读并审阅实际公开候选，再冻结同一内容。结构、引用、时间和上下文绑定由程序重验，语义范围由模型核验；组合材料含事实版本及已冻结结果，不附原始采集或混合结论。仅事实变化可用同一公开输入再次执行 market，获得新组合模板，原 market-result 不变。observe 的 allocation_review 绑定 portfolio_risk_hash 和 strategy_advice_hash；主评估由真实 risk_assessment 进入 revision 7，风险应对可为空，原有机会建议独立保留。旧 allocation_decision 仅按原版本恢复，不自动转换为新风险结论。
 
 report 材料只含最终两项结果、适用性及必要来源，result_binding 已由模板绑定。完整内部研究不通过报告 read_set 再次提供。旧 run.json 未含 workflow_revision 时按旧上下文接续，不为升级重建输入或重发报告。
 

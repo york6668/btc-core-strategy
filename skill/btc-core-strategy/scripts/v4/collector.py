@@ -43,9 +43,12 @@ def provenance(item):
     return value
 
 
-def capture(project, export=None):
+def capture(project, export=None, *, items=None):
     """Read Docker receipts or an explicitly supplied frozen export."""
-    if export is not None:
+    if items is not None:
+        if export is not None:
+            raise ValueError('use one frozen collector input')
+    elif export is not None:
         items = collector_observation.load_export(str(export))
     elif os.environ.get('BTC_IN_CONTAINER') == '1':
         from btc_node.reader_store import observations

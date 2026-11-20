@@ -2,28 +2,32 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 from .codec import Conflict, encode, fingerprint, millis
 from .database import Database
 from .contracts import validate_object_read
 from .entities import Entities
 from .series import Series
+from . import trading
 
 
 READS = {'status', 'object.get', 'object.list', 'object.history', 'conditions.due',
          'prices.query', 'prices.products', 'context.public', 'context.personal', 'storage.status',
          'acceptance.window', 'acceptance.status', 'failure.get', 'failure.list', 'model.deep.status', 'model.defect.check',
-         'task.status', 'schedule.status', 'schedule.window'}
+         'task.status', 'schedule.status', 'schedule.window'} | trading.READS
 WRITES = {'object.put', 'review.resolve', 'prices.register', 'prices.ingest', 'prices.repair_seller_references', 'prices.repair_seller_knowledge',
           'evidence.put', 'market.freeze', 'facts.project', 'acceptance.start', 'acceptance.record', 'acceptance.defect', 'acceptance.repair', 'failure.resolve',
           'model.deep.claim', 'model.deep.finish', 'model.deep.reconcile', 'model.defect.open', 'model.defect.resolve',
           'task.submit', 'task.assess', 'task.start', 'task.finish', 'task.reconcile', 'task.repair',
-          'schedule.tick', 'schedule.claim'}
+          'schedule.tick', 'schedule.claim'} | trading.WRITES
 HOST_METHODS = {'core.execute', 'core.recover', 'reader.status', 'host.capacity'}
 
 
 def invoke(database, method, params):
     validate_object_read(method, params)
+    if method in trading.READS | trading.WRITES:
+        return trading.invoke(database, method, params)
     objects, series = Entities(database), Series(database)
     params = dict(params)
     if method in {'object.get','object.list','object.history','conditions.due'}:
@@ -64,6 +68,10 @@ def invoke(database, method, params):
     if method == 'status':
         return {'schema': database.one('SELECT version FROM node_schema WHERE singleton=1')['version'],
                 'writer': database.metadata('writer'),
+                'trading': {'active': database.metadata(trading.trading_archive.ARCHIVE) is not None,
+                            'service_sources': {
+                                name: fingerprint((Path(__file__).parent / name).read_bytes())
+                                for name in trading.SERVICE_SOURCES}},
                 'pending_operations': database.rows("SELECT operation_id,status,started_ms FROM operations WHERE status<>'COMMITTED'"),
                 'objects': database.rows('SELECT kind,scope,COUNT(*) AS count FROM entities GROUP BY kind,scope')}
     if method == 'object.get':
@@ -81,6 +89,8 @@ def invoke(database, method, params):
         if set(params) != {'spec', 'expected_version'}:
             raise ValueError('only spec and expected_version are accepted')
         spec = params['spec']
+        if spec['object_id'].startswith('trading/'):
+            raise ValueError('formal trading records use the closed-loop service')
         if not isinstance(spec.get('payload'), dict):
             raise ValueError('typed business payload must be an object')
         if spec['kind'] == 'DELIVERY':
@@ -120,6 +130,8 @@ def invoke(database, method, params):
         if set(params) != {'spec', 'expected_version'}:
             raise ValueError('only spec and expected_version are accepted')
         spec = params['spec']
+        if spec['object_id'].startswith('trading/'):
+            raise ValueError('formal trading records use the closed-loop service')
         if spec['kind'] != 'DECISION' or spec['scope'] != 'PUBLIC':
             raise ValueError('only an independent public judgement may be frozen')
         result = objects.put(**params)
@@ -218,6 +230,8 @@ def _write_operation(database, request):
             # A lost admission response may have preceded a real launch.
             # An idempotent replay is never permission to launch again.
             return {**result, 'action': 'RECONCILE_EXISTING_NO_LAUNCH'}
+        if method == 'trading.begin_delivery':
+            return {**{k: v for k, v in result.items() if k != 'request_body'}, 'ready_to_send': False}
         return result
     database.put_blob(encode({'method': method, 'params': params}))
     result = invoke(database, method, params)

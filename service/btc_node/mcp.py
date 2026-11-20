@@ -41,7 +41,10 @@ DESCRIPTIONS = {
     'failure.list': 'List operational fault identities and explicit closure state, including retained closure records after process-file expiry.',
     'failure.resolve': 'Bind an actual successful recovery operation to the exact fault receipt version; retain its process file for 14 days after confirmation, with evidence/dependency protection.',
 }
-NODE_ONLY = {'schedule.tick', 'schedule.claim'}
+NODE_ONLY = {'schedule.tick', 'schedule.claim'} | {
+    name for name in WRITES if name.startswith('trading.')
+} | {'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.research_archive',
+     'trading.research_result'}
 EXPOSED = (READS | WRITES) - NODE_ONLY
 
 
@@ -69,7 +72,10 @@ def run(settings):
             elif method == 'tools/call':
                 given = request['params']
                 names = {name.replace('.', '_'): name for name in EXPOSED}
-                rpc = {'method': names[given['name']], **given.get('arguments', {})}
+                arguments = given.get('arguments', {})
+                if not isinstance(arguments, dict) or set(arguments) - {'params', 'operation_id'}:
+                    raise ValueError('invalid method arguments')
+                rpc = {**arguments, 'method': names[given['name']]}
                 response = answer(settings, rpc) if settings.get('direct') else call(settings['socket'], rpc)
                 result = {'content': [{'type': 'text', 'text': json.dumps(response, ensure_ascii=False)}],
                           'isError': not response['ok']}

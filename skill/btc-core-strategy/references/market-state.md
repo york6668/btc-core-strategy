@@ -65,7 +65,7 @@ MARKET_UPDATE 绑定正式报告 result_id/report_hash、本轮 observation_id �
 
 历史 revision 1—4 保持原格式回读，不补造共振或分歧区记录。首次 revision 5 实际评估缺项，已撤回价位不复活。程序测试、冻结回放、正式采纳、自然观察及真实送达分别验收；未发生的自然场景保持未验证。
 
-revision 6 每个 horizon 增加 forward 的三个时间窗口与兑现核验，每个区域增加 evidence_kind/limitations；完整字段、期限与独立结果契约见[完整闭环](closed-loop.md)。
+历史 horizon 的 forward 时窗、兑现核验及区域 evidence_kind/limitations 按[原接口](v4-contract.md)读取。当前研究及独立结果交接见[交易系统闭环](closed-loop.md)。
 
 公开阶段只接收公共方法任务，不接收组合任务。个人文件是否存在不限制公开分析；同一公开证据、尺度、方法和截止下，个人输入不改变方向、同尺度拐点、证据链、公开价值及验证关系。该独立性保留至报告全文，个人成本、保护目标和执行缺口不得反向成为市场依据；具体产品公开成本缺口仍由自身证据限制。历史混合正文不进入公开输入，报告中的历史显示仅用于已交付含义比较。
 

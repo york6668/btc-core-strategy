@@ -2,7 +2,7 @@
 
 交易系统覆盖既有资产及组合，BTC 是其中一个标的；历史仓库名和技术标识不限定整体职责。
 
-BTC、QQQ、VOO 的研究、嗅探、正式状态、报告判断和交付恢复作为同一个版本维护。模型负责研究与综合判断；程序负责材料、校验、状态推进、去重和恢复。
+模型负责市场研判和组合取舍。服务负责保存各项正式决定、复核和交付证据，并从原记录恢复。领域职责及交接见[交易系统闭环](skill/btc-core-strategy/references/closed-loop.md)。
 
 本仓库为源码仓库，默认分支 `main`。账户事实、市场数据库、策略状态、研究记录、报告正文、游标、投递记录和凭据留在执行节点。
 
@@ -30,11 +30,11 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 安装从同一提交的 `export-manifest.json` 打包正式源码与方法，核对完整性及配置解释器的语法兼容；不要求测试文件或测试 reader 常驻。行为验证在发布前针对明确候选完成，安装记录不把语法检查表述为测试通过。安装不修改 reader 服务。
 
-通过 `status` 发现原在途运行和身份匹配的材料路径，再按真实触发身份进入；`enter` 返回同版的 `task`、Skill 和方法入口。相同已结束身份返回 `FINISHED/RETURN_FINISHED_RUN` 并保留原记录，恢复在途返回 `RESUME_ORIGINAL_RUN`。新轮才返回 `START_NEW_RUN`。重复 `finish` 保留原完成时间；旧记录缺少完成时间时仍为未知，不补造历史。研究请求和投递任务产生时绑定上下文，恢复使用原上下文。详细运行说明见 [发布与恢复](skill/btc-core-strategy/references/releases.md)。
+通过 `status` 发现原在途运行，再按真实触发身份进入。`enter` 返回该运行固定的任务、Skill 和方法入口。正常工作经 `trading` 直接读写节点。原已结束运行返回实际结束记录，在途运行接续服务内的原始材料。详细入口见[正式任务](tasks/hourly.md)和[发布与恢复](skill/btc-core-strategy/references/releases.md)。
 
 调度只调用固定版本的 [任务入口](tasks/hourly.md)，项目方法和状态规则随源码维护；真实机器绑定与报告目的地留在节点。这个分工使用 OpenAI 的 [Scheduled tasks](https://learn.chatgpt.com/docs/automations) 与 [Skills](https://learn.chatgpt.com/docs/build-skills) 已有能力。投递沿现有 outbox、发送尝试和原生回读推进，重复触发不能复活已结束运行，UNKNOWN 不能自动重发；这对应 [outbox 与幂等消费](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) 的可靠性原则。原生工具的真实副作用及手机可见性仍分别验证。
 
-代码回退通过节点原发布入口切换 `current`。切换和回退前按目标发布包的兼容声明核对已采纳结果。当前评估和成稿格式取自本轮固定版本返回的接口。正式状态随真实评估与采纳推进，历史记录按原契约读取。测试程序与样本构造逻辑按项目临时生命周期处理。
+直写入口在运行间隙切换，先核对已运行服务的确切源码、写入归属及原操作状态。首次建立正式事务状态后，通过能消费该状态的服务恢复。原资料以只读引用承接。旧执行和已提交操作沿原身份读取或核实效果。
 
 完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 仅检查正式源码结构及语法。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
 

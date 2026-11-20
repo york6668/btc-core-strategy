@@ -1,5 +1,6 @@
 {
   "schema": "BTC_CORE_EXPORT_V1",
+  "entrypoint": "trading",
   "files": [
     ".dockerignore",
     ".gitignore",
@@ -44,6 +45,11 @@
     "service/btc_node/schema.py",
     "service/btc_node/series.py",
     "service/btc_node/tasks.py",
+    "service/btc_node/trading.py",
+    "service/btc_node/trading_archive.py",
+    "service/btc_node/trading_decisions.py",
+    "service/btc_node/trading_delivery.py",
+    "service/btc_node/trading_policy.py",
     "service/compose.yaml",
     "service/host_python.py",
     "service/node_capacity.py",
@@ -93,6 +99,7 @@
     "skill/btc-core-strategy/scripts/revision2_report_bridge.py",
     "skill/btc-core-strategy/scripts/run_usage.py",
     "skill/btc-core-strategy/scripts/runtime_schedule.py",
+    "skill/btc-core-strategy/scripts/trading_client.py",
     "skill/btc-core-strategy/scripts/strategy_contract.py",
     "skill/btc-core-strategy/scripts/strategy_v4.py",
     "skill/btc-core-strategy/scripts/v4/__init__.py",

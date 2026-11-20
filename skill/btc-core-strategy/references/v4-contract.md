@@ -1,4 +1,6 @@
-本文件描述各接口及其历史兼容。适用版本由固定发布的兼容声明及本轮正常入口确定。个人风险、组合决定与报告的消费关系见[完整闭环](closed-loop.md)。早期修订章节用于原对象回读和恢复。
+# 历史状态与交付接口
+
+此处记录历史发布中固定过的接口，用于原件核对及恢复。当前职责及命令从[交易系统闭环](closed-loop.md)和[项目主任务入口](../../../tasks/hourly.md)取得。下文的“新内容”和“正常入口”指该历史接口适用时期。
 
 当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
 
@@ -290,7 +292,7 @@ AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及�
 
 ## 内容 revision 6/7
 
-外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。[完整闭环](closed-loop.md)定义 revision 7 的 risk_assessment、可选风险应对及独立 strategy_advice，风险结论不要求操作清单。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。
+外层 AssessmentDraft / DecisionSnapshot、七个 section 和唯一当前指针不变。该历史接口定义 risk_assessment、可选风险应对及独立 strategy_advice。风险结论允许独立于操作清单存在。forward、区域证据类型、allocation_review、复核条件归属和结果绑定继续适用；recommendations 两侧保留 EXECUTION_LIMITED/UNDETERMINED，方向与档位执行资格分开。revision 6 的 allocation_decision 及其他旧内容按原版本读取，不自动改成新风险评估。
 
 报告修订 4 和 5 保留修订 3的首个实质结论为公开市场、全部实质正文有公开/个人/时间 bindings及 quality_review.market_independence，并增加 decision_delivery、evidence_priority、maintenance_separation、narrative_focus 四项实际全文阅读审阅；它们分别核对直接结论与取舍、关键证据优先、内部维护没有挤占正文、重复结论没有掩盖主线。生成入口与校验共用同一审阅键集合，模型按手机表达方法对照正文与冻结结果作实质裁决，程序不判断文风、字数或投资结论。允许忠实改写冻结判断，旧冻结契约继续原验证。修订 5 引入在正式记录前使用 --check-only 导出完整候选和 review_read，模型实际回读全文与绑定来源完成审阅，填入 reviewed_candidate_hash；哈希仅绑定该候选，不证明语义通过。补填审阅说明或更新滚动时钟产生独立不可变材料，不改正文身份；任何正文、证据范围或冻结结果改动重新预检与审阅。审阅覆盖最终全文与最后收束的实际依赖，结构通过和来源标签不证明结论独立。不可用个人文件以 fact_version=null 及 availability 显式保留；公开研究继续，正式个人采用仍要求完整事实与原 domain 校验。原生独立阶段拒绝同一物理 rollout 中已知的个人/候选 research-read 记录，此守卫不覆盖普通读取、消息或未展开历史，不证明全会话盲性；有披露的原研究修正如实登记为 CONTINUED_PUBLIC_CORRECTION。
 

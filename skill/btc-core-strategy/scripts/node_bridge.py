@@ -363,10 +363,19 @@ def forward_if_enabled(argv, *, requested_release=None):
     raise SystemExit(result['returncode'])
 
 
-def sync_facts(project, directory):
+def sync_facts(project, directory, *, allow_missing=False):
     """Atomically expose a frozen generation; original files remain authority."""
     names = ('资产配置.md', '操作记录.md', '纠正记录.md')
-    contents = {name: (project / name).read_bytes() for name in names}
+    def current_file(name):
+        try:
+            return (project / name).read_bytes()
+        except FileNotFoundError:
+            if not allow_missing:
+                raise
+            return None
+
+    contents = {name: current_file(name) for name in names}
+    contents = {name: value for name, value in contents.items() if value is not None}
     hashes = {name: hashlib.sha256(value).hexdigest() for name,value in contents.items()}
     generation = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
     target = directory / generation
@@ -378,7 +387,7 @@ def sync_facts(project, directory):
         if not path.exists():
             with path.open('xb') as handle:
                 handle.write(value); handle.flush(); os.fsync(handle.fileno())
-    if any((project / name).read_bytes() != value for name,value in contents.items()):
+    if any(current_file(name) != contents.get(name) for name in names):
         raise ValueError('confirmed files changed during native capture; retry')
     temporary = directory / ('.current-' + uuid.uuid4().hex)
     temporary.symlink_to(generation, target_is_directory=True)

@@ -1,52 +1,33 @@
-在节点配置指定的交易系统项目维护完整核心报告及后续闭环。本文件由既有原生调度调用，随源码版本维护执行方法；调度注册提供执行机会，节点配置提供真实机器与目的地，程序持有运行、研究、报告和投递状态，模型负责证据裁决及正常工具编排。
+# 交易系统主任务
 
-先读取本机版本入口的 `status`。它返回原 ACTIVE 运行及已存在且身份匹配的 `run_material`，供核对原生执行是否仍在途；原执行尚运行时回收其结果，不另起同一工作。运行标记只固定代码，不证明业务已完成。需要恢复时使用原运行身份和固定材料，业务待办继续从原 `recover`、研究进度和 `report-care` 取得；缺失或冲突不得靠摘要猜补。
+按当前项目、真实触发身份及原节点执行[交易系统闭环](../skill/btc-core-strategy/references/closed-loop.md)。从节点的 `btc-core status` 取得现行入口。用本次真实触发身份调用 `btc-core enter --run-id <本轮身份>`，使用回执中的物理发布目录、节点配置、解释器和 Skill。已结束的同一触发返回原结果。在途运行接续原输入。实际准入拒绝按原作用范围处理。
 
-原生 `exec_command` 的返回不只是 stdout。通过 `functions.exec` 编排这些命令时，使用同一物理发布目录中的 `scripts/native_exec.js`：它是接收现有 `{tools, load, store}` 的工厂，提供 `submit({key, argv, workdir, ...})`、`poll(key)` 和 `read(key)`。完整返回提交给 `text`，不可只输出 `.output`。加载适配器源文件的首次只读调用也须完整保留原生返回，未完成就回收其原 session，不能执行部分源文。加载成功后可按下例在同一会话使用（`source` 是该确切文件的完整内容）：
+## 使用统一入口
 
-```javascript
-const native = new Function('return (' + source + '\n)')()({tools, load, store});
-text(await native.submit({key: runId + ':public-recover', argv, workdir: project}));
-// 返回 RUNNING 后下一次只回收同一会话；COMPLETED/FAILED 为实际退出结果。
-text(await native.poll(runId + ':public-recover'));
+将以下 JSON 写到标准输入。命令使用 `enter` 返回的物理发布目录。读取完整结构化回执和实际退出码。每次写入使用与同一动作及同一输入绑定的 operation_id。传输结果不明时核原状态或重用同一身份，同一已占用发送尝试只读回。
+
+```text
+<python> <release>/scripts/release.py --node-config <node_config> trading --run-id <原生运行身份>
+{"method":"trading.open"}
 ```
 
-`argv` 使用实际固定版本入口和显式项目/root；需要环境变量时以 `env` 及各个 `NAME=value` 参数传入，不拼接业务后的 `echo/jq` 或另一命令。适配器用单一 `exec` 传播实际退出码。key 属于这次运行中的确切步骤及输入，不是所有后续查询的永久缓存；同一步骤已完成就消费原结果，在途就回收原 session，空 stdout 不能视作未执行。STARTING/POLLING 表示已占用，UNKNOWN 保留不确定性，均不再提交同一步骤。上下文或宿主重置后 store 缺失不证明未执行，先核原生回执、运行和服务 pending；已有结果继续复用，不靠新 key 重发。适配器只回收工具状态，不代替业务准入、用量、来源或投递确认，也不改变原停止规则。
+`trading.open` 收集及冻结公开输入，重入读取原材料。返回统一的 `trading.public` 上下文，包括完整窗口、来源缺口、辅助附件及已采纳市场结果、应检查的条件和公开研究。通过 `trading.source {digest}` 查实际冻结原文。通过节点现有 `prices.products` 和 `prices.query` 查询正式结构化市场序列，使用实际交易产品和当时可知截止。辅助采集、转述和同源观察只作线索，缺失保留未知。其他公开数据从真实公开来源获取，沿 `trading.evidence {source,url,observed_at,retrieved_at,content}` 保存实际观察、获知时间和来源正文。
 
-启动 `recover` 默认仅公开身份/计数，市场冻结前 `report-care --run-ref <本轮引用>` 仅公开时序标志。完整恢复与报告维护只能在本轮真实独立市场冻结后，显式使用 `recover --run <本轮run.json> --run-ref <本轮引用>`、同绑定的 `report-care` 或 `report-context`。不读取内部完整恢复、旧operation正文或历史个人报告理由作公开输入；候选、全局current和stage标签不能解锁。节点 `core.recover` 默认只回原operation身份/效果，完整回收须提供当前已冻结的 `run`、`run_ref` 并保持原operation_id，不重放UNKNOWN副作用。
+使用 `{"method":"trading.<操作>","params":{...},"operation_id":"<原身份>"}` 提交写操作。读操作只需 method 及必要 params。服务端从原运行解析发布与权限绑定。角色提示、报告和业务方法采用实际职责描述。
 
-启用节点 usage_guard 的入口先消费共享框架的简短异常检查。实际准入 allowed=false、锁定或计量/完整性不可用时结束本轮新工作；不重复尝试、派生代理或换入口。MONITORED_LIMITED_BASELINE 且 allowed=true 表示参考有限但可受监测执行，不能仅因缺少正常日或不足7天再次阻断，也不能称账户用量正常。调度启停及周期只由用户明确授权的维护操作变更，准入允许不等于自行恢复暂停任务。真实账户额度与本机响应/token代理分开，具体边界见运行维护。当前工作包传递本轮身份、阶段、变化引用、下一项结果及仍适用的来源和执行边界；同一阶段只由一个执行者读取完整材料。已在本会话完整读过且哈希不变的 read_set/base 不再重读，新会话仍须读所需原件。子代理依附父回合时，父级保持实际结果回收责任，使用原生完成通知或有界等待，不因 ACK、已接手或无其他独立工作提前结束父回合。本轮完成并核收可正常结束；仍有未完义务需交接退出时，后继必须已证能独立存续且有真实执行机会。中断先核原运行及命令实际效果，不将 ACTIVE 记录当后台运行，不重放 UNKNOWN；不作短轮询，也不为汇总反复加载双方完整历史。
+## 研判与个人决定
 
-每次常规新触发由一个临时主执行者处理完整运行，`fork_turns=none`；父任务提供本次固定版本入口、运行身份、必要阶段引用及仍适用的输入边界和执行限制，消费一次实际结果及报告定位，不再同时阅读全部 continuous/context/review 材料。委派研究或审阅时同样传递这些约束；无父历史不等于已继承父任务规则，任务应自包含地说明当前职责、适用项目入口与阶段允许的来源，不靠全局记忆补全丢失的要求。Scheduled 不读写 Codex 长期记忆的边界覆盖承接其职责的子任务；项目事实和原研究从各自原件发现，适用规范仍从当前权威方法读取。触发周期消费当前已授权调度，不从本文件名或小时数据粒度推定每小时必须运行；无新增材料、待办、到期责任或报告需要时不为填满周期重做研究。不要复用已积累许多轮历史的常驻主执行者作为新轮工作区。真正未完成的阶段与已有独立研究保持原身份和版本，仅传变化及依赖；不为清上下文重开已完成研究、撤销已有事实或重复交付。新研究继续独立研究职责和实际准入，不用新子任务规避锁定。
+1. 先对照前次独立市场结论、当前证据及其事前条件，比较主情景、竞争路径、现价净机会与风险。先用 `trading.review` 核查出现新事实或已到期的相关条件。提供 `target {kind,object_id,version,digest}`、原 `condition_id`、`outcome`、`explanation`、`evidence`，说明实际影响 `impact=KEEP/REVISE`。结果使用 SUPPORTED、PARTIAL、REFUTED、NOT_TRIGGERED 或 UNKNOWN。后置可核实的事实须带确切来源。未兑现和迟到沿原条件保留。
+2. 有重要反证、缺失或明确重评要求时，用 `trading.research` 承接实际问题及来源，参数包括 `scope,subject,question,evidence,expected_version`。公开研究只交公开问题及证据。已有研究从原状态继续。新的原生研究调用使用同一问题及实际输入的原节点 `model.deep.claim`；只从真实准入结果启动，回收实际完成并以原调用结算。领取使用返回的 issue、input_digest、claim_scope 和 phase。完成后用同一 `trading.research` 追加 `outcome {claim_id,result_ref,conclusion,origin_run,agent_id,turn_id}`。result_ref 是实际完成正文 UTF-8 的 SHA-256，后续从 `trading.research_result` 读取确切原文。原生完成来源无法核实时仍保留原请求。主轮可在研究待办期间继续有依据的独立工作。
+3. 用 `trading.market` 提交正式市场结果。新判断提供 `expected_version`、`evidence`、`result {conclusion,primary,alternatives,value,assessments,valid_until,conditions}`。assessments 按有必要单独引用的公开问题保存实质判断。条件为 `{id,criterion,review_at}`。兼容既有有效判断时传原 `market` 确切结果引用、`reason` 和本轮 `evidence`，保留原判断的期限。引用使用 `BLOB {type,digest}` 或 `OBSERVATION {type,product,series,item_key,observation_key}`，用到已完成研究时引用其确切公开实体。需要反馈的实质新决定同时提供 `notification {kind,reason,due_at}`。
+4. 公开结果冻结后读 `trading.personal`。按实际适用政策及已确认事实形成每个独立决定。用 `trading.personal_decision` 提交 `subject,expected_version,policy_basis,facts,fact_refs,market_refs,result,evidence`。facts 仅列实际使用的文件及其摘要，fact_refs 是对应 `[{file,quote}]`。market_refs 选择本决定真正依赖的 market_inputs 字段。来源文字实际变更时，从当前确认记录用 `trading.policy {subject,kind,fields,refs,expected_version}` 更新该范围，refs 提供原文件、行范围和原句。result 包含 `decision,reason,risk,opportunity_cost,valid_until,conditions`。月度组按本组预算真实比较足额与跳过，分批时再列选中金额及理由。填写 `comparisons [{amount,reason}],amount`；分批加 `amount_basis`。明确本月继续或跳过，真实待定使用 UNRESOLVED、具体 `gap` 及 `amount:null`。独立机会按价值区和净补偿评估，正额机会带 `value_zone {lower,upper,quote_unit,basis}`。持仓按用途或实际未知给出结论。新事实或条件只作用于相关决定，同一市场结论可以承接不同个人选择。
 
-启动阶段只核当前节点入口、真实触发身份和 `status`，随后调用 `enter` 固定版本并执行其中的正式用量准入；缺少返回的路径前不猜测或预读整套方法。父级只承担启动、必要交接与实际结果回收，业务执行者沿返回的 task、methods、Skill 读取其阶段需要的正文。重复的入口投影、同版 Skill 及计量明细不反复灌入上下文；异常时沿实际锁、原输入和最小必要证据诊断，完整计量保留在原 meter。
+## 报告、投递和下一轮
 
-使用本次真实触发身份作为稳定 run-id，通过 `enter --run-id <本次真实运行ID>` 进入。`entry_action=RETURN_FINISHED_RUN` 表示同一触发已经结束，直接返回原结果，不重新采集、调用模型或投递；`RESUME_ORIGINAL_RUN` 接续原阶段，`START_NEW_RUN` 才开始新轮。读取返回的 `task`、`methods` 和 Skill 路径并执行固定版本；所有代码和方法引用使用同一个物理发布目录。需要重新核查已结束事项时，以真实的新核查身份恢复原上下文，不重开旧轮。
+读 `trading.feedback` 获取最后实际展示、尚未履行义务和原在途尝试。核对重大事实、主要取舍及预定反馈是否改变。普通重复信息保持静默。用 `trading.assess_feedback {outcome,reason,evidence}` 记录本轮实际结论，证据或交付受限用 EVIDENCE_LIMITED。已核实的显著风险可在受影响的研究未采纳时先作有界反馈。完整日报采用确切市场及当期每项个人决定，说明本月是否继续、决定性理由、净风险、金额和改判条件。未决写明缺口。报告引用已形成的结论，实际正文核验后使用 `trading.report {purpose,body,reviewed_body_hash,decisions,reason,assertions,obligation_ids}` 冻结。非日报提供实际原 `event_ref`。公开重大风险缺完整判断时可引用确切公共事件并提交 `purpose=RISK`、空 decisions 和有据的 valid_until，明确已核范围。历史未送达通过 `trading.inherit_feedback` 查实际义务，只明确承接仍有意义的项。逐组 `assertions` 为 `[{subject,source_text}]`，逐字摘录已审阅正文中该组选择及金额的句子。更正带 `supersedes {report_id,reason}` 并显式覆盖原义务。
 
-独立 cron 的新会话仍须先经过上述正式 `enter`，由节点已绑定的原生 automation 登记和 `CODEX_THREAD_ID` 校验当前 root 及后代计量范围。缺身份、未登记或共享 guard 尚只覆盖旧主线时，停止新业务/研究并报告具体计量缺口；不手工伪造 thread ID、另建 policy/meter、改调度或用旧范围零用量放行。原 run-id 的重复触发仍复用，当前原生 root 的登记不代表一次成功业务运行，次数继续由真实 root_turn_id 及终态确认。
+投递沿原已授权目的地和实际可用原生入口。先核目标真实游标，再用 `trading.begin_delivery {report_id,anchor_ref}`。仅首次明确返回 ready_to_send=true 时，使用返回的原目的地及确切 request_body 发起实际调用。工具受理通过 `trading.record_delivery {report_id,action:"ACKNOWLEDGE",receipt}` 登记。读回原实际请求，以 BIND_REQUEST 绑定实际请求正文和记录身份；读到该请求对应的完成助手正文，按交付协议的证据字段用 CONFIRM 核对。投递回执和源稿保留原身份。无法确认则留 UNKNOWN；明确拒绝时只停止对应发送，沿原证据保留义务。失败及未知范围、回读和更正按[交付方法](../skill/btc-core-strategy/references/market-reporting.md)中的行为边界处理。
 
-正式运行归属以原生任务注册、实际触发及原节点产物为据。现有 App 原生入口和默认关闭的节点调度候选分别按其真实采用情况处理；切换仍须满足 node-tasks 的原能力验收，单次工程修复不启用另一套时钟。未知投递由原 outbox 状态恢复，按 BEGIN、原生发送、实际请求绑定和完成正文确认推进；运行 `finish` 只释放版本运行标记，送达继续以原协议的 DELIVERED 为准。
+历史尝试沿 `archived_attempts` 查原目标和原绑定。明确取得对应原请求的完成正文时，用 `trading.record_delivery` 的 CONFIRM_ARCHIVED 追加原尝试的核收，原正文及发送记录继续可查。历史稿件仅用于核收原效果。
 
-研究、正式市场结果和完整报告结论聚焦未来1–3个月的方向、价值与风险，比较主导与竞争路径、机制兑现窗口和证伪条件，再形成当前个人持仓后的执行纪律。个人方向处理沿用最后已知实际方向及其原时点，之后变化未知不推定已平仓；当前价格基线模式使用已确认开仓价，不以持仓数量、由量派生的集中度或绝对风险缺失阻断方向判断，也不计算未知数量下的总盈亏或杠杆安全。没有肯定持仓证据的其他资产才可按未持有作分析默认，未知资金不补成现金。日内数据用于验证和必要即时风险，普通回收、反弹或破位不替代前瞻；周期证据不足说明具体限制，不把小时判断延长或改名。近端支撑压力不充当周期收益上限，价值与美债等待比较使用对应期限，保留ETF吸收机制及竞争解释。
-
-沿用本机原定时任务、职责分工、报告目的地和授权；按版本中的 read_set 读取必要材料，接续未完成研究和未知投递。重要依据、条件和未知在研究与维护中完整保留，必要报告不得因精简或降耗遗漏；正文按 Skill 的报告边界交付已形成的判断、主导依据、资产风险结论及必要的应对建议，必要限制说明实际影响，内部核验及调度过程留在维护材料。例行复核完成和下一运行时点不作为固定尾段，旧对外期限继续履行，失约及建议失效仍简明反馈影响与补救。冻结前逐段逐句检查重复、过程噪音、无关规则说明及重要信息遗漏，同一动作或限制集中表达；不能用段落主题、曾删过其他材料或自审通过代替实际正文质量。任务结束前按[报告方法](../skill/btc-core-strategy/references/report-care.md#每轮顺序与每日边界)核对反馈结论是否覆盖本轮实际完成的相关判断，再调用 `finish` 释放本轮运行标记。当前运行在固定兼容版本中承接原请求与已完成阶段；只有实际恢复既有执行上下文时才沿其版本引用处理，具体见版本入口。历史缺引用不要求补写已结束原轮，也不阻断新活动运行读取有效成果。运行中不换码，登记不等于研究批准。
-
-观察返回 `main_eligible`、旧个人决定到期或个人政策变化只表示待完成，不证明原评估在途。先核真实 claim、派发和终态；没有在途且准入允许时，实际接续受影响个人判断，复用本轮有效市场冻结，不重做公开研究。正常 `run-material --stage main` 提供原运行内的主评估材料；原轮已 FINISHED 时保持原轮关闭，通过既有研究/个人后继入口使用真实新接续身份承接冻结材料。有限反馈可说明真实个人适用性缺口，公开研究 CURRENT 不会抹掉它；有限反馈和 PUBLIC_MARKET 完成不能代替新个人判断与完整报告，不能仅写“原评估在途”后结束。
-
-公开任务和个人任务分阶段：新独立研究使用无个人或候选历史的临时只读研究作者上下文；有个人披露的原代理续研保留原身份，不冒称新盲评。先分别完成当前公开方向、同尺度拐点、有界未来竞争路径及相对把握、机制依据、现价价值与策略适用性及验证关系，再冻结并读取个人材料。缺失或不可读的个人文件不阻断公共研究，不推成空仓或安全，不恢复失去当前事实支持的动作。报告开头交付独立公开总裁决，随后单向映射个人取舍，末尾保持其个人范围；不得把个人等待或保护目标合成市场总裁决。有限反馈复用仍有效结果，缺前瞻或旧问题未解明确未完成范围并沿原研究补评，不机械每小时重做研究。最终稿及任何缩写、重组或末尾改写先预检、完整回读实际候选并重新审阅，再绑定同稿；外部聊天修改另行核验。最终通读全文及最后概括，实际核验这些依赖；标签、绑定和冻结字段未变不能代替语义验收。
-
-启动或续接研究作者前先检查原研究进度和 btc_node 的 `model.deep.status`：开放的代码、契约、数据、语义或权限缺陷停止受影响研究调用；保留原冻结材料，由主执行者修复并隔离验证后才按原身份恢复。项目不设按日本自然日的深评次数上限，也不要求次日才接续；旧日槽仅保留历史，不能当作 OpenAI 套餐限额或账户无限额的证明。实际平台容量、用量、安全及权限限制继续遵守。执行者须在真实调用前用原 `issue_id/scope/phase/input` 和稳定 `claim_id` 经既有 `model.deep.claim` 原子预留，只有 `CLAIMED_NEW` 可启动；已完成同身份输入复用原结果，在途或 UNKNOWN 先核清，丢失响应不重发。原生代理工具不受本地脚本技术拦截，须按原调用实际返回结算。个人适配、机械映射、工程纠错及报告编辑由主执行者完成；真正后继研究或候选审批按各自真实阶段、完整输入及完成证明接续，不借取消日上限重做已完成阶段。
-
-新轮次的 content revision 沿固定版本 Skill 与正常入口返回的契约：公开事实与历史假设分开，冻结市场结果后读取资产事实，由模型评估资产风险及实际组合影响；风险结论独立成立，风险应对动作须确需且有据，其他参与、等待及机会选择不受风险触发限制。总资金、占用比只是可选依据，不固化公式或自动调仓，不默认批次减半；原有机会研究继续独立进行。报告消费已形成结果，不展示内部检查清单。市场与组合分别验证，必要更新回对应研究。未完成研究保留原请求、输入、真实来源及成果，由当前活动运行按内容兼容性承接；已在途执行继续固定原版本。旧报告效果和 UNKNOWN 投递沿原身份与版本核验，不使用研究兼容映射，不因升级重开或重发。
-
-调用恢复沿固定版本 run-flow：用 run-value-ref 生成核心编码摘要；extra_findings.refs 使用本轮词表字符串 ID。部分准备失败显式 resume-preparation，旧目录使用新目录及原 market/collector-snapshot；历史来源冲突经核对后提供 retained-source-bindings，不自动重绑、不重采集、不改变 UNKNOWN。
-
-卖方衰竭沿 references/seller-exhaustion.md 比较当前 raw_ref 与相关旧冻结材料，区分新日覆盖、重复取得和历史修订，拆解组成项并解释对原论点、反证及下一条件的影响。旧引用有效不代表当前批次，价格资料修订不是新市场事件；采用与否、深评及报告必要性仍由模型判断。
-
-投递恢复按统一 `delivery_recovery` 主动清单执行。`WAIT_FOR_NEW_EVIDENCE` 保留原 UNKNOWN 和版本绑定，仅表示该尝试已实际回读且报告含义已有验证送达的承接；无新关联证据不逐小时回读，不在最终回复、inbox 标题或摘要重复提示。关联的新运输状态、实际回复证据或用户明确复查时再沿原尝试恢复；新异常、实质变化和需要用户处理时正常反馈。完整历史与未完成报告义务继续保留，当前重要报告及每日有效反馈正常执行。
-
-资产风险纠偏的验收接入本任务现有日检查，方法见 runtime-maintenance.md 的“资产风险纠偏的持续验收”。读取节点已登记的该项待办及既有缺陷身份，按实际新版本运行与个人结果生效时间接续，复用 personal_allocation、report_delivery，不重置原窗口或其他待办。每轮复用正常研究、观察和必要报告的实际结果；每日复核一次新增证据，无应对、风险应对、信息不足的分析与表达按本次有效要求选择适用的真实输入复核并实际审阅；确需实际运行的依赖按项记录缺口，不以重复自然报告阻断内容验收。测试、部署、运行次数或到期不能关闭本项，不为验收强制研究、发送或重发 UNKNOWN。无变化不重复通知；通过后只关闭本项，原任务继续。
-
-周期报告纠偏同样接入原任务，方法见 runtime-maintenance.md 的“周期报告纠偏的持续验收”。读取节点已登记的该项待办，复用正常研究、正式采纳、观察和必要报告的实际结果，每日只复核新增证据。按方法中的验收分流分别维护工程验证、锁定真实数据复测及报告消费、真实采纳与送达、必要的自然运行依赖；缺口只保留在对应项，发现复发接续同一项。所需内容覆盖与完整正文实际审阅通过可完成内容验收，不等后续自然稿；以 acceptance.repair(preserve_window=true) 只关闭证据已满足其实际范围的缺陷，保留原窗口及其他待办，完成后跳过专项；不为验收强制研究、报告或重发 UNKNOWN，验收进度不例行附入投资报告。
-
-新预期按本轮入口返回的登记契约保存。先读公开 prospective_feedback，按原登记条件和实际后续事实核验具体机制及范围。未知、部分支持及证伪不强行续推，旧稿未知形成/条件只作事后复核；事实纠错、独立新事实研究和有据风险响应继续。市场独立冻结后才读取个人约束，长期用途不证明存量可维持。完整报告按主题自然表达，内部验证与运行字段留在证据。
+本轮结束时回收确切研究、决定及实际反馈状态，由 `btc-core finish --run-id <原生运行身份>` 关闭执行。下一实际运行按各自期限续接原条件、确切结果和未决义务。研究待办、市场兑现和送达由其各自事实记录推进。

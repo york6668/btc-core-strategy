@@ -95,7 +95,7 @@ def check_sources(path):
 
 def check_release(path):
     metadata = read(path / 'RELEASE.json')
-    if metadata['commit'] != path.name or metadata['data_schema'] != 'BTC_V4_UNCHANGED':
+    if metadata['commit'] != path.name or metadata['data_schema'] not in ('BTC_V4_UNCHANGED', 'BTC_NODE_DIRECT'):
         raise ValueError('release identity or data compatibility mismatch')
     check_sources(path)
     return metadata
@@ -120,7 +120,20 @@ def activate(config, revision):
         target = version_dir(root, revision)
         metadata = check_release(target)
         formal = Path(config['project_dir']) / '.strategy/v4/current/decision.json'
-        if formal.exists():
+        service_status = None
+        if metadata['data_schema'] == 'BTC_NODE_DIRECT':
+            service_status = installed_service_status(config)
+            sources = (service_status.get('trading') or {}).get('service_sources') or {}
+            if (not sources or any(Path(name).name != name or hashlib.sha256((target / 'service/btc_node' / name).read_bytes()).hexdigest() != observed
+                                   for name, observed in sources.items())):
+                raise ValueError('the running service does not match the candidate direct trading operations')
+            if (service_status.get('writer') or {}).get('owner') != 'DOCKER' or service_status['pending_operations']:
+                raise ValueError('current writer ownership or an unfinished operation must be reconciled before switching')
+        elif (root / 'current').exists() and check_release(selected(root))['data_schema'] == 'BTC_NODE_DIRECT':
+            service_status = installed_service_status(config)
+            if (service_status.get('trading') or {}).get('active'):
+                raise ValueError('the active transactional trading state must be recovered through its own service')
+        if metadata['data_schema'] == 'BTC_V4_UNCHANGED' and formal.exists():
             assessment = read(formal).get('assessment') or {}
             contract = metadata.get('content_contract', {})
             if assessment.get('revision', 1) not in contract.get('read_revisions', [1, 2, 3, 4, 5]):
@@ -198,7 +211,8 @@ def install(config, source, ref='HEAD', *, activate_after=True):
                             '[ast.parse(Path(p).read_bytes(), filename=p) for p in sys.argv[1:]]')
             subprocess.run([config['python'], '-B', '-c', syntax_check,
                             *(name for name in files if name.endswith('.py'))], cwd=stage, check=True)
-            write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': 'BTC_V4_UNCHANGED',
+            schema = 'BTC_NODE_DIRECT' if required.get('entrypoint') == 'trading' else 'BTC_V4_UNCHANGED'
+            write(stage / 'RELEASE.json', {'commit': revision, 'data_schema': schema,
                   'content_contract': required.get('content_contract', {'read_revisions': [1, 2, 3, 4, 5], 'new_write_revision': 5}),
                   'source_validation': 'MANIFEST_AND_PYTHON_SYNTAX',
                   'python': config['python'], 'repository': 'york6668/btc-core-strategy'})
@@ -296,6 +310,12 @@ def status(config):
             release = version_dir(root, run['commit'])
             row = {key: run.get(key) for key in
                    ('run_id', 'commit', 'resume_context', 'started_at', 'status')}
+            if read(release / 'RELEASE.json').get('data_schema') == 'BTC_NODE_DIRECT':
+                row.update(task=str(release / 'tasks/hourly.md'), run_material=None,
+                           material_status='READ_ORIGINAL_NODE_CONTEXT',
+                           context_method='trading.public')
+                active.append(row)
+                continue
             row.update(task=str(release / 'tasks/hourly.md'),
                        run_material=None, material_status='NOT_FOUND_AT_PROJECT_RUN_ENTRY')
             name = run['run_id']
@@ -394,7 +414,7 @@ def finish(config, run_id):
                 'finished_at': run.get('finished_at')}
 
 
-def data_service(config, command):
+def data_arguments(config, command):
     bridge = config.get('docker_service', {})
     if not bridge.get('enabled'):
         raise ValueError('Docker data service is not the active node writer')
@@ -404,8 +424,29 @@ def data_service(config, command):
         arguments += ['-f', path]
     arguments += ['exec', '-T', 'core', 'python', '-m', 'btc_node',
                   '--config', '/run/btc/settings.json', 'mcp' if command == 'mcp' else 'request']
+    return arguments
+
+
+def data_service(config, command):
+    arguments = data_arguments(config, command)
     # Preserve the MCP stream and CLI exit code; credentials stay in node files.
     os.execv(arguments[0], arguments)
+
+
+def installed_service_status(config):
+    response = subprocess.run(data_arguments(config, 'data'),
+                              input=b'{"method":"status","params":{}}\n', capture_output=True, timeout=15)
+    if response.returncode:
+        raise ValueError('read the configured node service before switching the runtime')
+    status = json.loads(response.stdout)
+    if not status.get('ok'):
+        raise ValueError('node service status unavailable')
+    return status['result']
+
+
+def trading_request(config, run_id):
+    from trading_client import request
+    return request(config, run_id, data_arguments(config, 'data'), sys.stdin.buffer)
 
 
 def main():
@@ -423,10 +464,17 @@ def main():
     sub.add_parser('status')
     sub.add_parser('data', help='Read one service JSON request from stdin')
     sub.add_parser('mcp', help='Project data tools over stdio')
+    p = sub.add_parser('trading', help='Run one closed-loop operation from an entered native run')
+    p.add_argument('--run-id', required=True)
     args = parser.parse_args(); config = node(args.node_config)
     if args.command in {'data', 'mcp'}:
         data_service(config, args.command)
         return
+    if args.command == 'trading':
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skill/btc-core-strategy/scripts'))
+        result = trading_request(config, args.run_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get('ok') else 1
     if args.command == 'install':
         result = install(config, args.source, args.ref, activate_after=not args.stage_only)
     elif args.command == 'activate':
@@ -445,4 +493,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

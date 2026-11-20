@@ -1,6 +1,6 @@
 # 报告修正依据与每日反馈
 
-本文件决定报告时机、交付义务与重复处理，不规定投资问题或代替内容验收。研究、个人决策与正文选择先承接已确认六点问题的实际答案；稳定且仍为本次决策必要的取舍不能因已展示而删除。发送必要性通过不证明决定完整，内容无新增也不解除形成有据当前判断的责任。
+本文件补充报告时机及实质变化的判断方法，职责承接由[交易系统闭环](closed-loop.md)统一。后续 report-review、maintenance、revision 字段用于解释原保存记录。研究、个人决策与正文选择先承接已确认六点问题的实际答案；稳定且仍为本次决策必要的取舍不能因已展示而删除。发送必要性通过不证明决定完整，内容无新增也不解除形成有据当前判断的责任。
 
 研判与正文分工遵守[研判与报告的职责边界](mobile-report.md#研判与报告的职责边界)。information 只记录实际展示的含义，引用最终正文中的原句；内部发现、维护分析和未展示条件留 maintenance。先沿原有效主论点核对本次关键证据、因果机制是否改变、对现价参与价值和个人取舍的影响，再与最后真实正文比较。主线与识别条件可由新的独立证据更新，不能以稳定为由压掉真正反证；普通局部变化未改变这些含义时作为噪音，持续分析但静默。新数据、新冲突或未知解除先完成影响判断，不因尚未展示就自动生成报告；方向、风险或安排的实质变化、重要事实纠错与每日反馈仍须独立处理。去重以最后真实助手正文为依据，不能把内部分析或研究完成当作已送达。baseline_review 先指出当前重要含义在真实正文中的对应原句；没有对应内容就明确未展示，再判断当前重要程度。不得以同版报告ID、上一小时的分析或 maintenance 替代显示依据。风险比上一小时减弱也不证明用户已收到该风险。代码只拦截相同正文并核验来源，模型对照实际正文判断同义重复及重要新增含义。
 
@@ -65,7 +65,7 @@ kind支持MARKET_REVIEW、PORTFOLIO_REVIEW、DEEP_REVIEW、EXPRESSION_ONLY；没
 
 模板保留兼容的上一版triggers说明，MAIN只在条件或影响改变时修正；本轮checked的证据和下一期限仍须实际填写。每个`maintenance.triggers[i].reason`说明该条件将改变哪项原判断以及原因，去除首尾空白后至少12字符；长度只是输入底线，纯标点、重复字符、补字数不能代替内容。错误会指出字段路径、条件id及实际长度。修复同一填写稿后重试原阶段，保留已完成工作及业务状态，不为通过校验改变结论。
 
-checked.prior_review_id绑定report-care.prior_review_id，首次旧稿接续为null。trigger_results必须覆盖上一maintenance的每个trigger，旧结构{id,state,evidence}；revision 6 按[完整闭环](closed-loop.md)增加 scope/material，checked.outcomes 分别判断市场与组合，state为MET/NOT_MET/UNKNOWN，evidence写实际取得的证据及限制。outcome为VALID/REVISE/EVIDENCE_LIMITED。MET要求复核，不机械改变策略或通知；新context的report_contract_revision=2将内部REVISE与REPORT分开，先完成主线和现价取舍审查；material只标尚未交付的实质主线、参与价值、重要纠错或实际组合危险，此时仍必须反馈。旧context沿原REVISE必须REPORT规则恢复，旧格式 VALID 且日反馈未到期才可 SILENT；UNKNOWN 不伪装成 NOT_MET。revision 6 独立保留市场和组合状态，已披露且无新增意义的个人缺口不污染市场有效性，重要未决风险仍须反馈。投递恢复独立于市场静默。下一recheck_at必须在未来；旧到期点不能被无审阅地覆盖。
+checked.prior_review_id绑定report-care.prior_review_id，首次旧稿接续为null。trigger_results必须覆盖上一maintenance的每个trigger，旧结构{id,state,evidence}；历史 revision 6 增加 scope/material，checked.outcomes 分别判断市场与组合，state为MET/NOT_MET/UNKNOWN，evidence写实际取得的证据及限制。outcome为VALID/REVISE/EVIDENCE_LIMITED。MET要求复核，不机械改变策略或通知；新context的report_contract_revision=2将内部REVISE与REPORT分开，先完成主线和现价取舍审查；material只标尚未交付的实质主线、参与价值、重要纠错或实际组合危险，此时仍必须反馈。旧context沿原REVISE必须REPORT规则恢复，旧格式 VALID 且日反馈未到期才可 SILENT；UNKNOWN 不伪装成 NOT_MET。revision 6 独立保留市场和组合状态，已披露且无新增意义的个人缺口不污染市场有效性，重要未决风险仍须反馈。投递恢复独立于市场静默。下一recheck_at必须在未来；旧到期点不能被无审阅地覆盖。
 
 已有缺口被核心报告披露，不等于相应维护条件已核验。实际现金、保证金或资金占用未知时，不能把“投入是否削弱缓冲”改成 NOT_MET；未取得新资料也不证明没有新发布。旧格式校验因 UNKNOWN 拒绝 SILENT 时，按事实使用 action=EVIDENCE_LIMITED、checked.outcome=EVIDENCE_LIMITED，不为通过校验改变触发状态。这只记录受限范围，不自动重做研究或重复发送已交付摘要，也不否定仍有证据支持的市场判断。同轮完整报告的 applicability_review、factor_checks 与 maintenance 必须如实承接同一受限范围；纠正误判时保留旧记录并追加修订，不能只修维护记录而留下“未取得资料却已确认无变化”的有效性断言。MET 表示该条件本身成立；“已经检查且事实未变”对于事实变化条件应为 NOT_MET，不能把完成检查写成触发。
 
