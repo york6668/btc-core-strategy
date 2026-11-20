@@ -34,11 +34,11 @@ python3 scripts/release.py --node-config /path/to/node.json enter --run-id ACTUA
 
 调度只调用固定版本的 [任务入口](tasks/hourly.md)，项目方法和状态规则随源码维护；真实机器绑定与报告目的地留在节点。这个分工使用 OpenAI 的 [Scheduled tasks](https://learn.chatgpt.com/docs/automations) 与 [Skills](https://learn.chatgpt.com/docs/build-skills) 已有能力。投递沿现有 outbox、发送尝试和原生回读推进，重复触发不能复活已结束运行，UNKNOWN 不能自动重发；这对应 [outbox 与幂等消费](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) 的可靠性原则。原生工具的真实副作用及手机可见性仍分别验证。
 
-代码回退只切换 `current`，不覆盖任何运行数据。外层 v4 格式不变，代码读取内容 revision 1–9，新入口准备 revision 9；正式状态仅经真实评估与采纳迁移，旧动作不自动补成风险评估。代码回退必须支持当前内容版本。原 revision 2 历史报告及已审阅语义留在节点的 `legacy_revision2_dir`；测试程序与样本构造逻辑按项目临时生命周期处理。
+代码回退通过节点原发布入口切换 `current`。切换和回退前按目标发布包的兼容声明核对已采纳结果。当前评估和成稿格式取自本轮固定版本返回的接口。正式状态随真实评估与采纳推进，历史记录按原契约读取。测试程序与样本构造逻辑按项目临时生命周期处理。
 
 完整闭环仍由本机 Codex 定时任务实际调用模型、采集和发送。GitHub Actions 仅检查正式源码结构及语法。真实发送、实际助手回读及后续自然运行另行确认，不能由 CI 结果替代。
 
-revision 7 的市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。回放材料及构造程序在本次临时验证目录管理，源码导出不包含这些材料。
+市场结论、个人资产风险评估、可选风险应对及独立验证见[完整闭环](skill/btc-core-strategy/references/closed-loop.md)。回放材料及构造程序在本次临时验证目录管理，源码导出不包含这些材料。
 
 ## Docker 持续分析
 
