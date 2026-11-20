@@ -67,6 +67,7 @@ REPORT_INSTRUCTIONS += REPORT_FIDELITY_REVIEW + CYCLE_EXPRESSION_REVIEW + MOMENT
 from .investment import POLICY_INSTRUCTIONS
 from .report_intent import DISCIPLINE, PERSONAL_DECISION_REVIEW
 INSTRUCTIONS += POLICY_INSTRUCTIONS + PERSONAL_DECISION_REVIEW + DISCIPLINE
+INSTRUCTIONS += '已有portfolio_plan时，按原市场路径和新事实核查其中会联动改变机会及存量的条件；实际改变返回个人决定重算。'
 REPORT_INSTRUCTIONS += (
     'validation_limits与gaps限制对应产品和安排；METHOD_CHECK只证明模拟方法，不得在正文写成杠杆组合、真实收益或策略有效。未支持能力影响动作时不输出执行建议，影响数量时保留有据方向和实际执行限制。'
     'revision 8报告消费investment_decision的总体取舍、优先关系、有据分项判断和具体依赖，不把风险与分项机会并列未决当作完整组合决定。'
@@ -434,7 +435,7 @@ def report_inputs(ctx):
             result['result_binding'][binding]=digest(result[result_key]) if result[result_key] is not None else None
             result['result_binding']['strategy_advice_hash']=None
         result['result_binding']['applicability_hash'] = digest(result['applicability'])
-    from .decision_design import report_results, public_case
+    from .decision_design import report_results, public_case, uses_portfolio_plan
     primary = None
     if public_case(strategy.get('outlook')) is not None:
         observed_case = market.get('market_assessment', {}).get('cycle_case')
@@ -442,10 +443,16 @@ def report_inputs(ctx):
                 'public decision changed: complete its matching personal reassessment before report')
         primary = report_results(strategy, ctx['identity']['fact_version'], ctx['evaluated_at'], current_analysis=ctx.get('position_analysis_input'))
     if primary is not None:
+        if uses_portfolio_plan(strategy):
+            observed = (observation.get('review') or {}).get('market_assessment') or {}
+            case = primary['cycle_case']
+            primary['market_summary'] = (observed['summary'] if observed.get('cycle_case') == case
+                                         else case['thesis']['conclusion'])
         result['decision_results'] = primary
         result['result_binding']['decision_results_hash'] = digest(primary)
     from .position_analysis import report_projection
-    return report_projection(result, ctx.get('position_analysis_input'), whole if revision >= 8 else None)
+    return report_projection(result, ctx.get('position_analysis_input'), whole if revision >= 8 else None,
+                             require_basket_decisions=ctx.get('report_contract_revision', 1) >= 10)
 
 
 def validate_report_binding(spec, ctx):

@@ -8,7 +8,7 @@ from .report_intent import REPORT_SELECTION, MOBILE_PRESENTATION, MARKET_HANDLIN
 
 FORMAT = 'AUTHORED_REPORT_V1'
 DISPLAY_FORMATS = {'MARKET_MOBILE_V2', FORMAT}
-REPORT_CONTRACT_REVISION = 8
+REPORT_CONTRACT_REVISION = 10
 # These are model review responsibilities, not a prose classifier or score.
 # Frozen revisions retain the review keys used when their source was authored.
 READING_REVIEW = {
@@ -197,6 +197,32 @@ def validate_product_identity_scope(binding, values):
                 'Binance QQQ/VOO product label needs bound product identity, not only underlying index evidence')
 
 
+def validate_reported_monthly_plan(bindings, monthly, *, group_decisions=False, complete=False):
+    """Bind each displayed choice and amount to its own evaluated basket."""
+    prefix = '/decision_results/allocation_choice/portfolio_plan/monthly_plan'
+    scopes = [(f'{prefix}/regular/baskets/{i}', row, ('amount', 'target_amount'))
+              for i, row in enumerate(monthly['regular'].get('baskets', []))]
+    scopes.append((prefix + '/extra_btc', monthly['extra_btc'], ('amount',)))
+    for path, plan, fields in scopes:
+        related = [item for item in bindings
+                   if any(ref.startswith(path + '/') for ref in item['refs'])]
+        if group_decisions and 'decision' in plan and (complete or related):
+            refs = {path + '/decision', path + '/basis'}
+            if plan['amount_basis'] is not None:
+                refs.add(path + '/amount_basis')
+            require(any(refs <= set(item['refs']) for item in related),
+                    'monthly report needs this basket decision and its own reason: ' + path)
+            require(any(path + '/change_condition' in item['refs'] for item in related),
+                    'monthly report needs this basket decision change condition: ' + path)
+        if related:
+            for field in fields:
+                if plan[field] is None:
+                    continue
+                require(any(path + '/' + field in item['refs']
+                            and numbers(plan[field]) <= numbers(item['text']) for item in related),
+                        'published monthly choice must show its bound ' + field + ': ' + path)
+
+
 def candidate_hash(value):
     """Bind the actual review target, not an assertion that its meaning is sound."""
     layout = value['layout']
@@ -269,8 +295,12 @@ def render(value, decision, *, require_review=True):
                         and value['report_basis']['mode'] == 'LIMITED_FEEDBACK'
                         and values.get('investment_decision') is None)
     require(isinstance(layout['bindings'], list), 'authored evidence bindings required')
-    from .decision_design import public_case
+    from .decision_design import BASKET_ALLOCATION_SCHEMA, public_case
     redesigned = public_case((ctx.get('current_strategy') or {}).get('outlook')) is not None
+    primary = values.get('decision_results') or {}
+    choice = primary.get('allocation_choice') or {}
+    monthly = ((choice.get('portfolio_plan') or {}).get('monthly_plan')
+               if ctx.get('report_contract_revision', 1) >= 9 else None)
     covered = set()
     for binding in layout['bindings']:
         exact(binding, 'text refs scope'+(' price' if 'price' in binding else ''), 'authored evidence binding')
@@ -284,7 +314,8 @@ def render(value, decision, *, require_review=True):
                 allowed = ('/market_result/', '/metrics/', '/public_evidence/', '/report_subjects/', '/decision_results/cycle_case/', '/decision_results/public_applicability') if ctx.get('market_revision', 0) >= 6 else PUBLIC
                 if redesigned:
                     allowed = ('/decision_results/cycle_case/', '/decision_results/public_applicability', '/metrics/', '/public_evidence/', '/report_subjects/')
-                require(ref.startswith(allowed), 'market conclusion cannot bind personal portfolio data or internal research prose')
+                require(ref.startswith(allowed) or (redesigned and ref == '/decision_results/market_summary'),
+                        'market conclusion cannot bind personal portfolio data or internal research prose')
             if binding['scope'] == 'personal' and ctx.get('market_revision', 0) >= 6:
                 personal_result = '/portfolio_risk/' if ctx.get('market_revision', 0) >= 7 else '/allocation_decision/'
                 allowed = (personal_result, '/applicability/portfolio/', '/execution_plans/')
@@ -310,6 +341,10 @@ def render(value, decision, *, require_review=True):
                 # exact validity. Reading that scalar cannot renew it or turn
                 # it into a public market claim or an executable price tier.
                 validity_ref = redesigned and ref == '/decision_results/valid_until'
+                summary_ref = redesigned and (ref == '/decision_results/portfolio_summary'
+                                                or ref.startswith('/decision_results/change_conditions/'))
+                monthly_review_ref = (redesigned and monthly is not None and not limited_personal
+                                      and re.fullmatch(r'/applicability/portfolio/issue_reviews/\d+/(?:explanation|next_evidence)', ref))
                 opening_ref = redesigned and ref.startswith(('/decision_results/position_analysis/economic_inputs/baseline/',
                                                              '/decision_results/allocation_choice/price_baseline/'))
                 if opening_ref:
@@ -319,7 +354,7 @@ def render(value, decision, *, require_review=True):
                             'opening price binding requires the actual matched directional decision')
                     if ref.endswith('/entry_price'):
                         require('price' in binding, 'opening price binding needs its instrument and source unit')
-                require(ref.startswith(allowed) or validity_ref or opening_ref,
+                require(ref.startswith(allowed) or validity_ref or opening_ref or summary_ref or monthly_review_ref,
                         'personal report consumes only assessed risk, applicable advice and limits')
             if binding['scope'] == 'clock':
                 require(ref == '/evaluation_time' and excerpt == values['evaluation_time'], 'only frozen evaluation time is a clock binding')
@@ -346,11 +381,14 @@ def render(value, decision, *, require_review=True):
             require(not values['portfolio_risk'] or not values['portfolio_risk'].get('actions'),
                     'unfinished synthesis cannot supply new risk actions')
     if redesigned and any(b['scope']=='personal' for b in layout['bindings']):
-        primary = values['decision_results']
-        refs = [ref for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']]
+        personal_bindings = [b for b in layout['bindings'] if b['scope'] == 'personal']
+        refs = [ref for b in personal_bindings for ref in b['refs']]
         if primary['allocation_choice'] is None:
             require(any(ref.startswith('/decision_results/limitations/') for ref in refs),
                     'expired choice can supply only its actual reassessment limitation')
+        elif 'portfolio_summary' in primary:
+            require('/decision_results/portfolio_summary' in refs,
+                    'personal report must consume the completed portfolio summary')
         else:
             require('/decision_results/allocation_choice/allocation_rationale' in refs,
                     'personal report must consume the actual joint configuration choice')
@@ -367,6 +405,12 @@ def render(value, decision, *, require_review=True):
             require(any(re.fullmatch(r'/investment_decision/(?:validation_limits/\d+/(?:limitations|unsupported_capabilities)/\d+|gaps/\d+/(?:consequence|required_evidence))',ref)
                         for b in layout['bindings'] if b['scope']=='personal' for ref in b['refs']),
                     'unsupported implementation capabilities must reach the personal report consumer through concrete limitations or their decision consequences')
+    if monthly is not None:
+        group_decisions = (ctx.get('report_contract_revision', 1) >= 10
+                           and choice.get('schema') == BASKET_ALLOCATION_SCHEMA)
+        validate_reported_monthly_plan([b for b in layout['bindings'] if b['scope'] == 'personal'], monthly,
+                                       group_decisions=group_decisions,
+                                       complete=(value.get('report_basis') or {}).get('mode') == 'CYCLE_SUMMARY')
     require(numbers(body) <= covered, 'all report numbers need frozen evidence bindings')
     if ctx.get('report_contract_revision', 1) >= 3:
         conclusions = [b for b in layout['bindings'] if b['scope'] != 'clock']

@@ -154,6 +154,13 @@
       9
     ],
     "new_write_revision": 9,
+    "allocation_choice_schemas": [
+      "BTC_ALLOCATION_CHOICE_V1",
+      "BTC_ALLOCATION_CHOICE_V2",
+      "BTC_ALLOCATION_CHOICE_V3",
+      "BTC_ALLOCATION_CHOICE_V4",
+      "BTC_ALLOCATION_CHOICE_V5"
+    ],
     "migration": "ACTUAL_ASSESSMENT_AND_ADOPTION_ONLY"
   }
 }

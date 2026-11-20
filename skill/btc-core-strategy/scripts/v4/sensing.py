@@ -329,6 +329,9 @@ def context(root, db, project, current_market, limit=240, compact=True, evidence
     if active_revision >= 8:
         from .investment import open_issues, POLICY_INSTRUCTIONS, policy_inputs
         value['investment_review'] = {'open_issues': open_issues(core), 'instructions': POLICY_INSTRUCTIONS}
+        from .decision_design import public_case, revision as decision_revision, PORTFOLIO_PLAN_INSTRUCTIONS
+        if frozen_review and decision_revision(public_case(core.get('outlook'))) >= 2:
+            value['investment_review']['instructions'] += PORTFOLIO_PLAN_INSTRUCTIONS
         from .strategy_validation import feedback
         value['investment_feedback'] = feedback(root, core)
         value['recorded_policy_inputs'] = policy_inputs(root,value['identity']['fact_version'])
@@ -508,6 +511,11 @@ def record(root, db, project, raw, review, evidence_dir=None, workflow_revision=
         triggers = []
         if ctx.get('revision', 1) >= 6 and review['allocation_review']['outcome'] == 'REVISE':
             triggers.append('ALLOCATION_REVIEW_REQUIRED')
+        if ctx['identity'].get('position_analysis_policy_version'):
+            from .position_analysis import basket_decision_missing, inputs
+            prior = (ctx.get('current_recommendations') or {}).get('portfolio', {}).get('investment_decision')
+            if basket_decision_missing(prior, inputs(root, project)):
+                triggers.append('ALLOCATION_REVIEW_REQUIRED')
         if candidate['deep_review']['required']:
             triggers.append('MARKET_CHANGE')
         for check in checks:
