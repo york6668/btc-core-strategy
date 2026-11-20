@@ -8,18 +8,18 @@
 
 随后比较资产相对机会与等待：收益来自什么、下行风险、成本、关键限制，以及为何当前更值得参与、等待或回避。方向正确不等于现价补偿足够。没有可靠数值时作有依据的定性取舍，不把结构位距离当成收益风险比。
 
-完整评估沿同一组周期路径考察实际相关的美股配置、加密现货组合、独立 BTC、黄金与流动性。对每项会改变选择的机会，说明当前价格已反映哪些预期、主路径与竞争路径各怎样影响净回报与风险、等待的代价及什么证据会改变排序。个别新事件可能只改变一种资产的定价或下一项检验，市场作者明确其影响范围，并在需要时复核原论点。
+完整评估沿同一组周期路径考察交易任务涉及的市场、配置机会、独立机会与等待安排。对每项会改变选择的机会，说明当前价格已反映哪些预期、主路径与竞争路径各怎样影响净回报与风险、等待的代价及什么证据会改变排序。个别新事件可能只改变一种资产的定价或下一项检验，市场作者明确其影响范围，并在需要时复核原论点。
 
-公开决策的主对象是 `outlook.market_assessment.cycle_case`。当前新请求使用 `BTC_CYCLE_DECISION_V2`；旧 V1 原件按原已证范围读取，不能补字段冒称完成新研究。字段及绑定由 `scripts/v4/decision_design.py` 校验，包含：
+公开决策由独立的周期论证及相对机会判断承载。新结果按本轮正常入口返回的契约记录，历史结果按其已证范围接续。具体接口见[策略契约](v4-contract.md)。决策应保留以下内容。
 
 - `as_of`（真实形成）、`knowledge_cutoff`（证据截止）与 `horizon {start,end,basis}`：真实公开形成时点及 1–3 月前瞻问题，非保证持续或固定复核周期。
 - `thesis {status,conclusion,confidence,drivers,priced_in,strongest_alternative,strongest_falsifier}`。status 为 ESTABLISHED / UNCLEAR；driver 的 mechanism、transmission、observed_response、refs、counter_refs 构成可核证据链。最强竞争解释和反证均有 argument、implication、refs。
 - `opportunities`：每项 id、asset、stance（PARTICIPATE / WAIT / AVOID / UNRESOLVED）、return_basis、downside、net_cost、limitation、rationale、refs。至少比较两个适用备选且包括等待；`preferred_ids` 与 `comparison` 给出实际相对取舍。
-- 当前 V2 的 `preferred_ids` 可为空：周期主路径可以已建立，而现价下资产净回报仍不能排序。此时仍完成相关比较，保留已成立的局部或条件偏好，不为满足字段强选等待。选择准则须明确：净回报/风险补偿、降低集中度、控制尾部风险、保留选择权是不同命题；稳健偏好须说明适用理由与所放弃的上涨机会，不能冒称回报优势或用户既有目标。费用差异不单独证明净补偿；样本公司的 OCF、OCF减现金PPE与FCF不直接构成两个重叠持仓基金的现金回报差额，必须核同口径、权重与整体覆盖。缺同步估值或仅有旧短券毛息不自动推成等待优于参与。
+- 周期主路径可以已建立，而现价下资产净回报仍不能排序。此时仍完成相关比较，保留已成立的局部或条件偏好。说明采用的选择准则及其适用范围，包括净回报或风险补偿、降低集中度、控制尾部风险或保留选择权。稳健偏好须说明适用理由与所放弃的上涨机会。费用差异不单独证明净补偿。比较基金现金回报时须核验样本指标的口径、基金权重与覆盖，才能判断个别公司 OCF、OCF 减现金 PPE 与 FCF 对比较的影响。等待的收益及成本按当期可比工具核实。
 - `prior_review`：旧论点的 prior_id、claim、outcome、reason、refs，旧预测只作待核假设。
 - `crosschecks`：source、origin_group、as_of、finding、disagreement、influence、refs。按实际来源依赖解释证据，不将同源转述计为多个独立支持。
 - `events`：event、occurred_at、effect、decision_changed、reason、refs。只记录已发生事件对决策的复核，未来事件是条件，不伪装成已观察事实。
-- V2 `path_comparison {paths,ranking,preferred_ids,basis,unresolved}`：至少两个真实竞争周期路径，每项有 `id,mechanism,transmission,continuation,early_turn,priced_in,invalidation,implications,refs,counter_refs`。把趋势延续证据与早期转折迹象分开，并解释如何影响机会。`ranking` 为 RANKED / UNRANKED；未决说明缺少哪个鉴别条件，不免除机制比较、不强造概率或中性方向。
+- `path_comparison {paths,ranking,preferred_ids,basis,unresolved}` 保留真实竞争路径及其机制、传导、延续、早期转折、已定价、失效与机会影响。把趋势延续证据与早期转折迹象分开。未决时完成机制比较并说明缺少哪个鉴别条件。
 
 原市场、factor、forward 和区域接口继续承载底层事实及历史消费者兼容信息；其含义必须与主对象一致，不得反过来强迫新研究继承旧周期或围绕旧模块组织。程序核引用、时间及身份；模型核实论证、定价与选择是否成立。字段齐全不证明业务通过。
 
@@ -27,7 +27,7 @@
 
 公开结果冻结后才读工作站持久化资产配置、操作与纠正记录。读取最新已知整体实际结构、目标、风险约束及后续变化，不依赖聊天临时摘要。实际、目标、建议和已成交分开；部分更新保留未变化事实及原时点，冲突不静默覆盖，时间变化不清空已知配置，也不永久沿用原规模。仅无肯定持仓证据的项适用未持有分析默认。
 
-原 `investment_decision` 的候选比较及所选决定是唯一个人决策源。采用 `MONTHLY_PORTFOLIO_PLANNING_V1` 的月度组合决定用 `BTC_ALLOCATION_CHOICE_V5`，其余月度规划用 V4，普通组合决定用 V3。公开周期沿其原冻结结果，历史决定按原范围读取。
+原 `investment_decision` 的候选比较及所选决定是唯一个人决策源。公开周期沿其原冻结结果，历史决定按原范围读取。按本轮有效的已确认配置确定组合数量、成员、权重、预算与用途，个人结果按正常入口返回的契约提交。先核实配置变更的生效时点，再决定影响哪些组合。
 
 正常个人输入中的 `portfolio_result_binding.market_result_hash` 是 allocation/risk/investment 结果应填写的公开语义绑定，即 `digest({outlook,factor_assessment})`，也等于 `market_content_hash`。外层旧 `market_result_hash` 与显式 `research_phase_result_hash` 标识含 `market_report` 的研究整包，不能填入上述财务结果字段。映射预检必须调用正常 recommendations/candidate 消费者，不能用同一个误填值同时传给局部检查而宣称链路通过；两种身份都保留，语义或原稿不因绑定规范化而改写。
 
@@ -35,12 +35,12 @@
 - actual_configuration、target_configuration、constraints 区分事实、目标和限制；
 - selected_ids 与 investment_decision 完全一致，allocation_rationale 解释整体取舍；
 - holding_discipline 每项引用所选 candidate_id，给出 decision、basis、change_condition、execution_limit；change_conditions 说明何时重评。真正总体未决有明确依赖缺口时允许空选择和空动作纪律，不伪选等待。
-- V2 `exposure_decisions` 按实际投资问题划分范围，每项包含 `scope,purpose,current_exposure,target_risk,opportunity_ids,criterion,comparisons,gap_effects,ranking,selected_ids,conditional_preferences,basis,change_conditions`。purpose 区分 INCREMENTAL / INCUMBENT / JOINT；current_exposure 的 state 为 FLAT / NET_LONG / NET_SHORT / MIXED / UNKNOWN，basis 保留来源与时间边界；target_risk 的 status 为 DETERMINED / CONDITIONAL / UNRESOLVED，description 和 basis 说明目标风险敞口，可定性，不能把战略比例当当前风险预算。
+- `exposure_decisions` 按实际投资问题划分范围，每项包含 `scope,purpose,current_exposure,target_risk,opportunity_ids,criterion,comparisons,gap_effects,ranking,selected_ids,conditional_preferences,basis,change_conditions`。区分新增投入、存量管理和联动取舍。当前敞口保留来源和时间边界，目标敞口可定性。风险预算须有当前事实依据。
 - `criterion {kind,origin,rule,fact_refs}` 明确本次相对选择标准及其适用依据。kind 可为 RELATIVE_VALUE / RISK_CONSTRAINT / MANDATE / ROBUSTNESS / UNRESOLVED，origin 区分 CONFIRMED / ANALYTICAL_PROPOSAL / UNRESOLVED。确认约束须引用本轮事实版本中的原文；新的稳健提案不可伪称用户既有规则。
 - `comparisons` 每项绑定实际 candidate_id，按同一组周期 path_id 说明 benefit / downside / net_cost，另有 opportunity_cost 和原候选 dependencies。必须比较现有安排与适用替代；不要求所有情景必胜，按已说明且有依据的准则排序。`ranking` 为 RANKED / CONDITIONAL / UNRANKED，与本轮投资选择、目标风险状态和候选依赖一致。UNRANKED 不隐含续持、减险或等待。只有 RANKED 的本轮选择进入 selected_ids；CONDITIONAL 的选项留在独立 `conditional_preferences [{candidate_id,premise,otherwise}]`，注明未满足前提及其不成立时的含义，不进入本轮所选或持仓指令。原 ACTION 缺口不为接受条件提案改标成 VALUE，条件提案不可在报告升级为无条件动作。`gap_effects` 必须逐项承接同一比较内所有候选涉及的 gap_id，说明 effect 为 RANKING / IMPLEMENTATION_ONLY / NOT_MATERIAL 及实际依据；可能改变排序的缺口禁止无条件排序，条件政策也须在原候选 dependencies 中保留它，不因 POLICY 命名逃逸。只有业务复审能判断“仅实施”或“不影响”的证据是否成立。
-- V3 的 `portfolio_plan.opportunities` 把每项冻结机会接到组合里的当前取舍、代价及重评条件。`portfolio_plan.interactions` 逐个绑定实际仓位选择范围和对应机会，对同一组周期路径说明新增风险、存量和保护合计如何影响净敞口。改变条件需说明哪些安排应一起重评，例如现货重新取得参与资格时也复核剩余方向空。未确认的存量只保留条件偏好或未排序。
-- V4 在同一 `portfolio_plan.monthly_plan` 结合政策预算、月历与市场价值，明确常规定投配置及暂缓金额、独立额外 BTC 的价值区间与计划金额、留减退对月度容错和熊市补偿的影响。执行、可用资金和当月实际投入由用户自行评估。报告中的金额属于计划。观察带与可买价值区间各自成立；价值区间未成立时额外金额为零。
-- V5 先为各组比较原定投、跳过及有据的分批，再将选择汇合。按原组内权重和同一行情期限，比较等额投入下谁更抗跌、谁更可能先修复，再比较各组按原预算投入的代价。共同回撤、各组分别修复以及联动的独立 BTC、留存和空头补偿按实际影响纳入。每组保留本月继续或跳过、决定性理由、金额、改判条件、对应的比较范围和事前窗口。继续但偏离原金额须给专门理由，未决须指出真实排序缺口。金额和期限属于计划。旧组金额按历史读取，缺逐组选择时用正常个人评估补足。
+- `portfolio_plan.opportunities` 把每项冻结机会接到组合里的当前取舍、代价及重评条件。`portfolio_plan.interactions` 对同一组周期路径说明新增风险、存量和保护如何共同影响净敞口。说明哪些安排应随同一条件复核。未确认的存量只保留条件偏好或未排序。
+- 月度计划结合当期政策预算、日历与市场价值，形成常规定投、未安排额度，以及政策中适用的独立机会和保护安排。执行、可用资金和当月实际投入由用户自行评估。观察带用于跟踪市场进展，可买价值区间用于判断额外投入。独立 BTC 的价值区间未成立时，额外规划金额为零。
+- 逐组比较按政策继续、跳过及有据的分批，多组适用时再比较等额投入的风险与收益。用相同的市场期限、各组自身的权重与可比价格，判断共同承压和不同驱动下的独立或同步修复，再落实到原组合预算。逐组给出本月决定、理由、金额、改判条件、适用的比较范围和事前复核窗口。继续但偏离原金额须给专门理由，未决须指出影响排序的证据缺口。组合调整后按新的有效配置重评受影响的组。
 - 空单的实际状态和用户给出的开仓价缓存分别绑定到个人政策。无空单时只评估适用组合，状态未确认按有仓和无仓分别推演。开仓价缺失仅限制价格相关判断，现价下的前瞻净补偿可独立评估。
 - 承担月度补偿用途的空单按熊市下行能补偿多少、修复时的拖累和未来成本复核。围绕该用途决定留、减、退，现货匹配与否不决定其资格。未确认仓位继续只给有依据的条件判断。
 
@@ -72,7 +72,7 @@
 
 验收从真实输入经过公开决策、冻结、个人决定、报告消费核实。必须区分：新证据推翻旧判断；主线成立但价格透支；资产相对机会；配置过期/冲突/部分更新；事件有或无决策影响；配置和纪律的一致性。语义审阅检查确切最终结果的依据和反例，不以字段、测试数、旧作者批准或漂亮排版代签。候选预览、正式采用、安装和投递分别记录，预览不要求先正式采用。
 
-用真实失败案例及有界反例检查：同一市场下空仓、净多、净空的不同配置判断均须由同一市场证据和各自目标敞口推导；短期反弹不自动改周期或减仓；已核风险预算超限可独立减险；未知只限制依赖它的判断；旧报告不作本期证据。程序核身份、引用、候选/路径/依赖及排序一致性，模型独立复核准则适用性和经济排序；填满 V2 字段或自述 RANKED 都不证明通过。
+用真实失败案例及有界反例检查。同一市场下空仓、净多、净空的不同配置判断均须由同一市场证据和各自目标敞口推导。短期反弹的含义按周期证据判定，已核风险预算超限可独立减险。未知只限制依赖它的判断，旧报告只供历史复核。程序核身份、引用、候选、路径、依赖及排序一致性，模型独立复核准则适用性和经济排序。
 
 ## 正常候选预览入口
 
