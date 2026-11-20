@@ -20,6 +20,23 @@ core 计算解释器固定为 Python 3.12.14，与节点保留的冻结行情生
 
 研究登记的完成凭据使用不可变实际模型轨迹的 SHA256，不以完成说明文件路径代替。已完成票据若误存了非摘要引用，可在同一 `model.deep.reconcile` 中明确提供原 `claim_id`、`outcome=COMPLETE`、`expected_result_ref`、经核实的摘要 `result_ref` 和实际纠错 `evidence_ref`。它只纠正该非摘要引用并追加原值及证据；结果、原完成时间、issue/phase/input 与历史日记录均不变，已有摘要绑定不能替换。登记仍须核验原模型、阶段及真实轨迹，引用纠正不授予后继阶段批准。
 
+### 原生投递回执
+
+通过已进入的宿主 `btc-core trading` 调用 `trading.record_delivery {report_id,action,receipt}`。下表的字段均在 `receipt` 内。使用原报告、原目的地对象和 `trading.begin_delivery` 返回的尝试身份。地址中的项目字段沿用原对象。 `record_refs` 填实际取得的非空记录引用。当前稿取得完整原生请求及完成正文时，依次登记请求绑定和确认。归档确认直接沿已保存的原绑定处理。
+
+| 动作 | 回执字段 |
+| --- | --- |
+| `ACKNOWLEDGE` | `schema=BTC_TRANSPORT_RECEIPT_V1`，`attempt_id,recorded_at,status,record_refs,detail`。运输状态按实际响应取 `ACCEPTED`、`PROCESSING` 或 `FAILED`。 |
+| `BIND_REQUEST` | `schema=BTC_SENT_REQUEST_V1`，`attempt_id,destination,request_ref,record_refs,request_body,anchor_ref,request_started_at`。 |
+| `CONFIRM`、`CONFIRM_ARCHIVED` | `schema=BTC_CLOUD_READBACK_V5`，`destination,checked_at,attempt_id,request_ref,assistant,record_refs,absence_confirmed,review`。`absence_confirmed=false`。归档核收使用原请求和原尝试。 |
+| `UNKNOWN` | `schema=BTC_UNCONFIRMED_READBACK_V1`，`attempt_id,checked_at,record_refs,detail`。登记实际回读及仍无法确认的效果。 |
+| `NOT_SENT`、`BLOCKED` | `schema=BTC_CLOUD_READBACK_V5`，`destination,checked_at,attempt_id,request_ref,assistant,record_refs,absence_confirmed,review,dispatch_evidence`。`request_ref`、`assistant`、`review` 为 null，`absence_confirmed=true`。`dispatch_evidence` 包含 `outcome=NOT_DISPATCHED,record_ref,detail`，其中 `record_ref` 必须列入 `record_refs`。适用于原生记录明确表明本次未派发。 |
+
+- **运输受理。** 使用发送工具实际返回的记录引用。仅返回目标聊天 ID 时，该回执只支持受理。已经读到原请求时可直接登记 `BIND_REQUEST`。
+- **实际请求。** 在目标聊天回读中找到游标之后实际提交的 `userMessage`，使用其 `id` 和完整正文作为 `request_ref`、`request_body`，用所属回合的 `startedAt` 作 `request_started_at`。把实收请求身份列入 `record_refs`。
+- **实际正文。** 从同一完成回合取得 `agentMessage`。`assistant` 包含 `record_ref,parent_request_ref,role,body,completed,tool_calls,completed_at`。使用 `agentMessage.id`、原 `userMessage.id`、`role=assistant`、实收原文、实际完成状态、回合实际工具调用和该回合的 `completedAt`。请求与助手身份都列入 `record_refs`。
+- **核对证据。** 原生回合时间若为 Unix 秒，保留小数并转换为 UTC ISO 8601。`checked_at` 是本次实际核对时刻，`recorded_at` 是运输回执登记时刻。`review` 包含 `reviewer_role=MAIN,agent_id,source_hash,display_hash,bindings=[],checks={},unresolved_issues`。摘要分别来自冻结正文和实收原文的 UTF-8 字节，`agent_id` 为实际核对者。确认送达要求实际完成、无工具调用、无未解问题和全文匹配。正文缺失、标为截断或缺少原生完成时间时，按现有证据保留原尝试。
+
 ## 准备与迁移
 
 已完成研究的跨节点承接使用 `append-dependencies --root <归档根目录> --manifest <明确清单>`，先带 `--check-only` 核对源字节和目标登记。清单为 `BTC_RESEARCH_DEPENDENCIES_V1`，`files` 每项只含相对 `path` 与 `sha256:…` 格式的原始字节摘要；路径相对原 `.strategy`，仅允许已有研究、证据及投资记录归档目录，拒绝策略版本、current、资产事实和符号链接。它在已有节点事务内增加缺失条目，并将清单内已有相同字节的 RAW／到期等登记提升为 KEY、清除相应回收标记；预检及回执将新增、已有内容不变、保留属性调整和回收清理分开计数。同路径异内容整批阻断；不初始化数据库、不删除或覆盖命名空间、不投影业务状态，也不物化正式文件视图。原作者、请求、结果、原始字节及其原基线不改写，清单外登记不变；内容摘要不是作者或批准证明，跨基线适用性仍由正常 MAIN 组装和原精确批准契约验证。未决操作先由原入口核清，不在其恢复过程中增补。

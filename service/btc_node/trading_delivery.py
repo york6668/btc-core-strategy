@@ -304,18 +304,24 @@ def _obligation_id(value):
     return OBLIGATION + identity(value['kind'], value['subject'], value['trigger_ref'])
 
 
+def _existing_obligation(db, value, legacy_destination):
+    objects = Entities(db)
+    prior = objects.get('DELIVERY', _obligation_id(value))
+    if prior is not None or legacy_destination is None:
+        return prior
+    channel = _channel(legacy_destination)
+    kind, subject, trigger_ref = (value[field] for field in ('kind', 'subject', 'trigger_ref'))
+    legacy_identity = (channel, kind, trigger_ref) if kind == 'ARCHIVED' else (channel, kind, subject, trigger_ref)
+    return objects.get('DELIVERY', OBLIGATION + identity(*legacy_identity))
+
+
 def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None):
     payload = {'subject': subject, 'trigger_ref': trigger_ref, 'reason': reason, 'kind': kind, 'due_at': due_at,
                'created_at': stamp(), 'report_id': None, 'status': 'OPEN'}
-    identifier = _obligation_id(payload)
-    objects = Entities(db)
-    prior = objects.get('DELIVERY', identifier)
-    if not prior and legacy_destination is not None:
-        channel = _channel(legacy_destination)
-        legacy_identity = (channel, kind, trigger_ref) if kind == 'ARCHIVED' else (channel, kind, subject, trigger_ref)
-        prior = objects.get('DELIVERY', OBLIGATION + identity(*legacy_identity))
+    prior = _existing_obligation(db, payload, legacy_destination)
     if prior:
         return prior['payload']
+    identifier = _obligation_id(payload)
     payload['obligation_id'] = identifier
     if legacy is not None:
         payload['legacy'] = legacy
@@ -715,8 +721,8 @@ def reconcile_archived(db, *, destination, report_id, receipt):
             db.metadata(_day_key(target, day), displayed, write=True)
     review_id = artifact['source'].get('report_review', {}).get('review_id')
     if review_id:
-        identifier = OBLIGATION + identity(_channel(target), 'ARCHIVED', review_id)
-        obligation = Entities(db).get('DELIVERY', identifier)
+        obligation = _existing_obligation(db, {'kind': 'ARCHIVED', 'subject': 'retained feedback',
+                                               'trigger_ref': review_id}, target)
         if obligation and obligation['active'] and obligation['payload']['report_id'] is None:
             originals = obligation['payload']['legacy']['deliveries']
             if any(previous['delivery_id'] == report_id for previous in originals):
