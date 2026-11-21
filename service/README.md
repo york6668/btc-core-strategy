@@ -4,6 +4,8 @@
 
 现有节点由宿主受控入口提交 `trading.*` 请求。市场判断、组合及成员决定、原条件复核和发件箱由同一 MySQL 写入端登记。个人阶段的 `trading.portfolio_decision` 在一次事务内保存组合比较、实际依赖及确切成员版本，沿既有条件复评推进。新个人报告引用相应的组合决定；已登记投递沿原件和原身份恢复。公共查询可从既有 MCP 使用，个人资料、状态写入和原生投递经宿主准入后的正常任务入口。
 
+原任务收到用户直接确认的 BTCUSDT 空单开单价时，使用节点状态入口的同一宿主可执行路径运行 `btc-core data`，发送 `trading.set_entry_reference`。参数为 `price`（USDT 十进制）、`confirmed_at`（真实确认时间）和 `confirmation_ref`（确切确认来源），最外层 `operation_id` 对应这次确认。专用操作在现有 Docker writer 事务中更新 `existing-position.entry_reference`，并回读该次保存结果。重复请求沿用原回执。常规决策从 `trading.personal` 读取当前基准，用其版本提交方向判断。只有明确的新确认更新该价格。 [任务入口](../tasks/hourly.md#用户明确更新开单价)
+
 正式切换前运行与候选源码一致的 core 服务。原有文件式记录仅通过其只读来源承接。后续节中关于旧 CLI、目录投影和节点备用调度的入口用于已部署的旧运行及其证据复核。
 
 `compose.yaml` 的 analysis、reader、collector profile 共用部署定义。分析节点使用独立 MySQL 8.4 数据卷与单独挂载的内容寻址证据目录；核心服务、reader、维护任务在容器内，模型与原生发送/回读、Keychain、三份确认文件在宿主。数据目录、凭据与机器配置只属于节点，不进入源码、镜像构建上下文或云端任务。镜像构建白名单仅包含 service 源码及依赖声明。

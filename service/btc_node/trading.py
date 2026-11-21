@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from . import deep_gate, fact_views, trading_archive, trading_portfolio
+from . import deep_gate, fact_views, trading_archive, trading_policy, trading_portfolio
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp
 from .entities import Entities
 
 MARKET = 'allocation'
+SET_ENTRY_REFERENCE = 'trading.set_entry_reference'
 SERVICE_SOURCES = ('api.py', 'contracts.py', 'execution.py', 'mcp.py', 'trading.py', 'trading_decisions.py',
                    'trading_delivery.py', 'trading_policy.py', 'trading_archive.py', 'trading_portfolio.py')
 READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.source',
@@ -17,7 +18,7 @@ READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'tradin
 WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision', 'trading.portfolio_decision',
           'trading.review', 'trading.research', 'trading.report', 'trading.begin_delivery',
           'trading.record_delivery', 'trading.assess_feedback', 'trading.inherit_feedback',
-          'trading.policy', 'trading.seed_policy'}
+          'trading.policy', 'trading.seed_policy', SET_ENTRY_REFERENCE}
 
 
 def plain(value, field):
@@ -211,8 +212,23 @@ def confirmed_files(db):
 
 
 def policies(db, release):
-    from . import trading_policy
-    return trading_policy.inputs(db, release)
+    scope, status = trading_policy.inputs(db, release)
+    subject = trading_policy.POSITION_SUBJECT
+    policy = scope.get(subject)
+    if policy is not None:
+        inputs = dict(policy['inputs'])
+        inputs.pop('baseline', None)
+        position = dict(inputs.get('position') or {})
+        position.pop('entry_reference', None)
+        if 'position' in inputs:
+            inputs['position'] = position
+        # A price update changes the direction input, not the policy for actual exposure.
+        basis = fingerprint(encode({'kind': policy['kind'], 'inputs': inputs}))
+        opening = trading_policy.entry_reference(db)
+        if opening and any(position.get(key) not in (None, opening[key]) for key in ('instrument', 'product')):
+            opening = None
+        scope[subject] = {**policy, 'inputs': inputs, 'basis': basis, 'entry_reference': opening}
+    return scope, status
 
 
 def personal_context(db, run, release):
@@ -272,20 +288,27 @@ def personal_decision(db, run, release, **params):
 
 
 def adopt_personal(db, run, market, scope, files, *, subject, expected_version, policy_basis, facts, fact_refs,
-                   market_refs, result, evidence, notification=None):
+                   market_refs, result, evidence, notification=None, entry_reference=None):
     from . import trading_decisions as decisions
     policy = scope.get(subject)
     if not policy or policy['basis'] != policy_basis:
         raise Conflict('the applicable policy for this decision changed or is unconfirmed')
+    opening_price = policy.get('entry_reference') if policy.get('position_status') != 'ABSENT' else None
+    if entry_reference != (opening_price['revision'] if opening_price else None):
+        raise Conflict('assess the current opening price before submitting the position decision')
     if not isinstance(facts, dict) or any(files.get(k, {}).get('digest') != v for k, v in facts.items()):
         raise Conflict('a cited personal fact source changed; re-read only the affected inputs')
     if (not isinstance(fact_refs, list)
             or any(not current_quote(files, ref) or ref['file'] not in facts for ref in fact_refs)
             or set(facts) != {ref['file'] for ref in fact_refs}):
         raise ValueError('each used personal source must have its exact applicable excerpt')
-    if policy['kind'] == 'POSITION' and result['decision'] not in {'UNRESOLVED'} and not fact_refs:
+    choice = result.get('decision')
+    if policy['kind'] == 'POSITION' and choice != 'UNRESOLVED' and not (fact_refs or opening_price):
         raise ValueError('a current position action needs its actual confirmed source')
-    refs = list(public_evidence(db, evidence))
+    actions = result.get('conditional_actions')
+    held_choice = actions.get('PRESENT') if isinstance(actions, dict) else None
+    directional = isinstance(held_choice, dict) and held_choice.get('decision') in ('KEEP', 'REDUCE', 'EXIT')
+    refs = list(public_evidence(db, evidence, required=choice != 'UNRESOLVED' or directional))
     for name in facts:
         digest = db.put_blob(files[name]['text'].encode())
         refs.append({'type': 'BLOB', 'digest': digest, 'relation': 'CONFIRMED_LOCAL_FACT'})
@@ -294,7 +317,7 @@ def adopt_personal(db, run, market, scope, files, *, subject, expected_version, 
     record = decisions.adopt_personal(db, subject=subject, expected_version=expected_version,
                                     market=reference(market), policy=owner_policy,
                                     result=result, evidence=refs, run=run, fact_refs=fact_refs, market_refs=market_refs,
-                                    fact_history=fact_history if policy['kind'] == 'POSITION' else None)
+                                    fact_history=fact_history if policy['kind'] == 'POSITION' and not opening_price else None)
     if notification is not None:
         register_notification(db, record, notification)
     return record
@@ -328,7 +351,7 @@ def portfolio_decision(db, run, release, *, expected_version, market, primary, a
         records[subject] = record
     for subject, proposal in submitted.items():
         records[subject] = adopt_personal(db, run, frozen, scope, files, **proposal)
-        if scope[subject].get('position_status') == 'UNKNOWN':
+        if scope[subject].get('position_status') == 'UNKNOWN' and not scope[subject].get('entry_reference'):
             if not records[subject]['payload']['result'].get('conditional_actions'):
                 raise ValueError('record explicit in-position and absent conclusions for the unknown position')
 
@@ -415,6 +438,8 @@ def review(db, run, *, target, condition_id, outcome, explanation, evidence, **u
 
 def invoke(db, method, params):
     params = dict(params)
+    if method == SET_ENTRY_REFERENCE:
+        return trading_policy.set_entry_reference(db, **params)
     run, release = run_record(db, params.pop('run_ref'))
     action = method.removeprefix('trading.')
     if action == 'open':
@@ -449,12 +474,10 @@ def invoke(db, method, params):
         return {'market': reference(frozen_market(db, run))}
     if action == 'seed_policy':
         frozen_market(db, run)
-        from . import trading_policy
         trading_policy.seed(db, release, run)
         return {'seeded': True}
     if action == 'policy':
         frozen_market(db, run)
-        from . import trading_policy
         return trading_policy.record(db, run=run, **params)
     if action == 'personal_decision':
         return personal_decision(db, run, release, **params)
@@ -469,7 +492,7 @@ def invoke(db, method, params):
     if action == 'research':
         return research(db, run, **params)
     if action == 'assess_feedback':
-        return assess_feedback(db, run, **params)
+        return assess_feedback(db, run, release, **params)
     return feedback(db, run, release, action, params)
 
 
@@ -614,7 +637,26 @@ def risk_support(db, run, event_ref, valid_until):
     return {'event_ref': event_ref, 'valid_until': valid_until}
 
 
-def assess_feedback(db, run, *, outcome, reason, evidence):
+def _require_current_entry_review(db, run, release, obligations):
+    from .trading_decisions import current_decision
+
+    scope, _ = policies(db, release)
+    subject = trading_policy.POSITION_SUBJECT
+    policy = scope.get(subject)
+    if not policy or (not policy.get('entry_reference') and policy.get('position_status') != 'ABSENT'):
+        return
+    current = current_decision(db, subject)
+    portfolio = trading_portfolio.current(db)
+    if (not current or not portfolio
+            or portfolio['payload']['decisions'].get(subject) != reference(current)
+            or personal_state(db, current, policy, confirmed_files(db), run)['status'] not in {'CURRENT', 'UNRESOLVED'}):
+        raise Conflict('reassess and adopt the current opening price or confirmed closure in the portfolio before choosing silence')
+    if any(item['status'] == 'OPEN' and item['subject'] == subject and item['trigger_ref'] == current['digest']
+           for item in obligations):
+        raise Conflict('the adopted position decision has outstanding material feedback')
+
+
+def assess_feedback(db, run, release, *, outcome, reason, evidence):
     from . import trading_delivery as delivery
     snapshot = material(db, run)
     if outcome not in ('SILENT', 'EVIDENCE_LIMITED', 'REPORT_REQUIRED'):
@@ -625,6 +667,7 @@ def assess_feedback(db, run, *, outcome, reason, evidence):
         status = delivery.context(db, destination=destination(db), at=run['known_at'])
         if status['daily_due']:
             raise Conflict('outstanding feedback cannot be closed by a silent observation')
+        _require_current_entry_review(db, run, release, status['obligations'])
     result = {'outcome': outcome, 'reason': plain(reason, 'actual feedback basis'), 'evidence': refs,
               'decided_at': run['known_at']}
     db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': result}, write=True)

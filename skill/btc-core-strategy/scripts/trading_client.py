@@ -57,6 +57,8 @@ def request(config, run_id, arguments, stdin):
     method = value['method']
     if not isinstance(method, str) or not method.startswith('trading.'):
         raise ValueError('the trading entry only accepts closed-loop operations')
+    if method == 'trading.set_entry_reference':
+        raise ValueError('confirmed opening-price updates use the explicit host data operation')
     params = value.get('params', {})
     if not isinstance(params, dict) or 'run_ref' in params or set(value) - {'method', 'params', 'operation_id'}:
         raise ValueError('supply only the method, its parameters and the stable write identity')

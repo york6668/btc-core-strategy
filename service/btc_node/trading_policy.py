@@ -1,7 +1,7 @@
 """Source-bound views of the confirmed policy, resolved by investment subject.
 
-Views neither change the authoritative local files nor confirm an execution.
-The one-time bridge exists for already recorded, source-verifiable policies.
+Views reflect confirmed local policy without changing files or confirming an
+execution. The existing short's opening-price reference is held by this projection.
 """
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from pathlib import Path
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .codec import Conflict, encode, fingerprint, identity, millis
+from .codec import Conflict, encode, fingerprint, identity, millis, stamp, utc
 from .entities import Entities
 from .fact_views import NAMES
 
 
 PREFIX = 'trading/policy/'
 SEED = 'trading.policy.bootstrap'
+POSITION_SUBJECT = 'existing-position'
+POSITION_OWNER = PREFIX + POSITION_SUBJECT
 KINDS = {'MONTHLY', 'OPPORTUNITY', 'POSITION'}
 FIELDS = {
     'MONTHLY': {'weights', 'budget', 'currency', 'calendar', 'purpose', 'constraints'},
@@ -24,6 +26,12 @@ FIELDS = {
     'POSITION': {'position', 'baseline', 'purpose', 'constraints'},
 }
 NUM = r'(?:[0-9]+(?:,[0-9]{3})*)(?:\.[0-9]+)?'
+OPENING_PRICE = re.compile(
+    r'(?:[-*]\s*)?(?:用户告知\s*)?[「“"]?\s*(?:空单\s*)?'
+    r'(?:开(?:仓|单)(?:参考)?价(?:格)?|开仓参考|opening price|entry price)\s*(?:为|是|[:：=])?\s*'
+    + NUM + r'(?:\s*[A-Z]+)?\s*[」”"]?', re.IGNORECASE,
+)
+PRICE_CACHE_SCOPE = re.compile(r'按已有\s*\w+\s*分析范围[，,]\s*以\s*[A-Z]+\s*缓存该价格条件')
 
 
 def _text(value, label):
@@ -168,7 +176,7 @@ def _basket_in(quote, fields):
     return True
 
 
-def _verify_fields(policy, refs):
+def _verify_fields(policy, refs, *, verify_price=True):
     source = '\n'.join(ref['quote'] for ref in refs)
     if policy['kind'] == 'MONTHLY' and not _basket_in(source, policy['inputs']):
         raise Conflict('basket budget and product weights need their actual confirmed wording')
@@ -176,12 +184,96 @@ def _verify_fields(policy, refs):
         amounts = {Decimal(policy[key]) for key in ('budget', 'minimum') if key in policy}
         if not amounts <= _number_tokens(source) or not _has_unit(source, policy['currency']):
             raise Conflict('independent contribution range needs its actual confirmed wording')
-    if policy['kind'] == 'POSITION':
+    if verify_price and policy['kind'] == 'POSITION':
         position = policy['inputs'].get('position') or {}
         entry = position.get('entry_reference')
         if entry is not None and (_number(entry.get('price'), 'opening price') not in _number_tokens(source)
                                   or not _has_unit(source, _text(entry.get('currency'), 'opening price currency'))):
             raise Conflict('opening price needs its own confirmed wording')
+
+
+def _local_source_ref(ref):
+    suffix = str(ref['line_start'])
+    if ref['line_end'] != ref['line_start']:
+        suffix += '-' + str(ref['line_end'])
+    return ref['file'] + '#L' + suffix
+
+
+def _price_fields(owner):
+    payload = owner['payload']
+    policy = payload.get('policy') or {}
+    position = policy.get('inputs', {}).get('position') or {}
+    entry = position.get('entry_reference')
+    if entry is None:
+        return None
+    price = _number(entry.get('price'), 'opening price')
+    source_ref = entry.get('source_ref')
+    if source_ref is None:
+        quotes = {_local_source_ref(ref) for ref in _clauses(payload['refs'])
+                  if OPENING_PRICE.fullmatch(_plain(ref['quote'])) and price in _number_tokens(ref['quote'])}
+        source_ref = next(iter(quotes)) if len(quotes) == 1 else owner['source_ref']
+    return {'price': _normalized(price), 'currency': _text(entry.get('currency'), 'opening price currency'),
+            'observed_at': stamp(_text(entry.get('observed_at'), 'opening price confirmation time')),
+            'source_ref': _text(source_ref, 'opening price confirmation source'),
+            'instrument': _text(entry.get('instrument', position.get('instrument')), 'opening price instrument'),
+            'product': entry.get('product', position.get('product'))}
+
+
+def _price_projection(fields):
+    basis = {**fields, 'direction': 'SHORT'}
+    return {**basis, 'revision': fingerprint(encode(basis))}
+
+
+def entry_reference(db):
+    """Read the confirmed opening price independently of its legacy files."""
+    owner = Entities(db).get('PROFILE', POSITION_OWNER)
+    entry = _price_fields(owner) if owner else None
+    return _price_projection(entry) if entry is not None else None
+
+
+def set_entry_reference(db, *, price, confirmed_at, confirmation_ref):
+    """Replace only the opening-price condition in the caller's writer transaction."""
+    price = _normalized(_number(price, 'opening price'))
+    confirmed = utc(_text(confirmed_at, 'opening price confirmation time'))
+    source = _text(confirmation_ref, 'opening price confirmation source')
+    now = utc()
+    if confirmed > now:
+        raise ValueError('opening price confirmation cannot be in the future')
+    objects = Entities(db)
+    owner = objects.get('PROFILE', POSITION_OWNER)
+    if not owner or owner['payload']['kind'] != 'POSITION' or not owner['payload'].get('policy'):
+        raise Conflict('the existing short policy needs to be established before entering its opening price')
+    previous = _price_fields(owner)
+    if previous:
+        observed = utc(previous['observed_at'])
+        if previous['source_ref'] == source:
+            if previous['price'] == price and observed == confirmed:
+                return _price_projection(previous)
+            raise Conflict('the opening price confirmation source was already used with other details')
+        if confirmed <= observed:
+            raise Conflict('the opening price confirmation must be newer than the stored confirmation')
+
+    payload = owner['payload']
+    policy = payload['policy']
+    inputs = policy['inputs']
+    position = inputs.get('position') or {}
+    scope = previous if previous is not None else position
+    entry = {'price': price, 'currency': _text(scope.get('currency', 'USDT'), 'opening price currency'),
+             'observed_at': stamp(confirmed),
+             'source_ref': source, 'instrument': _text(scope.get('instrument'), 'opening price instrument'),
+             'product': scope.get('product')}
+    updated_inputs = {**inputs, 'position': {**position, 'entry_reference': entry}}
+    updated = {**policy, 'inputs': updated_inputs,
+               'basis': fingerprint(encode({'kind': policy['kind'], 'inputs': updated_inputs}))}
+    objects.put({'kind': 'PROFILE', 'object_id': POSITION_OWNER, 'scope': owner['scope'],
+                 'product': owner['product'], 'active': owner['active'], 'review_at': owner['review_at'],
+                 'valid_until': owner['valid_until'], 'dependencies': owner['dependencies'],
+                 'payload': {**payload, 'policy': updated},
+                 'change_reason': 'record the user-confirmed opening price for the existing short',
+                 'source_ref': source, 'method_version': db.settings.get('release_id', 'confirmed-entry-reference'),
+                 'observed_at': now, 'known_at': now},
+                expected_version=owner['version'], trusted_projection=True)
+    return entry_reference(db)
 
 
 def _store(db, *, subject, kind, policy, refs, files, expected_version, run, active, ended_reason=None):
@@ -221,23 +313,46 @@ def record(db, *, subject, kind, fields, refs, expected_version, run, active=Tru
     if len(subject) > 240 or kind not in KINDS or type(active) is not bool or not isinstance(fields, dict):
         raise ValueError('invalid policy subject, purpose or scope status')
     ended_reason = _text(fields.get('reason'), 'why the confirmed scope ended') if not active else None
+    existing_short = subject == POSITION_SUBJECT and kind == 'POSITION'
+    owner = Entities(db).get('PROFILE', POSITION_OWNER) if existing_short else None
+    saved_entry = _price_fields(owner) if owner else None
+    if existing_short and active:
+        supplied = fields.get('position') or {}
+        if not isinstance(supplied, dict):
+            raise ValueError('invalid confirmed position state')
+        previous_status = (owner['payload'].get('policy') or {}).get('position_status') if owner else None
+        if previous_status in {'PRESENT', 'ABSENT'} and 'status' not in supplied:
+            raise Conflict('a policy update must retain or explicitly reassess the established position state')
+        position = {key: value for key, value in supplied.items() if key != 'entry_reference'}
+        if saved_entry is not None:
+            position['entry_reference'] = saved_entry
+        if position or 'position' in fields:
+            fields = {**fields, 'position': position}
     policy = _policy(kind, fields) if active else None
     files = _files(db)
+    if existing_short:
+        refs = _position_refs(refs)
     refs = _live_refs(refs, files)
     if policy:
-        _verify_fields(policy, refs)
+        _verify_fields(policy, refs, verify_price=not existing_short)
         if kind == 'POSITION' and policy['position_status'] != 'UNKNOWN':
-            quoted = '\n'.join(ref['quote'] for ref in refs)
             if policy['position_status'] == 'ABSENT':
                 state_words = r'已平仓|已清仓|未持有|不持有|无(?:实际)?(?:持仓|仓位|现仓|空单)|仓位已归零|无仓'
             else:
                 state_words = r'已开仓|仍持有|目前持有|当前持有|实际持有|在仓|尚未平仓'
-            if not re.search(state_words, quoted):
+            unconfirmed = r'若|如果|假设|假定|是否|未知|待确认|未确认|未核实|无法|不能确认|不证明|不确认|历史'
+            if not any(re.search(state_words, ref['quote']) and not re.search(unconfirmed, ref['quote'])
+                       for ref in _clauses(refs)):
                 raise Conflict('confirmed position state needs its own explicit source wording')
         position = fields.get('position') or {}
-        for source in (position, position.get('entry_reference') or {}, fields.get('baseline') or {}):
+        local_entry = {} if existing_short else position.get('entry_reference') or {}
+        for source in (position, local_entry, fields.get('baseline') or {}):
             if source.get('observed_at') and millis(source['observed_at']) > millis(run['known_at']):
                 raise ValueError('confirmed fact observation cannot postdate the source view')
+    elif saved_entry is not None:
+        previous = owner['payload']['policy']
+        position = previous['inputs']['position']
+        policy = _policy(kind, {**previous['inputs'], 'position': {**position, 'entry_reference': saved_entry}})
     result = _store(db, subject=subject, kind=kind, policy=policy, refs=refs, files=files,
                     expected_version=expected_version, run=run, active=active, ended_reason=ended_reason)
     _verify_unchanged(db, files, refs)
@@ -249,7 +364,24 @@ def _clauses(references):
             for part in re.split(r'[。；;\n]', ref['quote']) if part.strip()]
 
 
-def _legacy_views(db, release, files):
+def _position_refs(refs):
+    """Leave standalone legacy price wording to the stored price's audit."""
+    if not isinstance(refs, list):
+        return refs
+    result = []
+    for ref in refs:
+        if (not isinstance(ref, dict) or set(ref) != {'file', 'line_start', 'line_end', 'quote'}
+                or not isinstance(ref['quote'], str)):
+            result.append(ref)
+            continue
+        clauses = _clauses([ref])
+        nonprice = [part for part in clauses if not
+                    (OPENING_PRICE.fullmatch(_plain(part['quote'])) or PRICE_CACHE_SCOPE.fullmatch(_plain(part['quote'])))]
+        result.extend(nonprice if len(nonprice) < len(clauses) else [ref])
+    return result
+
+
+def _legacy_views(db, release, files, *, seed_entry=False):
     from .execution import load_methods
     load_methods(release)
     from v4.position_analysis import analysis_refs, economic_projection, latest, validate_spec
@@ -303,14 +435,17 @@ def _legacy_views(db, release, files):
         refs = [*source['source_refs'], *[ref for ref in clauses if '空单' in ref['quote']
                                          and any(term in ref['quote'] for term in ('补偿', '动态条件'))]]
         entry = source.get('entry_reference')
-        if entry is not None:
+        if entry is not None and seed_entry:
             try:
                 price_refs = _live_refs([entry['source_ref']], files)
             except ValueError:
                 short['entry_reference'] = None
             else:
+                short['entry_reference']['source_ref'] = _local_source_ref(price_refs[0])
                 refs = [*refs, *price_refs]
-        verify('existing-position', 'POSITION', {'position': short, 'purpose': plan['short_objective']}, refs)
+        else:
+            short['entry_reference'] = None
+        verify(POSITION_SUBJECT, 'POSITION', {'position': short, 'purpose': plan['short_objective']}, refs)
     return scopes, gaps
 
 
@@ -320,7 +455,7 @@ def seed(db, release, run):
         return
     files = _files(db)
     try:
-        scopes, gaps = _legacy_views(db, release, files)
+        scopes, gaps = _legacy_views(db, release, files, seed_entry=True)
     except (ValueError, OSError):
         scopes, gaps = {}, {'existing-policy': 'the previous confirmed policy requires source review'}
     objects = Entities(db)
@@ -353,7 +488,9 @@ def inputs(db, release):
         current.pop(subject, None)
         gaps.pop(subject, None)
         try:
-            _live_refs(view['refs'], files)
+            refs = _position_refs(view['refs']) if subject == POSITION_SUBJECT else view['refs']
+            if refs or subject != POSITION_SUBJECT or not view['refs']:
+                _live_refs(refs, files)
         except ValueError:
             gaps[subject] = 'the confirmed wording of this scope needs review'
         else:

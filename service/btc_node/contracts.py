@@ -119,7 +119,7 @@ STRINGS = {'type': 'array', 'items': TEXT}
 PERSONAL_DECISION_FIELDS = (
     {'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
      'facts': OBJECT, 'fact_refs': OBJECTS, 'result': OBJECT, 'evidence': OBJECTS,
-     'market_refs': STRINGS, 'notification': OBJECT},
+     'market_refs': STRINGS, 'entry_reference': TEXT, 'notification': OBJECT},
     ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence'],
 )
 TRADING_FIELDS = {
@@ -164,6 +164,10 @@ TRADING_FIELDS = {
 }
 PARAMETERS.update({'trading.' + action: obj({'run_ref': TEXT, **fields}, ['run_ref', *required])
                    for action, (fields, required) in TRADING_FIELDS.items()})
+PARAMETERS['trading.set_entry_reference'] = obj(
+    {'price': TEXT, 'confirmed_at': TIME, 'confirmation_ref': TEXT},
+    ['price', 'confirmed_at', 'confirmation_ref'],
+)
 
 
 def validate_object_read(method, params):

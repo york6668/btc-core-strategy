@@ -17,6 +17,7 @@ MARKET_PREFIX = 'trading/market/'
 PERSONAL_PREFIX = 'trading/personal/'
 REVIEW_PREFIX = 'trading/review/'
 HISTORICAL_PREFIX = MARKET_PREFIX + 'archived/'
+PRICE_BASELINE_DIRECTIONAL = 'PRICE_BASELINE_DIRECTIONAL'
 CHOICES = {
     'MONTHLY': {'CONTINUE', 'SKIP', 'UNRESOLVED'},
     'OPPORTUNITY': {'PARTICIPATE', 'WAIT', 'AVOID', 'UNRESOLVED'},
@@ -259,19 +260,32 @@ def market_inputs(record):
             **{'assessment/' + key: val for key, val in result['assessments'].items()}}
 
 
+def _directional_entry(policy):
+    if policy.get('position_status') == 'ABSENT':
+        return None
+    return policy.get('entry_reference')
+
+
 def _position(judgement, applied_policy, policy, result):
     held = policy.get('position_status')
     choice = judgement['decision']
     if choice == 'NO_POSITION' and held != 'ABSENT':
         raise ValueError('absence of a position needs confirmed facts')
-    if held == 'UNKNOWN' and choice != 'UNRESOLVED':
-        raise ValueError('an unknown position has no unconditional holding decision')
     if held == 'ABSENT' and choice != 'NO_POSITION':
         raise ValueError('an absent position cannot supply current holding or protection')
     if held is not None:
         applied_policy['position_status'] = held
 
     actions = result.get('conditional_actions')
+    entry = _directional_entry(policy)
+    if entry is not None:
+        if choice not in {'KEEP', 'REDUCE', 'EXIT', 'UNRESOLVED'} or actions is not None:
+            raise ValueError('an entry price basis needs one scoped directional decision')
+        applied_policy.update(analysis_mode=PRICE_BASELINE_DIRECTIONAL, entry_reference=entry)
+        return
+
+    if held == 'UNKNOWN' and choice != 'UNRESOLVED':
+        raise ValueError('an unknown position has no unconditional holding decision')
     if actions is None:
         return
     if held != 'UNKNOWN' or not isinstance(actions, dict) or set(actions) != {'PRESENT', 'ABSENT'}:
@@ -532,7 +546,13 @@ def decision_state(database, record, *, at, policy=None):
     if 'original' in payload:
         return {'status': 'HISTORICAL', 'conditions': checks}
     expired = millis(result['valid_until']) <= as_of
-    policy_changed = policy is not None and payload.get('policy', {}).get('basis') != policy.get('basis')
+    applied_policy = payload.get('policy', {})
+    policy_changed = policy is not None and applied_policy.get('basis') != policy.get('basis')
+    if policy is not None and policy.get('kind') == 'POSITION':
+        entry = _directional_entry(policy)
+        expected_mode = PRICE_BASELINE_DIRECTIONAL if entry is not None else None
+        policy_changed |= (applied_policy.get('entry_reference') != entry
+                           or applied_policy.get('analysis_mode') != expected_mode)
     if expired:
         status = 'EXPIRED'
     elif policy_changed or requires_revision:

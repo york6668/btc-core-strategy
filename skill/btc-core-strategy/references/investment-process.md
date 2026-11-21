@@ -3,7 +3,7 @@
 当前新研究和报告先读 [交易决策主线](decision-design.md)。周期论证与定价、相对机会、联合配置/纪律和时点报告由该主线及正常入口承接；本文旧模块和字段只保留仍有效的来源、接口与历史兼容约束，不作为新报告的固定生成架构。
 
 
-本方法承担规划、选择、实施可行性和反馈的责任，不要求机构委员会、优化器、自动交易或固定模块清单。原 DecisionSnapshot/current 仍是唯一正式结论 Owner；三份本地确认文件仍是个人事实 Owner。参考 CFA [投资管理流程](https://www.cfainstitute.org/sites/default/files/-/media/documents/article/refresher-readings-free/rr-2018-l2v6r47.pdf)、[资产配置](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/overview-asset-allocation)。
+本方法承担规划、选择、实施可行性和反馈的责任。现行组合决定由 `trading.portfolio_decision` 登记。原空单的当前开单价沿交易主任务的用户确认入口写入 Docker，再由 `trading.personal` 提供。其他个人事实沿其各自的确认来源。原 `DecisionSnapshot/current` 和三份本地确认文件用于其历史决定和来源范围。参考 CFA [投资管理流程](https://www.cfainstitute.org/sites/default/files/-/media/documents/article/refresher-readings-free/rr-2018-l2v6r47.pdf)、[资产配置](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/overview-asset-allocation)。
 
 ## 按月度组合作个人决策
 
@@ -11,11 +11,13 @@
 
 每组保留实际比较和事前窗口。用相同的可比价格起点和后续区间对照各组按原预算定投的方案，有多个可比组时再按等额投入比较修复、回撤和机会成本。把择组、金额及当时理由是否被实际进展支持分别说明。仅由投入更少减少的损失归为新增敞口变化。缺成交及成本时只核方案毛价格影响。实际进展后用原评价入口记录来源及结果，下一次个人评估读取原窗口和其反馈。
 
-`short_position` 包含 `status`、`instrument`、`product`、`observed_at`、`source_refs` 和可空的 `entry_reference`。状态 `PRESENT/ABSENT` 来自用户明确确认及其时点，`UNKNOWN` 保留实际未确认。产品未知时填 null。缓存价格由用户告知，字段为 `price currency observed_at source_ref`，只在原来源与标的范围内使用。单独收到报价时保留仓位状态及其来源，仅替换该价格缓存；收到明确仓位变化时更新对应状态和时点，缓存的适用对象若已变化则在新版本清空，旧值留原版本。按原政策版本维护这两类输入。
+原 BTCUSDT 空单的当前开单价由用户在任务中明确更新，以 Docker 记录的价格、确认时间和来源为准。`trading.personal` 提供当前开单价及版本。`PRESENT/ABSENT` 与时点沿仓位自身的确认来源，`UNKNOWN` 保留未确认的实际状态。历史 `short_position` 的仓位与价格字段按原版本读取。 [现行任务入口](../../../tasks/hourly.md#用户明确更新开单价)
 
-有仓比较月度净补偿及反抽成本，无仓按无空头方案，状态未确认只给条件分支。没有缓存价可完成组级方案及空单前瞻分析。依据和内部比较留在投资决定，报告承接实际采用的组级计划和改变条件。
+按同一场景比较原单未来的月度净补偿及反抽成本。有开单价基准时，对原空单给出维持、减持或退出，确认已平时按无空头方案。仅确认的覆盖计入实际保护。缺少开单价仍可完成组级方案和可独立判断的空单前瞻分析。报告承接正式采用的动作及改判条件。
 
 ## 按开仓价基线的非执行方向分析
+
+以下字段及流程用于历史 `investment-policy` 和 `DecisionSnapshot` 的兼容读取。现行组合通过 `trading.personal` 读取当前价格版本，用 `trading.portfolio_decision` 采用价格基准下的方向决定。 [交易决策主线](decision-design.md#再完成个人决定)
 
 原事实/纠正 Owner 明确采用按价格分析、排除持仓数量时，在原 `investment-policy` 输入中记录可选 `position_analysis`，schema 为 `PRICE_BASELINE_DIRECTIONAL_V1`。它不是新账本、预算、账户确认或交易授权，不解析本方法 Markdown 作为规则。旧政策、原决定、历史数量和已过期限均保留原字节。
 

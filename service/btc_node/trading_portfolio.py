@@ -32,10 +32,12 @@ def _selection(record):
     if record is None:
         return None
     payload = record['payload']
+    policy = payload['policy']
     result = payload['result']
     actions = {state: branch['decision'] for state, branch in result.get('conditional_actions', {}).items()}
     zone = result.get('value_zone', {})
-    return (payload['policy']['basis'], result['decision'], result.get('amount'),
+    entry = policy.get('entry_reference') if policy.get('position_status') == 'PRESENT' else None
+    return (policy['basis'], result['decision'], result.get('amount'), entry['price'] if entry else None,
             actions, tuple(zone.get(key) for key in ('lower', 'upper', 'quote_unit')),
             {(ref['file'], ref['quote']) for ref in payload['fact_refs']})
 
