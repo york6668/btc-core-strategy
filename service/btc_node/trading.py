@@ -5,16 +5,16 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from . import deep_gate, fact_views, trading_archive
+from . import deep_gate, fact_views, trading_archive, trading_portfolio
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp
 from .entities import Entities
 
 MARKET = 'allocation'
 SERVICE_SOURCES = ('api.py', 'contracts.py', 'execution.py', 'mcp.py', 'trading.py', 'trading_decisions.py',
-                   'trading_delivery.py', 'trading_policy.py', 'trading_archive.py')
+                   'trading_delivery.py', 'trading_policy.py', 'trading_archive.py', 'trading_portfolio.py')
 READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.source',
          'trading.research_archive', 'trading.research_result'}
-WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision',
+WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision', 'trading.portfolio_decision',
           'trading.review', 'trading.research', 'trading.report', 'trading.begin_delivery',
           'trading.record_delivery', 'trading.assess_feedback', 'trading.inherit_feedback',
           'trading.policy', 'trading.seed_policy'}
@@ -222,10 +222,16 @@ def personal_context(db, run, release):
     files = confirmed_files(db)
     records = {subject: decisions.current_decision(db, subject) for subject in scope}
     review = {subject: personal_state(db, record, scope[subject], files, run) for subject, record in records.items()}
+    portfolio = trading_portfolio.current(db)
+    for subject, changed in trading_portfolio.changed_inputs(db, portfolio, records).items():
+        state = review[subject]
+        if state['status'] in {'CURRENT', 'UNRESOLVED'}:
+            state['status'] = 'NEEDS_REVIEW'
+        state['changed_portfolio_inputs'] = changed
     return {'market': reference(market), 'facts': files,
             'market_inputs': decisions.market_inputs(market),
             'policy_status': status, 'policies': scope,
-            'current': records,
+            'current': records, 'portfolio': portfolio,
             'review': review,
             'review_targets': [{'subject': subject, **condition}
                                for subject, state in review.items() for condition in state['conditions']],
@@ -259,15 +265,18 @@ def personal_state(db, record, policy, files, run):
     return state
 
 
-def personal_decision(db, run, release, *, subject, expected_version, policy_basis, facts, fact_refs,
-                      market_refs, result, evidence, notification=None):
-    from . import trading_decisions as decisions
+def personal_decision(db, run, release, **params):
     market = frozen_market(db, run)
     scope, _ = policies(db, release)
+    return adopt_personal(db, run, market, scope, confirmed_files(db), **params)
+
+
+def adopt_personal(db, run, market, scope, files, *, subject, expected_version, policy_basis, facts, fact_refs,
+                   market_refs, result, evidence, notification=None):
+    from . import trading_decisions as decisions
     policy = scope.get(subject)
     if not policy or policy['basis'] != policy_basis:
         raise Conflict('the applicable policy for this decision changed or is unconfirmed')
-    files = confirmed_files(db)
     if not isinstance(facts, dict) or any(files.get(k, {}).get('digest') != v for k, v in facts.items()):
         raise Conflict('a cited personal fact source changed; re-read only the affected inputs')
     if (not isinstance(fact_refs, list)
@@ -289,6 +298,47 @@ def personal_decision(db, run, release, *, subject, expected_version, policy_bas
     if notification is not None:
         register_notification(db, record, notification)
     return record
+
+
+def portfolio_decision(db, run, release, *, expected_version, market, primary, alternatives, interactions, decisions, reuse):
+    from .trading_decisions import current_decision
+
+    frozen = frozen_market(db, run)
+    if reference(frozen) != market:
+        raise Conflict('the portfolio must use the exact frozen market that was assessed')
+    scope, _ = policies(db, release)
+    files = confirmed_files(db)
+    previous = trading_portfolio.current(db)
+    if expected_version != (previous['version'] if previous else 0):
+        raise Conflict('the portfolio decision changed before submission')
+    assessed = trading_portfolio.assessment(frozen, scope, primary, alternatives, interactions)
+    submitted = {proposal['subject']: proposal for proposal in decisions}
+    if (not scope or len(submitted) != len(decisions) or submitted.keys() & reuse.keys()
+            or submitted.keys() | reuse.keys() != scope.keys()):
+        raise ValueError('supply each applicable portfolio decision once, as a new choice or an exact reuse')
+
+    former = previous['payload']['decisions'] if previous else {}
+    records = {}
+    for subject, ref in reuse.items():
+        record = current_decision(db, subject)
+        if not record or reference(record) != ref or former.get(subject) != ref:
+            raise Conflict('reuse must refer to a current decision previously assessed in the portfolio')
+        if personal_state(db, record, scope[subject], files, run)['status'] not in {'CURRENT', 'UNRESOLVED'}:
+            raise Conflict('reassess the affected decision before reusing it: ' + subject)
+        records[subject] = record
+    for subject, proposal in submitted.items():
+        records[subject] = adopt_personal(db, run, frozen, scope, files, **proposal)
+        if scope[subject].get('position_status') == 'UNKNOWN':
+            if not records[subject]['payload']['result'].get('conditional_actions'):
+                raise ValueError('record explicit in-position and absent conclusions for the unknown position')
+
+    changed = trading_portfolio.changed_inputs(db, previous, records, interactions=interactions)
+    affected = reuse.keys() & changed.keys()
+    if affected:
+        detail = ', '.join(f'{subject} ({", ".join(changed[subject])})' for subject in sorted(affected))
+        raise Conflict('reassess decisions whose linked portfolio inputs changed: ' + detail)
+    return trading_portfolio.save(db, market=frozen, records=records, assessed=assessed,
+                                  run=run, expected_version=expected_version)
 
 
 def research_records(db, scope):
@@ -408,6 +458,8 @@ def invoke(db, method, params):
         return trading_policy.record(db, run=run, **params)
     if action == 'personal_decision':
         return personal_decision(db, run, release, **params)
+    if action == 'portfolio_decision':
+        return portfolio_decision(db, run, release, **params)
     if action == 'market':
         return market_ready(db, run, **params)
     if action == 'evidence':
@@ -430,18 +482,25 @@ def register_notification(db, record, notification):
                             trigger_ref=record['digest'], **notification)
 
 
-def validate_report_decisions(db, run, release, refs, *, complete=False):
+def validate_report_decisions(db, run, release, refs, *, complete=False, require_portfolio=False):
     market = frozen_market(db, run)
     applicable, status = policies(db, release)
     if complete and status['state'] != 'CURRENT':
         raise Conflict('recheck the confirmed policies before issuing a complete personal report')
-    subjects = set()
+    subjects = {}
+    portfolio = None
+    objects = Entities(db)
     files = confirmed_files(db)
     for ref in refs:
-        record = Entities(db).get(ref['kind'], ref['object_id'])
+        record = objects.get(ref['kind'], ref['object_id'])
         if not record or reference(record) != ref:
             raise Conflict('a decision this report actually cites changed')
         if ref == reference(market):
+            continue
+        if ref['object_id'] == trading_portfolio.OBJECT_ID and ref['kind'] == 'PLAN':
+            if portfolio is not None:
+                raise ValueError('a report uses one joint portfolio decision')
+            portfolio = record['payload']
             continue
         subject = (record.get('payload') or {}).get('subject')
         policy = applicable.get(subject)
@@ -451,11 +510,24 @@ def validate_report_decisions(db, run, release, refs, *, complete=False):
         state = personal_state(db, record, policy, files, run)
         if state['status'] not in {'CURRENT', 'UNRESOLVED'}:
             raise Conflict('reassess this decision against its actual evidence before reporting it')
-        subjects.add(subject)
+        subjects[subject] = ref
     if reference(market) not in refs:
         raise ValueError('report needs the independent market judgement it presents')
-    if complete and set(applicable) != subjects:
+    if complete and applicable.keys() != subjects.keys():
         raise Conflict('complete personal feedback needs each currently applicable decision')
+    if subjects and require_portfolio and portfolio is None:
+        raise Conflict('personal feedback requires its adopted joint portfolio decision')
+    if portfolio is None:
+        return
+    if not subjects or portfolio['market'] != reference(market) or any(
+            portfolio['decisions'].get(subject) != ref for subject, ref in subjects.items()):
+        raise Conflict('report choices must match their joint portfolio and frozen market')
+    for source in trading_portfolio.linked_sources(portfolio['interactions'], subjects.keys()):
+        ref = portfolio['decisions'][source]
+        record = objects.get(ref['kind'], ref['object_id'])
+        if (source not in applicable or not record or reference(record) != ref
+                or personal_state(db, record, applicable[source], files, run)['status'] not in {'CURRENT', 'UNRESOLVED'}):
+            raise Conflict('reassess the linked portfolio input before reporting: ' + source)
 
 
 def feedback(db, run, release, action, params):
@@ -501,7 +573,7 @@ def feedback(db, run, release, action, params):
             if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage')):
                 raise Conflict('independent public risk feedback has only its own public event obligation')
         else:
-            validate_report_decisions(db, run, release, refs, complete=complete)
+            validate_report_decisions(db, run, release, refs, complete=complete, require_portfolio=True)
         context = delivery.context(db, destination=target, at=run['known_at'])
         obligations = set(params.pop('obligation_ids', []))
         if purpose == 'DAILY':

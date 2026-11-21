@@ -50,6 +50,7 @@
     "service/btc_node/trading_decisions.py",
     "service/btc_node/trading_delivery.py",
     "service/btc_node/trading_policy.py",
+    "service/btc_node/trading_portfolio.py",
     "service/compose.yaml",
     "service/host_python.py",
     "service/node_capacity.py",

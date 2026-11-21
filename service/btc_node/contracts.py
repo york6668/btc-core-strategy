@@ -116,6 +116,12 @@ PARAMETERS = {
 OBJECT = {'type': 'object'}
 OBJECTS = {'type': 'array', 'items': OBJECT}
 STRINGS = {'type': 'array', 'items': TEXT}
+PERSONAL_DECISION_FIELDS = (
+    {'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
+     'facts': OBJECT, 'fact_refs': OBJECTS, 'result': OBJECT, 'evidence': OBJECTS,
+     'market_refs': STRINGS, 'notification': OBJECT},
+    ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence'],
+)
 TRADING_FIELDS = {
     'open': ({'market': OBJECT}, ['market']),
     'public': ({}, []),
@@ -135,10 +141,14 @@ TRADING_FIELDS = {
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
     'market': ({'evidence': OBJECTS, 'result': OBJECT, 'expected_version': VERSION,
                 'market': OBJECT, 'reason': TEXT, 'notification': OBJECT}, ['evidence']),
-    'personal_decision': ({'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
-                           'facts': OBJECT, 'fact_refs': OBJECTS, 'result': OBJECT, 'evidence': OBJECTS,
-                           'market_refs': STRINGS, 'notification': OBJECT},
-                          ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence']),
+    'personal_decision': PERSONAL_DECISION_FIELDS,
+    'portfolio_decision': (
+        {'expected_version': VERSION, 'market': OBJECT, 'primary': TEXT, 'alternatives': STRINGS,
+         'interactions': {'type': 'array', 'items': obj(
+             {'subject': TEXT, 'depends_on': TEXT, 'reason': TEXT}, ['subject', 'depends_on', 'reason'])},
+         'decisions': {'type': 'array', 'items': obj(*PERSONAL_DECISION_FIELDS)}, 'reuse': OBJECT},
+        ['expected_version', 'market', 'primary', 'alternatives', 'interactions', 'decisions', 'reuse'],
+    ),
     'review': ({'target': OBJECT, 'condition_id': TEXT, 'outcome': TEXT, 'explanation': TEXT, 'evidence': OBJECTS,
                 'impact': TEXT, 'next_review_at': TIME}, ['target', 'condition_id', 'outcome', 'explanation', 'evidence']),
     'research': ({'scope': SCOPE, 'subject': TEXT, 'question': TEXT, 'evidence': OBJECTS,

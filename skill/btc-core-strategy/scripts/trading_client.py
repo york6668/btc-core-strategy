@@ -83,8 +83,8 @@ def request(config, run_id, arguments, stdin):
         return call('trading.public', {}) if prepared['ok'] else prepared
 
     public_risk = method == 'trading.report' and params.get('purpose') == 'RISK' and params.get('decisions') == []
-    if method in {'trading.personal', 'trading.personal_decision', 'trading.policy', 'trading.seed_policy',
-                  'trading.report', 'trading.begin_delivery'} and not public_risk:
+    if method in {'trading.personal', 'trading.personal_decision', 'trading.portfolio_decision', 'trading.policy',
+                  'trading.seed_policy', 'trading.report', 'trading.begin_delivery'} and not public_risk:
         binding = call('trading.personal_ready', {})
         if not binding['ok'] and method != 'trading.begin_delivery':
             return binding

@@ -259,6 +259,40 @@ def market_inputs(record):
             **{'assessment/' + key: val for key, val in result['assessments'].items()}}
 
 
+def _position(judgement, applied_policy, policy, result):
+    held = policy.get('position_status')
+    choice = judgement['decision']
+    if choice == 'NO_POSITION' and held != 'ABSENT':
+        raise ValueError('absence of a position needs confirmed facts')
+    if held == 'UNKNOWN' and choice != 'UNRESOLVED':
+        raise ValueError('an unknown position has no unconditional holding decision')
+    if held == 'ABSENT' and choice != 'NO_POSITION':
+        raise ValueError('an absent position cannot supply current holding or protection')
+    if held is not None:
+        applied_policy['position_status'] = held
+
+    actions = result.get('conditional_actions')
+    if actions is None:
+        return
+    if held != 'UNKNOWN' or not isinstance(actions, dict) or set(actions) != {'PRESENT', 'ABSENT'}:
+        raise ValueError('an unknown position needs distinct in-position and absent conclusions')
+    branches = {}
+    for state, choices in (('PRESENT', {'KEEP', 'REDUCE', 'EXIT', 'UNRESOLVED'}),
+                           ('ABSENT', {'NO_POSITION'})):
+        action = actions[state]
+        if (not isinstance(action, dict) or not isinstance(action.get('decision'), str)
+                or action['decision'] not in choices):
+            raise ValueError('conditional action does not fit the stated position premise')
+        decision = action['decision']
+        branch = {'decision': decision, 'reason': _text(action.get('reason'), 'conditional action basis')}
+        if decision == 'UNRESOLVED':
+            branch['gap'] = _text(action.get('gap'), 'missing evidence that can reverse the in-position action')
+        if set(action) != set(branch):
+            raise ValueError('conditional action must use decision, reason and an applicable gap')
+        branches[state] = branch
+    judgement['conditional_actions'] = branches
+
+
 def adopt_personal(database, *, subject, expected_version, market, policy, result, evidence, run,
                    fact_refs=(), fact_history=None, market_refs=('conclusion',)):
     objects = Entities(database)
@@ -299,19 +333,15 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         else:
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':
-        held = policy.get('position_status')
-        if choice == 'NO_POSITION' and held != 'ABSENT':
-            raise ValueError('absence of a position needs confirmed facts')
-        if held == 'UNKNOWN' and choice != 'UNRESOLVED':
-            raise ValueError('an unknown position has no unconditional holding decision')
-        if held == 'ABSENT' and choice != 'NO_POSITION':
-            raise ValueError('an absent position cannot supply current holding or protection')
+        _position(judgement, applied_policy, policy, result)
+    in_position = judgement.get('conditional_actions', {}).get('PRESENT')
+    evidence_required = choice != 'UNRESOLVED' or (in_position is not None and in_position['decision'] != 'UNRESOLVED')
     return _save(objects, kind='PLAN', object_id=_object_id(PERSONAL_PREFIX, subject), scope='PERSONAL',
                  payload={'subject': subject, 'market': binding(public), 'policy': applied_policy,
                           'market_inputs': {field: inputs[field] for field in market_refs},
                           'fact_refs': list(fact_refs), 'fact_history': fact_history or {}, 'result': judgement},
                  evidence=[{'type': 'BLOB', 'digest': public['digest'], 'relation': 'FROZEN_MARKET_BASIS'},
-                           *_evidence(evidence, required=choice != 'UNRESOLVED')], run=run,
+                           *_evidence(evidence, required=evidence_required)], run=run,
                  expected_version=expected_version, reason=judgement['reason'])
 
 
