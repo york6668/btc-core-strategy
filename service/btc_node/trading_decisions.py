@@ -243,15 +243,19 @@ def _opportunity(judgement, policy, result, budget):
     zone = result.get('value_zone')
     if zone is None and choice != 'PARTICIPATE':
         return
+    judgement['value_zone'] = _value_zone(zone)
+
+
+def _value_zone(zone):
     if not isinstance(zone, dict):
-        raise ValueError('participation requires an established value zone')
+        raise ValueError('an established value zone needs its bounds, quote unit and basis')
     low = _decimal(zone.get('lower'), 'value zone lower bound')
     high = _decimal(zone.get('upper'), 'value zone upper bound')
     if not 0 < low < high:
         raise ValueError('established value zone needs ordered positive bounds')
-    judgement['value_zone'] = {'lower': _amount_text(low), 'upper': _amount_text(high),
-                               'quote_unit': _text(zone.get('quote_unit'), 'value zone quote unit'),
-                               'basis': _text(zone.get('basis'), 'value zone evidence basis')}
+    return {'lower': _amount_text(low), 'upper': _amount_text(high),
+            'quote_unit': _text(zone.get('quote_unit'), 'value zone quote unit'),
+            'basis': _text(zone.get('basis'), 'value zone evidence basis')}
 
 
 def market_inputs(record):
@@ -348,6 +352,11 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':
         _position(judgement, applied_policy, policy, result)
+        if result.get('value_zone') is not None:
+            held_action = judgement.get('conditional_actions', {}).get('PRESENT', judgement)
+            if held_action['decision'] != 'REDUCE':
+                raise ValueError('a short cover zone applies to a partial reduction of an existing position')
+            judgement['value_zone'] = _value_zone(result['value_zone'])
     in_position = judgement.get('conditional_actions', {}).get('PRESENT')
     evidence_required = choice != 'UNRESOLVED' or (in_position is not None and in_position['decision'] != 'UNRESOLVED')
     return _save(objects, kind='PLAN', object_id=_object_id(PERSONAL_PREFIX, subject), scope='PERSONAL',

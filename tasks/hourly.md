@@ -40,11 +40,15 @@
 
    原空单的开单价与来源从 `policies[subject].entry_reference` 读取。价格基准适用时，新决定的顶层 `entry_reference` 传该对象的 `revision` 字符串。对原单选择 KEEP、REDUCE 或 EXIT 中的一项，研判范围为 PRICE_BASELINE_DIRECTIONAL，仓位事实可以为 UNKNOWN。真实可能改变方向的市场证据缺口用 UNRESOLVED 并说明 `gap`。确认已平时给出 NO_POSITION，提交时省略顶层 `entry_reference`。当前开单价缺失且仓位未知时，沿有依据的条件判断，在 `result.conditional_actions` 以 PRESENT、ABSENT 记录各自的 `{decision,reason}`。在仓分支确实未决时注明其 `gap`。后续改判条件写入 `conditions`。
 
+   对减持原空单的结论，比较现价先回补和等待的净得失。在 `result.reason` 写明是否在现价先减，或等哪个价带再减。可确定两端时，把本轮回补价带写入 `result.value_zone {lower,upper,quote_unit,basis}`，说明上下沿的经济依据和合约报价口径。仅在仓分支减持时，该价带只适用于 PRESENT。只能支持参考价时省略价带，写明时点、参考价和哪一侧边界缺什么依据。余仓改判另列入 `conditions`。方向相同时，仍核对价带或现价与等待之间的取舍是否发生实质变化，并按实际影响反馈。
+
 ## 报告、投递和下一轮
 
 读 `trading.feedback` 获取最后实际展示、尚未履行义务和原在途尝试。先完成价格变化或已确认平仓所影响决定的复评及采用，再核对实质取舍或预定反馈是否改变。实质变化按现有 UPDATE 路径处理，普通重复信息保持静默。当前合约决定已有实质反馈义务时，若原尝试在途，沿该尝试核收。用 `trading.assess_feedback {outcome,reason,evidence}` 记录本轮实际结论，证据或交付受限用 EVIDENCE_LIMITED。已核实的显著风险可在受影响的研究未采纳时先作有界反馈。
 
 个人报告的 `decisions` 引用冻结的市场、已采纳的组合 `PLAN` 和实际呈现的成员决定。完整日报引用组合的全部适用成员。按组合决定交代每组金额、理由和风险，再交付合约本轮动作、适用范围、共同下行与修复时的净作用及改判依据。开单价基准下交付已采用的单一方向，实际仓位和保护覆盖按各自的确认范围表达。逐项对照终稿与原决定。用 `trading.report {purpose,body,decisions,reason,obligation_ids}` 提交同一篇 Markdown，服务计算正文摘要并冻结。非日报提供实际原 `event_ref`。公开重大风险缺完整判断时可引用确切公共事件并提交 `purpose=RISK`、空 decisions 和有据的 valid_until，明确已核范围。历史未送达通过 `trading.inherit_feedback` 查实际义务，只承接仍有意义的项。更正带 `supersedes {report_id,reason}` 并显式覆盖原义务。目标不可用时保留待反馈事项，照常形成和保存独立结论。
+
+日报含原空单减持建议时，按[报告表达](../skill/btc-core-strategy/references/mobile-report.md)在开头一句给本轮回补价位和动作，下一句交代余仓复评条件。若原决定只有方向和盈亏测算，回到本轮空单研判补齐价格判断。
 
 投递沿原已授权目的地和实际可用原生入口。先核目标真实游标，再用 `trading.begin_delivery {report_id,anchor_ref}`。仅首次明确返回 ready_to_send=true 时，使用返回的原目的地及确切 request_body 发起实际调用。按[正式服务的原生投递回执接口](../service/README.md#原生投递回执)登记工具受理、绑定实际原请求并核对其完成正文。投递回执和源稿保留原身份。效果无法确认时沿原尝试保留 UNKNOWN；明确拒绝时只停止对应发送，沿原证据保留义务。失败及未知范围、回读和更正按[当前交付方法](../skill/btc-core-strategy/references/market-reporting.md#当前交付)处理。
 
