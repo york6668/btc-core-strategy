@@ -12,6 +12,59 @@ def current(database):
     return Entities(database).get('PLAN', OBJECT_ID)
 
 
+def _choice(record):
+    payload = record['payload']
+    result = payload['result']
+    choice = {key: result[key] for key in ('decision', 'amount', 'month') if key in result}
+    if 'amount' in choice and 'currency' in payload['policy']:
+        choice['currency'] = payload['policy']['currency']
+    if 'conditional_actions' in result:
+        choice['conditional_actions'] = {state: branch['decision']
+                                         for state, branch in result['conditional_actions'].items()}
+    if 'value_zone' in result:
+        choice['value_zone'] = {key: result['value_zone'][key] for key in ('lower', 'upper', 'quote_unit')}
+    return choice
+
+
+def compare_members(database, prior_refs, records, reuse, reviews):
+    """Bind each author's economic comparison to the actual previous and adopted choices."""
+    if not isinstance(reviews, dict) or not reviews.keys() <= records.keys():
+        raise ValueError('member reviews must refer to applicable adopted decisions')
+    objects = Entities(database)
+    compared = {}
+    for subject, current_record in records.items():
+        previous = prior_refs.get(subject)
+        prior_choice = None
+        if previous:
+            prior = current_record if decisions.binding(current_record) == previous else objects.get(
+                previous['kind'], previous['object_id'], version=previous['version'])
+            if prior and decisions.binding(prior) == previous:
+                prior_choice = _choice(prior)
+        current_choice = _choice(current_record)
+        row = {'previous': previous, 'previous_choice': prior_choice, 'current_choice': current_choice,
+               'adoption': 'REUSED' if subject in reuse else 'ASSESSED'}
+        if subject in reviews:
+            review = reviews[subject]
+            if not isinstance(review, dict) or set(review) != {'relation', 'reason'}:
+                raise ValueError('a member review needs its relation and decisive reason')
+            relation, reason = review['relation'], review['reason']
+            if (relation not in ('CONTINUE', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED')
+                    or not isinstance(reason, str) or not reason.strip()):
+                raise ValueError('invalid relation or empty reasoning for a member review')
+            if prior_choice is None and relation in ('CONTINUE', 'REPRICE', 'REVISE'):
+                raise ValueError('a continuing or revised arrangement requires its previous decision')
+            if subject in reuse and relation not in ('CONTINUE', 'UNRESOLVED'):
+                raise ValueError('a new or revised arrangement requires a newly assessed decision')
+            if relation == 'CONTINUE' and prior_choice != current_choice:
+                raise ValueError('changed action, amount, month or established price terms need a revised assessment')
+            if relation == 'REPRICE' and any(prior_choice.get(k) != current_choice.get(k)
+                                             for k in ('decision', 'amount', 'currency', 'month', 'conditional_actions')):
+                raise ValueError('repricing the same arrangement must preserve its action and size')
+            row.update(relation=relation, reason=reason.strip())
+        compared[subject] = row
+    return compared
+
+
 def assessment(market, scopes, primary, alternatives, interactions):
     if not primary.strip() or len(alternatives) != len(market['payload']['result']['alternatives']):
         raise ValueError('assess the primary scenario and each frozen alternative')

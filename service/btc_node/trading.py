@@ -323,24 +323,34 @@ def adopt_personal(db, run, market, scope, files, *, subject, expected_version, 
     return record
 
 
-def portfolio_decision(db, run, release, *, expected_version, market, primary, alternatives, interactions, decisions, reuse):
+def portfolio_decision(db, run, release, *, expected_version, market, primary, alternatives, interactions,
+                       decisions, reuse, member_reviews=None):
     from .trading_decisions import current_decision
 
     frozen = frozen_market(db, run)
     if reference(frozen) != market:
         raise Conflict('the portfolio must use the exact frozen market that was assessed')
-    scope, _ = policies(db, release)
+    scope, policy_status = policies(db, release)
     files = confirmed_files(db)
     previous = trading_portfolio.current(db)
     if expected_version != (previous['version'] if previous else 0):
         raise Conflict('the portfolio decision changed before submission')
     assessed = trading_portfolio.assessment(frozen, scope, primary, alternatives, interactions)
     submitted = {proposal['subject']: proposal for proposal in decisions}
-    if (not scope or len(submitted) != len(decisions) or submitted.keys() & reuse.keys()
+    if (len(submitted) != len(decisions) or submitted.keys() & reuse.keys()
             or submitted.keys() | reuse.keys() != scope.keys()):
         raise ValueError('supply each applicable portfolio decision once, as a new choice or an exact reuse')
 
-    former = previous['payload']['decisions'] if previous else {}
+    previous_payload = previous['payload'] if previous else {}
+    former = previous_payload.get('decisions', {})
+    prior_refs = {**previous_payload.get('unavailable_members', {}), **former}
+    ended = set(policy_status['ended'])
+    if not scope:
+        # Missing sources do not establish that the last adopted scope ended.
+        known = ended | policy_status['unavailable'].keys()
+        previously_empty = bool(previous and not prior_refs and policy_status['state'] == 'CURRENT')
+        if not ended or not prior_refs.keys() <= known or not (prior_refs.keys() & ended or previously_empty):
+            raise Conflict('an empty portfolio needs a confirmed end to its previously adopted scope')
     records = {}
     for subject, ref in reuse.items():
         record = current_decision(db, subject)
@@ -360,6 +370,16 @@ def portfolio_decision(db, run, release, *, expected_version, market, primary, a
     if affected:
         detail = ', '.join(f'{subject} ({", ".join(changed[subject])})' for subject in sorted(affected))
         raise Conflict('reassess decisions whose linked portfolio inputs changed: ' + detail)
+    compared = trading_portfolio.compare_members(db, prior_refs, records, reuse,
+                                                 {} if member_reviews is None else member_reviews)
+    for edge in interactions:
+        subject, source = edge['subject'], edge['depends_on']
+        if (subject in reuse and compared[source].get('relation') in ('NEW', 'REVISE', 'REPRICE')
+                and compared[subject].get('relation') != 'CONTINUE'):
+            raise Conflict('explain the continued choice or reassess it after its linked arrangement changed: ' + subject)
+    assessed.update(member_reviews=compared, policy_status=policy_status,
+                    unavailable_members={subject: ref for subject, ref in prior_refs.items()
+                                         if subject not in scope and subject not in ended})
     return trading_portfolio.save(db, market=frozen, records=records, assessed=assessed,
                                   run=run, expected_version=expected_version)
 
@@ -444,6 +464,13 @@ def invoke(db, method, params):
     action = method.removeprefix('trading.')
     if action == 'open':
         return open_run(db, run, release, **params)
+    if action in {'public', 'personal'} and 'condition' in params:
+        from .trading_decisions import condition_detail
+        if action == 'personal':
+            frozen_market(db, run)
+        else:
+            material(db, run)
+        return condition_detail(db, **params['condition'], scope=action.upper(), at=run['known_at'])
     if action == 'public':
         return public_context(db, run)
     if action == 'source':
@@ -502,7 +529,7 @@ def register_notification(db, record, notification):
             or set(notification) - {'reason', 'kind', 'due_at'}):
         raise ValueError('provide the actual reason for a material feedback obligation')
     delivery.require_report(db, subject=record['payload']['subject'],
-                            trigger_ref=record['digest'], **notification)
+                            trigger_ref=record['digest'], decision=reference(record), **notification)
 
 
 def validate_report_decisions(db, run, release, refs, *, complete=False, require_portfolio=False):
@@ -538,11 +565,11 @@ def validate_report_decisions(db, run, release, refs, *, complete=False, require
         raise ValueError('report needs the independent market judgement it presents')
     if complete and applicable.keys() != subjects.keys():
         raise Conflict('complete personal feedback needs each currently applicable decision')
-    if subjects and require_portfolio and portfolio is None:
+    if require_portfolio and portfolio is None and (subjects or (complete and trading_portfolio.current(db))):
         raise Conflict('personal feedback requires its adopted joint portfolio decision')
     if portfolio is None:
         return
-    if not subjects or portfolio['market'] != reference(market) or any(
+    if (not subjects and (portfolio['decisions'] or applicable)) or portfolio['market'] != reference(market) or any(
             portfolio['decisions'].get(subject) != ref for subject, ref in subjects.items()):
         raise Conflict('report choices must match their joint portfolio and frozen market')
     for source in trading_portfolio.linked_sources(portfolio['interactions'], subjects.keys()):
@@ -573,11 +600,23 @@ def feedback(db, run, release, action, params):
                                     legacy_root=Path(db.settings['project']) / '.strategy/v4', **params)
     if action == 'feedback':
         before = delivery.context(db, destination=target, at=run['known_at'])
+        if 'before_report_id' in params and 'decision_id' not in params:
+            raise ValueError('name the decision whose earlier display is needed')
         if not material(db, run).get('market_binding'):
+            if params:
+                raise Conflict('freeze the independent market before reading delivered decisions')
             return {'day': before['day'], 'daily_due': before['daily_due'],
                     'outstanding_feedback': len(before['obligations']),
                     'outstanding_attempts': len(before['reconcile'])}
         frozen_market(db, run)
+        if 'decision_id' in params:
+            before['previous_display'] = delivery.previous_display(db, destination=target, at=run['known_at'], **params)
+            from .trading_decisions import PERSONAL_PREFIX
+            if params['decision_id'].startswith(PERSONAL_PREFIX):
+                subject = params['decision_id'][len(PERSONAL_PREFIX):]
+                owner = trading_policy.confirmed_scope_end(db, subject)
+                if owner:
+                    before['recorded_scope_end'] = {'policy': reference(owner), 'reason': owner['payload']['ended_reason']}
         return before
     if action == 'report':
         purpose = params.pop('purpose')
@@ -593,7 +632,7 @@ def feedback(db, run, release, action, params):
             if validity is None:
                 raise ValueError('limited public risk feedback needs its own useful lifetime')
             support = risk_support(db, run, params['event_ref'], validity)
-            if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage')):
+            if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage', 'decision_coverage')):
                 raise Conflict('independent public risk feedback has only its own public event obligation')
         else:
             validate_report_decisions(db, run, release, refs, complete=complete, require_portfolio=True)
@@ -620,6 +659,8 @@ def feedback(db, run, release, action, params):
         if params.pop('expected_destination') != target:
             raise Conflict('host and service disagree about the original approved destination')
         existing = delivery.get(db, report_id=params['report_id'])
+        if existing['status'] not in {'PENDING', 'NOT_SENT_CONFIRMED'} or existing.get('superseded_by'):
+            return delivery.begin(db, destination=target, run_ref=run['ref'], **params)
         if existing.get('support'):
             risk_support(db, run, **existing['support'])
         else:
@@ -637,23 +678,42 @@ def risk_support(db, run, event_ref, valid_until):
     return {'event_ref': event_ref, 'valid_until': valid_until}
 
 
-def _require_current_entry_review(db, run, release, obligations):
-    from .trading_decisions import current_decision
+def _unchecked_due_condition(state):
+    for condition in state['conditions']:
+        for check in (condition, condition.get('prior_check')):
+            if check and check['due']:
+                checked = check['review_known_ms']
+                if checked is None or checked < millis(check['next_review_at']):
+                    return check['id']
+    return None
 
-    scope, _ = policies(db, release)
-    subject = trading_policy.POSITION_SUBJECT
-    policy = scope.get(subject)
-    if not policy or (not policy.get('entry_reference') and policy.get('position_status') != 'ABSENT'):
-        return
-    current = current_decision(db, subject)
+
+def _require_current_feedback_review(db, run, release, market):
+    from . import trading_decisions as decisions
+    due = _unchecked_due_condition(decisions.decision_state(db, market, at=run['known_at']))
+    if due:
+        raise Conflict('check the due market condition before choosing silence: ' + due)
+    scope, scope_status = policies(db, release)
     portfolio = trading_portfolio.current(db)
-    if (not current or not portfolio
-            or portfolio['payload']['decisions'].get(subject) != reference(current)
-            or personal_state(db, current, policy, confirmed_files(db), run)['status'] not in {'CURRENT', 'UNRESOLVED'}):
-        raise Conflict('reassess and adopt the current opening price or confirmed closure in the portfolio before choosing silence')
-    if any(item['status'] == 'OPEN' and item['subject'] == subject and item['trigger_ref'] == current['digest']
-           for item in obligations):
-        raise Conflict('the adopted position decision has outstanding material feedback')
+    adopted = portfolio['payload']['decisions'] if portfolio else {}
+    prior = portfolio['payload'].get('unavailable_members', {}) if portfolio else {}
+    ended = (adopted.keys() | prior.keys()) & set(scope_status['ended'])
+    if ended:
+        raise Conflict('adopt the confirmed scope ending before choosing silence: ' + ', '.join(sorted(ended)))
+    if not scope:
+        return
+    files = confirmed_files(db)
+    records = {subject: decisions.current_decision(db, subject) for subject in scope}
+    changes = trading_portfolio.changed_inputs(db, portfolio, records)
+    for subject, record in records.items():
+        if not record or adopted.get(subject) != reference(record) or subject in changes:
+            raise Conflict('adopt the affected member in the current portfolio before choosing silence: ' + subject)
+        state = personal_state(db, record, scope[subject], files, run)
+        if state['status'] not in {'CURRENT', 'UNRESOLVED'}:
+            raise Conflict('reassess the affected decision before choosing silence: ' + subject)
+        due = _unchecked_due_condition(state)
+        if due:
+            raise Conflict('check the due decision condition before choosing silence: ' + subject + '/' + due)
 
 
 def assess_feedback(db, run, release, *, outcome, reason, evidence):
@@ -663,11 +723,11 @@ def assess_feedback(db, run, release, *, outcome, reason, evidence):
         raise ValueError('record the real feedback determination')
     refs = public_evidence(db, evidence, required=outcome != 'EVIDENCE_LIMITED')
     if outcome == 'SILENT':
-        frozen_market(db, run)
+        market = frozen_market(db, run)
         status = delivery.context(db, destination=destination(db), at=run['known_at'])
-        if status['daily_due']:
-            raise Conflict('outstanding feedback cannot be closed by a silent observation')
-        _require_current_entry_review(db, run, release, status['obligations'])
+        if status['daily_due'] or status['due_obligation_ids']:
+            raise Conflict('daily or due material feedback is outstanding; check the original obligation and delivery')
+        _require_current_feedback_review(db, run, release, market)
     result = {'outcome': outcome, 'reason': plain(reason, 'actual feedback basis'), 'evidence': refs,
               'decided_at': run['known_at']}
     db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': result}, write=True)

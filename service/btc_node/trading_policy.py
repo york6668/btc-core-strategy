@@ -467,6 +467,24 @@ def seed(db, release, run):
     db.metadata(SEED, {'unavailable': gaps}, write=True)
 
 
+def _scope_refs(view, files):
+    refs = _position_refs(view['refs']) if view['subject'] == POSITION_SUBJECT else view['refs']
+    if refs or view['subject'] != POSITION_SUBJECT or not view['refs']:
+        return _live_refs(refs, files)
+    return []
+
+
+def confirmed_scope_end(db, subject):
+    owner = Entities(db).get('PROFILE', PREFIX + subject)
+    if not owner or owner['payload'].get('applicable') is not False or not owner['payload'].get('ended_reason'):
+        return None
+    try:
+        refs = _scope_refs(owner['payload'], _files(db))
+    except ValueError:
+        return None
+    return owner if refs else None
+
+
 def inputs(db, release):
     """Applicable policies and source gaps, without requiring whole-file equality."""
     files = _files(db)
@@ -480,6 +498,7 @@ def inputs(db, release):
     else:
         current, gaps = {}, dict(marker['unavailable'])
     objects = Entities(db)
+    ended = []
     views = db.rows("SELECT object_id FROM entities WHERE kind='PROFILE' AND scope='PERSONAL' "
                     'AND LEFT(object_id,%s)=%s ORDER BY object_id', (len(PREFIX), PREFIX))
     for row in views:
@@ -488,15 +507,17 @@ def inputs(db, release):
         current.pop(subject, None)
         gaps.pop(subject, None)
         try:
-            refs = _position_refs(view['refs']) if subject == POSITION_SUBJECT else view['refs']
-            if refs or subject != POSITION_SUBJECT or not view['refs']:
-                _live_refs(refs, files)
+            refs = _scope_refs(view, files)
         except ValueError:
             gaps[subject] = 'the confirmed wording of this scope needs review'
         else:
             if view['applicable']:
                 current[subject] = view['policy']
+            elif view.get('ended_reason') and refs:
+                ended.append(subject)
+            else:
+                gaps[subject] = 'the original confirmed basis for ending this scope needs review'
     known_applicability = bool(current or (marker is not None and views and not gaps))
     status = 'PARTIAL' if current and gaps else 'CURRENT' if known_applicability else (
         'CONFIRMED_POLICY_REQUIRES_RECHECK' if gaps else 'NO_CONFIRMED_POLICY')
-    return current, {'state': status, 'unavailable': gaps}
+    return current, {'state': status, 'unavailable': gaps, 'ended': ended}

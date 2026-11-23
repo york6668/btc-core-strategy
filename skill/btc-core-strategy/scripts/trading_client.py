@@ -84,9 +84,14 @@ def request(config, run_id, arguments, stdin):
         prepared = call(method, {'market': market}, 'trading-open:' + key)
         return call('trading.public', {}) if prepared['ok'] else prepared
 
+    if method == 'trading.personal' and 'condition' in params:
+        # Exact historical reads use the service's phase check and need no policy import.
+        return call(method, params)
     public_risk = method == 'trading.report' and params.get('purpose') == 'RISK' and params.get('decisions') == []
-    if method in {'trading.personal', 'trading.personal_decision', 'trading.portfolio_decision', 'trading.policy',
-                  'trading.seed_policy', 'trading.report', 'trading.begin_delivery'} and not public_risk:
+    silent_review = method == 'trading.assess_feedback' and params.get('outcome') == 'SILENT'
+    if (silent_review or method in {'trading.personal', 'trading.personal_decision', 'trading.portfolio_decision',
+                                    'trading.policy', 'trading.seed_policy', 'trading.report',
+                                    'trading.begin_delivery'}) and not public_risk:
         binding = call('trading.personal_ready', {})
         if not binding['ok'] and method != 'trading.begin_delivery':
             return binding

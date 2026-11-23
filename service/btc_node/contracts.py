@@ -116,21 +116,28 @@ PARAMETERS = {
 OBJECT = {'type': 'object'}
 OBJECTS = {'type': 'array', 'items': OBJECT}
 STRINGS = {'type': 'array', 'items': TEXT}
+CONDITION_LOOKUP = obj({'target': OBJECT, 'condition_id': TEXT}, ['target', 'condition_id'])
+DECISION_RESULT = {
+    'type': 'object',
+    'description': 'Decision with conditions [{id,criterion,review_at}]. For a bounded forecast supply '
+                   'observation_end. A changed condition may cite predecessor {target,condition_id,reason}; '
+                   'retired_conditions uses the same references for deliberately ended questions.',
+}
 PERSONAL_DECISION_FIELDS = (
     {'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
-     'facts': OBJECT, 'fact_refs': OBJECTS, 'result': OBJECT, 'evidence': OBJECTS,
+     'facts': OBJECT, 'fact_refs': OBJECTS, 'result': DECISION_RESULT, 'evidence': OBJECTS,
      'market_refs': STRINGS, 'entry_reference': TEXT, 'notification': OBJECT},
     ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence'],
 )
 TRADING_FIELDS = {
     'open': ({'market': OBJECT}, ['market']),
-    'public': ({}, []),
+    'public': ({'condition': CONDITION_LOOKUP}, []),
     'personal_ready': ({}, []),
-    'personal': ({}, []),
+    'personal': ({'condition': CONDITION_LOOKUP}, []),
     'seed_policy': ({}, []),
     'policy': ({'subject':TEXT, 'kind':TEXT, 'fields':OBJECT, 'refs':OBJECTS, 'expected_version':VERSION,
                 'active':{'type':'boolean'}}, ['subject','kind','fields','refs','expected_version']),
-    'feedback': ({}, []),
+    'feedback': ({'decision_id': TEXT, 'before_report_id': TEXT}, []),
     'inherit_feedback': ({'retain': OBJECTS}, []),
     'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS}, ['outcome','reason','evidence']),
     'source': ({'digest': TEXT}, ['digest']),
@@ -139,13 +146,16 @@ TRADING_FIELDS = {
     'research_result': ({'object_id': TEXT, 'version': VERSION, 'digest': TEXT}, ['object_id','version','digest']),
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
-    'market': ({'evidence': OBJECTS, 'result': OBJECT, 'expected_version': VERSION,
+    'market': ({'evidence': OBJECTS, 'result': DECISION_RESULT, 'expected_version': VERSION,
                 'market': OBJECT, 'reason': TEXT, 'notification': OBJECT}, ['evidence']),
     'personal_decision': PERSONAL_DECISION_FIELDS,
     'portfolio_decision': (
         {'expected_version': VERSION, 'market': OBJECT, 'primary': TEXT, 'alternatives': STRINGS,
          'interactions': {'type': 'array', 'items': obj(
              {'subject': TEXT, 'depends_on': TEXT, 'reason': TEXT}, ['subject', 'depends_on', 'reason'])},
+         'member_reviews': {'type': 'object', 'additionalProperties': obj({
+             'relation': {'type': 'string', 'enum': ['CONTINUE', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED']},
+             'reason': TEXT}, ['relation', 'reason'])},
          'decisions': {'type': 'array', 'items': obj(*PERSONAL_DECISION_FIELDS)}, 'reuse': OBJECT},
         ['expected_version', 'market', 'primary', 'alternatives', 'interactions', 'decisions', 'reuse'],
     ),
@@ -156,7 +166,7 @@ TRADING_FIELDS = {
                  ['scope', 'subject', 'question', 'evidence', 'expected_version']),
     'report': ({'purpose': TEXT, 'event_ref': TEXT, 'body': TEXT, 'complete': {'type': 'boolean'},
                 'valid_until': TIME, 'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS,
-                'supersedes': OBJECT, 'legacy_coverage': OBJECT},
+                'supersedes': OBJECT, 'legacy_coverage': OBJECT, 'decision_coverage': OBJECT},
                ['purpose', 'body', 'decisions', 'reason']),
     'begin_delivery': ({'report_id': TEXT, 'anchor_ref': TEXT, 'expected_destination': OBJECT},
                        ['report_id', 'anchor_ref', 'expected_destination']),

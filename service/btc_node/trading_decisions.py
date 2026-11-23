@@ -84,7 +84,16 @@ def _evidence(value, *, required=True):
     return value
 
 
-def _conditions(values, *, known_at, valid_until):
+def _condition_reference(value):
+    if not isinstance(value, dict) or set(value) != {'target', 'condition_id', 'reason'}:
+        raise ValueError('a condition transition needs its original target, condition_id and reason')
+    if not isinstance(value['target'], dict) or set(value['target']) != {'kind', 'object_id', 'version', 'digest'}:
+        raise ValueError('a condition transition needs an exact decision reference')
+    return {'target': value['target'], 'condition_id': _text(value['condition_id'], 'prior condition identity'),
+            'reason': _text(value['reason'], 'condition transition reason')}
+
+
+def _conditions(values, *, valid_until):
     if not isinstance(values, list) or not values:
         raise ValueError('a decision needs a testable review condition')
     ids = set()
@@ -94,11 +103,17 @@ def _conditions(values, *, known_at, valid_until):
             raise ValueError('a review condition needs an identity, criterion and time')
         condition_id = _text(value.get('id'), 'condition identity')
         review_at = _time(value.get('review_at'), 'condition review time')
-        if condition_id in ids or not known_at < review_at <= valid_until:
+        if condition_id in ids or review_at > valid_until:
             raise ValueError('review conditions need unique identities and times within the decision horizon')
         ids.add(condition_id)
-        conditions.append({'id': condition_id, 'criterion': _text(value.get('criterion'), 'review criterion'),
-                           'review_at': value['review_at']})
+        condition = {'id': condition_id, 'criterion': _text(value.get('criterion'), 'review criterion'),
+                     'review_at': value['review_at']}
+        if value.get('observation_end') is not None:
+            _time(value['observation_end'], 'original observation cutoff')
+            condition['observation_end'] = value['observation_end']
+        if 'predecessor' in value:
+            condition['predecessor'] = _condition_reference(value['predecessor'])
+        conditions.append(condition)
     return conditions
 
 
@@ -107,8 +122,13 @@ def _horizon(result, run):
     expiry = _time(result.get('valid_until'), 'decision expiry')
     if expiry <= cutoff or expiry <= millis():
         raise ValueError('a new decision must have a future expiry')
-    return {'valid_until': result['valid_until'],
-            'conditions': _conditions(result.get('conditions'), known_at=cutoff, valid_until=expiry)}
+    horizon = {'valid_until': result['valid_until'],
+               'conditions': _conditions(result.get('conditions'), valid_until=expiry)}
+    if 'retired_conditions' in result:
+        if not isinstance(result['retired_conditions'], list):
+            raise ValueError('retired conditions must be a list of original conditions and reasons')
+        horizon['retired_conditions'] = [_condition_reference(item) for item in result['retired_conditions']]
+    return horizon
 
 
 def current_market(database, subject):
@@ -143,13 +163,21 @@ def _save(objects, *, kind, object_id, scope, payload, evidence, run, expected_v
     version = previous['version'] if previous else 0
     if type(expected_version) is not int or expected_version != version:
         raise Conflict('the affected trading decision changed before submission')
-    if kind != 'REVIEW' and previous:
-        prior = previous['payload']
-        if {key: value for key, value in prior.items() if key != 'condition_sources'} == payload:
-            return previous
-        carried = _carry_conditions(objects, previous, payload['result']['conditions'], at=run['known_at'])
-        if carried:
-            payload = {**payload, 'condition_sources': carried}
+    if kind != 'REVIEW':
+        prior = previous['payload'] if previous else {}
+        prior_conditions = {c['id']: c for c in prior.get('result', {}).get('conditions', [])}
+        # Provenance already established for the same test is part of its normal form.
+        for condition in payload['result']['conditions']:
+            original = prior_conditions.get(condition['id'], {})
+            if ('predecessor' in original and 'predecessor' not in condition
+                    and _condition_basis(condition) == _condition_basis(original)):
+                condition['predecessor'] = original['predecessor']
+        derived = {'condition_sources', 'open_prior_conditions', 'predecessor_reviews'}
+        if {key: value for key, value in prior.items() if key not in derived} == payload:
+            if decision_state(objects.db, previous, at=run['known_at'])['status'] != 'NEEDS_REVIEW':
+                return previous
+        transitions = _condition_transitions(objects, previous, payload['result'], prior_conditions, at=run['known_at'])
+        payload = {**payload, **transitions}
     # The business horizon belongs to the decision itself. Generic expiry
     # handling must not require closing an unrelated or unverified forecast.
     known = run['known_at']
@@ -402,7 +430,7 @@ def save_review_target(database, *, subject, source_key, provenance, conditions,
 
 
 def _condition_basis(condition):
-    return {key: value for key, value in condition.items() if key != 'original_review'}
+    return {key: value for key, value in condition.items() if key not in {'original_review', 'predecessor'}}
 
 
 def _condition_lineage(objects, record, condition, versions):
@@ -443,20 +471,71 @@ def _condition_history(objects, record, condition, *, at, versions):
     return origin, latest
 
 
-def _carry_conditions(objects, previous, conditions, *, at):
-    prior = {condition['id']: condition for condition in previous['payload']['result']['conditions']}
-    carried, versions = {}, {}
-    for condition in conditions:
-        condition_id = condition['id']
-        original = prior.get(condition_id)
-        if original is None or _condition_basis(original) != _condition_basis(condition):
-            continue
-        origin, review = _condition_history(objects, previous, original, at=at, versions=versions)
-        source = {'target': binding(origin)}
-        if review and review['object_id'] != _review_id(origin, condition_id):
-            source['prior_review'] = binding(review)
-        carried[condition_id] = source
-    return carried
+def _linked_condition(objects, ref, *, owner, max_version):
+    record = _bound_record(objects, ref['target'])
+    if (owner is None or record['kind'] != owner['kind'] or record['object_id'] != owner['object_id']
+            or record['version'] > max_version):
+        raise ValueError('condition transitions must refer to an earlier version of the same decision')
+    condition = next((c for c in record['payload']['result']['conditions'] if c['id'] == ref['condition_id']), None)
+    if condition is None:
+        raise ValueError('the prior condition does not exist in its referenced decision')
+    return record, condition
+
+
+def _condition_transitions(objects, previous, result, prior, *, at):
+    """Keep still-open, displaced tests visible at their original version and clock."""
+    version = previous['version'] if previous else 0
+    carried, versions, handled, retired = {}, {}, set(), set()
+    predecessor_reviews = {}
+
+    def prior_result(ref):
+        record, criterion = _linked_condition(objects, ref, owner=previous, max_version=version)
+        origin, review = _condition_history(objects, record, criterion, at=at, versions=versions)
+        return (origin['version'], criterion['id']), binding(review) if review else None
+
+    for ref in result.get('retired_conditions', []):
+        key, _ = prior_result(ref)
+        if key in retired:
+            raise ValueError('a condition can be retired only once in a decision')
+        retired.add(key)
+    for condition in result['conditions']:
+        cid = condition['id']
+        original = prior.get(cid)
+        same_test = original is not None and _condition_basis(condition) == _condition_basis(original)
+        parent_key = None
+        if (same_test and 'predecessor' in original and original['predecessor'] != condition['predecessor']
+                and prior_result(original['predecessor'])[0] != prior_result(condition['predecessor'])[0]):
+            raise ValueError('the predecessor of an existing test cannot silently change')
+        if 'predecessor' in condition:
+            parent_key, predecessor_reviews[cid] = prior_result(condition['predecessor'])
+            handled.add(parent_key)
+        if same_test:
+            origin, review = _condition_history(objects, previous, original, at=at, versions=versions)
+            if parent_key is not None and parent_key[0] >= origin['version']:
+                raise ValueError('a predecessor must precede formation of the actual test')
+            source = {'target': binding(origin)}
+            if review and review['object_id'] != _review_id(origin, cid):
+                source['prior_review'] = binding(review)
+            carried[cid] = source
+            handled.add((origin['version'], cid))
+        elif (millis(condition['review_at']) <= millis(at) or
+              (condition.get('observation_end') and millis(condition['observation_end']) <= millis(at))):
+            raise ValueError('a newly formed condition must use a prospective review time and observation cutoff')
+    if handled.intersection(retired):
+        raise ValueError('a continued condition cannot also be retired')
+    derived = {'condition_sources': carried} if carried else {}
+    if predecessor_reviews:
+        derived['predecessor_reviews'] = predecessor_reviews
+    if previous:
+        open_refs = []
+        for check in decision_state(objects.db, previous, at=at)['conditions']:
+            key = check['origin']['version'], check['id']
+            if check['pending'] and key not in handled and key not in retired:
+                open_refs.append({'target': check['target'], 'condition_id': check['id'],
+                                  'review_version': (check['review_ref'] or {}).get('version', 0)})
+        if open_refs:
+            derived['open_prior_conditions'] = open_refs
+    return derived
 
 
 def _later_evidence(database, objects, evidence, *, original, cutoff, observation_end=None):
@@ -519,9 +598,59 @@ def record_review(database, *, target, condition_id, outcome, explanation, evide
     meaning = {'subject': binding(original), 'condition_id': condition_id, 'outcome': outcome, 'impact': impact,
                'revision_required': revision_reviewed is not None, 'revision_reviewed_ms': revision_reviewed,
                'explanation': _text(explanation, 'review explanation'), 'next_review_at': next_review_at}
+    if impact == 'REVISE':
+        meaning['revision_review_version'] = (previous['version'] if previous else 0) + 1
+    elif last and 'revision_review_version' in last['payload']:
+        meaning['revision_review_version'] = last['payload']['revision_review_version']
     return _save(objects, kind='REVIEW', object_id=object_id, scope=original['scope'], payload=meaning,
                  evidence=[{'type': 'BLOB', 'digest': original['digest'], 'relation': 'ORIGINAL_JUDGEMENT'}, *references],
                  run=run, expected_version=previous['version'] if previous else 0, reason=meaning['explanation'])
+
+
+def _condition_check(objects, record, condition, *, at, versions):
+    origin, review = _condition_history(objects, record, condition, at=at, versions=versions)
+    last = review['payload'] if review else None
+    deadline = last['next_review_at'] if last and last['next_review_at'] else condition['review_at']
+    original_deadline = millis(condition['review_at']) if condition['review_at'] else None
+    open_check = (last is None and 'original_review' not in condition
+                  or last is not None and (last['outcome'] in {'PARTIAL', 'UNKNOWN'} or bool(last['next_review_at'])
+                                           or (last['outcome'] == 'NOT_TRIGGERED' and
+                                               (original_deadline is None or review['known_ms'] < original_deadline))))
+    now = millis(at)
+    return {**condition, 'target': binding(record), 'origin': binding(origin), 'next_review_at': deadline, 'review': last,
+            'pending': open_check, 'due': open_check and deadline is not None and millis(deadline) <= now,
+            'prior_due_unchecked': original_deadline is not None and original_deadline <= now and review is None,
+            'reviewed_ms': review['recorded_ms'] if review else None,
+            'review_ref': binding(review) if review else None, 'review_known_ms': review['known_ms'] if review else None}
+
+
+def _condition_detail(objects, record, condition, *, at, versions):
+    check = _condition_check(objects, record, condition, at=at, versions=versions)
+    if 'predecessor' in condition:
+        prior, original = _linked_condition(objects, condition['predecessor'], owner=record,
+                                            max_version=record['version'] - 1)
+        check['prior_check'] = _condition_check(objects, prior, original, at=at, versions=versions)
+        check['prior_review_at_adoption'] = record['payload'].get('predecessor_reviews', {}).get(condition['id'])
+    return check
+
+
+def _revised_since(check, reviewed_version, record):
+    last = check['review'] or {}
+    if 'revision_review_version' in last:
+        return last['revision_review_version'] > reviewed_version
+    return bool(last.get('revision_required') and
+                last.get('revision_reviewed_ms', check['review_known_ms']) >= record['known_ms'])
+
+
+def condition_detail(database, *, target, condition_id, scope, at):
+    objects = Entities(database)
+    record = _bound_record(objects, target)
+    if record['scope'] != scope or record['known_ms'] > millis(at):
+        raise ValueError('condition is outside the current phase and knowledge time')
+    condition = next((c for c in record['payload']['result']['conditions'] if c['id'] == condition_id), None)
+    if condition is None:
+        raise ValueError('condition does not belong to the referenced decision')
+    return {'condition': _condition_detail(objects, record, condition, at=at, versions={})}
 
 
 def decision_state(database, record, *, at, policy=None):
@@ -538,20 +667,21 @@ def decision_state(database, record, *, at, policy=None):
     requires_revision = False
     versions = {}
     for condition in result['conditions']:
-        origin, review = _condition_history(objects, record, condition, at=at, versions=versions)
-        last = review['payload'] if review else None
+        check = _condition_detail(objects, record, condition, at=at, versions=versions)
+        last = check['review']
         if last and last['revision_required']:
-            requires_revision |= last.get('revision_reviewed_ms', review['known_ms']) >= record['known_ms']
-        deadline = last['next_review_at'] if last and last['next_review_at'] else condition['review_at']
-        original_deadline = millis(condition['review_at']) if condition['review_at'] else None
-        open_check = (last is None and 'original_review' not in condition
-                      or last is not None and (last['outcome'] in {'PARTIAL', 'UNKNOWN'} or bool(last['next_review_at'])
-                                               or (last['outcome'] == 'NOT_TRIGGERED' and
-                                                   (original_deadline is None or review['known_ms'] < original_deadline))))
-        checks.append({**condition, 'target': binding(record), 'origin': binding(origin), 'next_review_at': deadline, 'review': last,
-                       'pending': open_check, 'due': open_check and deadline is not None and millis(deadline) <= as_of,
-                       'prior_due_unchecked': original_deadline is not None and original_deadline <= as_of and review is None,
-                       'reviewed_ms': review['recorded_ms'] if review else None})
+            requires_revision |= last.get('revision_reviewed_ms', check['review_known_ms']) >= record['known_ms']
+        if 'prior_check' in check:
+            seen = check['prior_review_at_adoption'] or {}
+            requires_revision |= _revised_since(check['prior_check'], seen.get('version', 0), record)
+        checks.append(check)
+    for ref in payload.get('open_prior_conditions', []):
+        prior, original = _linked_condition(objects, ref, owner=record, max_version=record['version'] - 1)
+        check = _condition_check(objects, prior, original, at=at, versions=versions)
+        changed = _revised_since(check, ref.get('review_version', 0), record)
+        requires_revision |= changed
+        if changed or check['pending']:
+            checks.append({**check, 'from_prior_version': True})
     if 'original' in payload:
         return {'status': 'HISTORICAL', 'conditions': checks}
     expired = millis(result['valid_until']) <= as_of

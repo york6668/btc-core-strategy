@@ -7,7 +7,8 @@ import re
 from zoneinfo import ZoneInfo
 
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp, utc
-from .entities import Entities
+from .entities import Entities, key as entity_key
+from . import trading_decisions, trading_policy
 
 
 REPORT = 'trading/report/'
@@ -211,6 +212,56 @@ def _archived_attempts(db, destination):
     return result
 
 
+def _closed_reports(db, destination):
+    query = ('SELECT e.object_id,e.last_checked_ms,v.digest FROM entities e JOIN entity_versions v '
+             'ON e.entity_key=v.entity_key AND e.current_version=v.version '
+             'WHERE e.kind=%s AND e.scope=%s AND e.product=%s AND e.active=0 AND e.object_id LIKE %s ')
+    params = ('DELIVERY', 'PERSONAL', _channel(destination), REPORT + '%')
+    cursor = ()
+    while True:
+        continuation = 'AND (e.last_checked_ms,e.object_id)<(%s,%s) ' if cursor else ''
+        rows = db.rows(query + continuation + 'ORDER BY e.last_checked_ms DESC,e.object_id DESC LIMIT 64',
+                       params + cursor)
+        yield from rows
+        if len(rows) < 64:
+            return
+        cursor = (rows[-1]['last_checked_ms'], rows[-1]['object_id'])
+
+
+def previous_display(db, *, destination, decision_id, at, before_report_id=None):
+    """Find a confirmed display of this decision, using display time rather than acknowledgement order."""
+    _text(decision_id, 'decision object identity')
+    before = None
+    if before_report_id is not None:
+        anchor = _by_id(db, before_report_id, REPORT)['payload']
+        if (anchor['status'] != 'DELIVERED' or _channel(anchor['destination']) != _channel(destination)
+                or not any(ref['object_id'] == decision_id for ref in anchor['decisions'])):
+            raise Conflict('the comparison cursor must be a delivered report citing this decision at this destination')
+        before = (utc(anchor['receipt']['assistant']['completed_at']), before_report_id)
+
+    cutoff = utc(at)
+    best = None
+    found = None
+    for row in _closed_reports(db, destination):
+        # A receipt cannot confirm a display later than the recording time.
+        if best and row['last_checked_ms'] < millis(best[0]):
+            break
+        report = db.value(row['digest'])['payload']
+        if report['status'] != 'DELIVERED':
+            continue
+        match = next((ref for ref in report['decisions'] if ref['object_id'] == decision_id), None)
+        if match is None:
+            continue
+        assistant = report['receipt']['assistant']
+        order = (utc(assistant['completed_at']), report['report_id'])
+        if order[0] > cutoff or (before and order >= before) or (best and order <= best):
+            continue
+        best = order
+        found = {'report_id': report['report_id'], 'decision': match, 'completed_at': assistant['completed_at'],
+                 'receipt_ref': assistant['record_ref'], 'body': assistant['body'], 'source': 'NATIVE_READBACK'}
+    return found
+
+
 def context(db, *, destination, at=None):
     at = utc(at)
     day = at.astimezone(DAY).date().isoformat()
@@ -241,6 +292,8 @@ def context(db, *, destination, at=None):
                            (historical and historical.get('credited_day') == day))
     return {'day': day, 'daily_due': not delivered_today, 'last_delivered': last,
             'obligations': obligations, 'pending': pending, 'reconcile': reconcile,
+            'due_obligation_ids': [item['obligation_id'] for item in obligations if item['status'] == 'OPEN'
+                                   and (item['due_at'] is None or utc(item['due_at']) <= at)],
             'archived_attempts': _archived_attempts(db, destination),
             'legacy_feedback_review': {'captured_at': archive['captured_at'], 'candidates': len(archive['candidates'])}
             if archive is not None else None}
@@ -289,7 +342,8 @@ def inherit_open(db, *, destination, legacy_root, retain=()):
     return {**archived, 'inherited': inherited}
 
 
-def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=None, legacy_destination=None):
+def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=None, legacy_destination=None,
+                   decision=None):
     _text(subject, 'feedback subject')
     _text(trigger_ref, 'original feedback trigger')
     _text(reason, 'why feedback is needed')
@@ -297,7 +351,7 @@ def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=No
         raise ValueError('invalid feedback purpose')
     due_at = stamp(due_at) if due_at is not None else None
     return _require_obligation(db, kind=kind, subject=subject, trigger_ref=trigger_ref,
-                               reason=reason, due_at=due_at, legacy_destination=legacy_destination)
+                               reason=reason, due_at=due_at, legacy_destination=legacy_destination, decision=decision)
 
 
 def _obligation_id(value):
@@ -315,7 +369,8 @@ def _existing_obligation(db, value, legacy_destination):
     return objects.get('DELIVERY', OBLIGATION + identity(*legacy_identity))
 
 
-def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None):
+def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None,
+                        decision=None):
     payload = {'subject': subject, 'trigger_ref': trigger_ref, 'reason': reason, 'kind': kind, 'due_at': due_at,
                'created_at': stamp(), 'report_id': None, 'status': 'OPEN'}
     prior = _existing_obligation(db, payload, legacy_destination)
@@ -325,6 +380,8 @@ def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legac
     payload['obligation_id'] = identifier
     if legacy is not None:
         payload['legacy'] = legacy
+    if decision is not None:
+        payload['decision'] = decision
     _put(db, identifier, None, payload, 'Record required feedback')
     return payload
 
@@ -334,8 +391,41 @@ def get(db, *, report_id):
     return {**value, 'body': _body(db, value)}
 
 
+def _check_decision_coverage(db, obligation, decisions, body, coverage):
+    # Event and daily notifications also have trigger references. Only an actual
+    # decision version under the original subject establishes a decision binding.
+    subject = obligation['subject']
+    origin = obligation.get('decision')
+    if origin is None and HASH.fullmatch(obligation['trigger_ref']) and len(subject) <= 240:
+        possible = (entity_key('DECISION', trading_decisions.MARKET_PREFIX + subject),
+                    entity_key('PLAN', trading_decisions.PERSONAL_PREFIX + subject))
+        origin = db.one('SELECT e.kind,e.object_id,v.version,v.digest FROM entities e JOIN entity_versions v '
+                        'ON e.entity_key=v.entity_key WHERE v.entity_key IN (%s,%s) AND v.digest=%s '
+                        'AND v.known_ms<=%s ORDER BY v.version DESC LIMIT 1',
+                        (*possible, obligation['trigger_ref'], millis(obligation['created_at'])))
+    ref = next((r for r in decisions if origin and r['kind'] == origin['kind']
+                and r['object_id'] == origin['object_id']), None)
+    if coverage is None:
+        if origin and ref != origin:
+            raise Conflict('cite the original decision or explain its successor in the report: ' + subject)
+        return
+    if not origin:
+        raise Conflict('decision coverage needs an identifiable original decision')
+    if 'policy' not in coverage:
+        _exact(coverage, 'excerpt', 'successor decision coverage')
+        if (not ref or ref['version'] <= origin['version']
+                or _text(coverage['excerpt'], 'displayed explanation of the successor') not in body):
+            raise Conflict('the successor decision and its explanation must appear in this report')
+        return
+    _exact(coverage, 'policy excerpt', 'retired decision coverage')
+    excerpt = _text(coverage['excerpt'], 'displayed explanation of the retired decision')
+    owner = trading_policy.confirmed_scope_end(db, subject) if origin['kind'] == 'PLAN' else None
+    if not owner or trading_decisions.binding(owner) != coverage['policy'] or excerpt not in body:
+        raise Conflict('retired decision coverage needs the confirmed scope ending and its displayed explanation')
+
+
 def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref, complete,
-            supersedes=None, support=None, legacy_coverage=None):
+            supersedes=None, support=None, legacy_coverage=None, decision_coverage=None):
     destination = validate_destination(destination)
     for value, name in ((body, 'frozen report body'), (reason, 'report reason'), (run_ref, 'original run')):
         _text(value, name)
@@ -364,8 +454,16 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
         legacy_coverage = {}
     if not isinstance(legacy_coverage, dict) or not set(legacy_coverage) <= set(obligation_ids):
         raise ValueError('coverage must name the actual original outstanding feedback')
-    key = REPORT + identity(destination, body_hash, sorted(obligation_ids), decisions, complete, support,
-                            supersedes['report_id'] if supersedes else None)
+    if decision_coverage is None:
+        decision_coverage = {}
+    if (not isinstance(decision_coverage, dict) or not decision_coverage.keys() <= set(obligation_ids)
+            or any(not isinstance(value, dict) for value in decision_coverage.values())):
+        raise ValueError('decision coverage requires an original obligation and its exact displayed explanation')
+    identity_parts = [destination, body_hash, sorted(obligation_ids), decisions, complete, support,
+                      supersedes['report_id'] if supersedes else None]
+    if decision_coverage:
+        identity_parts.append(decision_coverage)
+    key = REPORT + identity(*identity_parts)
     prior = Entities(db).get('DELIVERY', key)
     if prior:
         return {**prior['payload'], 'body': body}
@@ -373,6 +471,7 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     old = _by_id(db, supersedes['report_id'], REPORT) if supersedes else None
     for row in obligations:
         entry = row['payload']
+        _check_decision_coverage(db, entry, decisions, body, decision_coverage.get(entry['obligation_id']))
         bound = entry.get('destination')
         if not row['active'] or (bound is not None and _channel(bound) != _channel(destination)):
             raise Conflict('only open obligations for the original approved destination may be covered')
@@ -405,6 +504,7 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
         payload['support'] = support
     if legacy_coverage:
         payload['legacy_coverage'] = legacy_coverage
+    payload['decision_coverage'] = decision_coverage
     _put(db, key, None, payload, 'Freeze reviewed report', dependencies=_body_dependency(payload))
     if old:
         # Preserve the old request for readback if it may already have reached the target.
@@ -432,6 +532,10 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
         obligation = _by_id(db, identifier, OBLIGATION)
         if not obligation['active'] or obligation['payload']['report_id'] != report_id:
             raise Conflict('this report no longer owns its outstanding feedback')
+        if 'decision_coverage' in value:
+            coverage = value['decision_coverage'].get(identifier)
+            _check_decision_coverage(db, obligation['payload'], value['decisions'],
+                                     _body(db, value) if coverage else '', coverage)
     _text(anchor_ref, 'actual target readback cursor')
     _text(run_ref, 'actual sending run')
     number = value['attempt_count'] + 1
