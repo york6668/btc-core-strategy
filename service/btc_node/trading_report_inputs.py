@@ -24,20 +24,24 @@ def _conditions(result):
     return [_fields(item, ('id', 'criterion', 'review_at', 'observation_end')) for item in result['conditions']]
 
 
-def writing_inputs(market, portfolio, records, position_line):
-    """Project public analysis once and expose only choices adopted by the matching portfolio."""
+def public_inputs(market):
     if market['kind'] != 'DECISION' or market['scope'] != 'PUBLIC':
         raise Conflict('report writing needs the frozen public market judgement')
-    market_ref = binding(market)
     result = market['payload']['result']
     public = _fields(result, ('conclusion', 'primary', 'alternatives', 'value', 'assessments', 'valid_until'))
-    public.update(decision=market_ref, known_ms=market['known_ms'], valuations=result.get('valuations', {}),
+    public.update(decision=binding(market), known_ms=market['known_ms'], valuations=result.get('valuations', {}),
                   conditions=_conditions(result),
                   evidence=[_fields(ref, ('type', 'kind', 'object_id', 'version', 'digest', 'product',
                                            'series', 'item_key', 'observation_key')) for ref in market['dependencies']])
+    return public
+
+
+def writing_inputs(market, portfolio, records, position_line):
+    """Project public analysis once and expose only choices adopted by the matching portfolio."""
+    public = public_inputs(market)
     allocation = {'portfolio': None, 'members': {}, 'cash_sources': [], 'unavailable_members': []}
     inputs = {'public': public, 'module_sources': MODULE_SOURCES, 'allocation': allocation}
-    if portfolio is None or portfolio['payload']['market'] != market_ref:
+    if portfolio is None or portfolio['payload']['market'] != public['decision']:
         allocation['status'] = 'NEEDS_ADOPTION'
         return inputs
     plan = portfolio['payload']

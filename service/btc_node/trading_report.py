@@ -68,7 +68,13 @@ def render(document):
                 paragraph = ('**主情景**　' if item == 'primary' else '**竞争情景**　') + paragraph
             marked = document['pending_review'].get(name + '.' + item)
             if marked:
-                paragraph += '\n\n截至 ' + _display_time(marked) + '，此项待复评。'
+                if 'judgement_times' in document:
+                    source_at = document['judgement_times'].get(name + '.' + item)
+                    origin = ('原判断采纳于 ' + _display_time(source_at) + '。'
+                              if source_at else '该项原判断的采纳时点待核。')
+                    paragraph += '\n\n' + origin + _display_time(marked) + ' 标记为待复评。'
+                else:
+                    paragraph += '\n\n截至 ' + _display_time(marked) + '，此项待复评。'
             parts.append(paragraph)
         if name == 'risks':
             expired = expired_risks(document, document['assessed_at'])
@@ -86,7 +92,8 @@ def render(document):
 
 
 def compose(base, changes, assessed_at, position_line=None, limited=False, *, members=None,
-            pending_review=(), event_ref=None, position_reviewed=False, risk_valid_until=None):
+            pending_review=(), event_ref=None, position_reviewed=False, risk_valid_until=None,
+            source_times=None, reviewed_unchanged=(), risk_event_at=None):
     """Return exact rendered text and the complete edition that produced it."""
     if not isinstance(assessed_at, str) or not assessed_at:
         raise ValueError('report assessment time is required')
@@ -101,7 +108,11 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
             raise ValueError('limited feedback needs its verified event and the public risk update')
         if not isinstance(risk_valid_until, str) or utc(risk_valid_until) <= moment:
             raise ValueError('the public risk update needs its own future validity boundary')
-        order = list(base['member_order']) if base else ['cash']
+        if not base or not base.get('seeded'):
+            raise Conflict('a public risk report needs the complete edition of its adopted decisions')
+        if risk_event_at is not None and utc(risk_event_at) > moment:
+            raise ValueError('risk wording cannot be assessed after its reporting time')
+        order = list(base['member_order'])
     else:
         if (not isinstance(members, (list, tuple)) or not all(isinstance(s, str) and s for s in members)
                 or len(set(members)) != len(members) or 'cash' not in members):
@@ -114,6 +125,8 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
     seeded = bool(base and base['seeded'])
     prior = base['modules'] if base else {}
     pending = dict(base['pending_review']) if base else {}
+    prior_times = (base or {}).get('judgement_times', {})
+    judgement_times = {}
     updates = list(base['risk_updates']) if base else []
     modules = {}
     paths = set()
@@ -138,11 +151,14 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
                 pending.pop(path, None)
             elif old is not None and (limited or seeded):
                 section[item] = old
-            elif limited:
-                section[item] = ('本次仅核实公开风险，配置与现金安排待组合评估。' if name == 'allocation'
-                                 else '本次仅核实公开风险，此项尚待评估。')
             else:
                 raise Conflict('supply the current adopted assessment for report item ' + path)
+            source_at = prior_times.get(path)
+            if not limited and (item in edits or (path in reviewed_unchanged and path not in pending)
+                                or (name == 'allocation' and item == POSITION_SUBJECT)):
+                source_at = (source_times or {}).get(path)
+            if source_at is not None:
+                judgement_times[path] = source_at
         modules[name] = section
     if any(not isinstance(path, str) or path not in paths for path in pending_review):
         raise ValueError('pending review must identify an applicable report item')
@@ -156,14 +172,15 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
             raise Conflict('a continuing public risk needs new evidence to extend its original window')
         if previous is None or previous['text'] != risk or not prior_until or utc(prior_until) != utc(risk_valid_until):
             updates = [u for u in updates if u['event_ref'] != event_ref]
-            updates.append({'event_ref': event_ref, 'at': assessed_at, 'valid_until': risk_valid_until, 'text': risk})
+            updates.append({'event_ref': event_ref, 'at': risk_event_at or assessed_at,
+                            'valid_until': risk_valid_until, 'text': risk})
     elif 'conditions' in changes.get('risks', {}):
         # An explicit regular risk assessment reconciles outstanding public events.
         updates = []
     document = {'base_report_id': base['report_id'] if base else None, 'modules': modules,
                 'assessed_at': assessed_at, 'reviewed_at': (base or {}).get('reviewed_at') if limited else assessed_at,
                 'limited': limited, 'seeded': seeded or not limited, 'member_order': order,
-                'pending_review': pending, 'risk_updates': updates}
+                'pending_review': pending, 'risk_updates': updates, 'judgement_times': judgement_times}
     body = render(document)
     if '{{existing_position}}' in body or (position_line and body.count(position_line) != 1):
         raise ValueError('the adopted original position belongs only in its allocation item')

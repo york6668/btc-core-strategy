@@ -416,6 +416,42 @@ def _obligation_id(value):
     return OBLIGATION + identity(*parts)
 
 
+def pending_public_risks(db, destination):
+    return [{'obligation_id': item['obligation_id'], **item['public_risk']} for item in _records(db, destination)
+            if item.get('public_risk') and item.get('destination') == destination
+            and item['status'] == 'OPEN' and not item['report_id']]
+
+
+def risk_note(db, destination, event_ref):
+    key = _obligation_id({'kind': 'RISK', 'subject': 'material-feedback', 'trigger_ref': identity([], event_ref)})
+    record = Entities(db).get('DELIVERY', key)
+    if record and record['payload'].get('public_risk'):
+        if record['payload'].get('destination') != destination:
+            raise Conflict('recover the original risk feedback at its bound destination')
+        return record['payload']['public_risk']
+
+
+def defer_public_risk(db, destination, support, params, missing):
+    event = support['event_ref']
+    note = {'event_ref': event, 'valid_until': support['valid_until'], 'assessed_at': params['assessed_at'],
+            'text': params['changes']['risks']['conditions'], 'pending_review': params.get('pending_review', [])}
+    if not isinstance(note['text'], str) or not note['text'].strip() or SECRET.search(note['text']):
+        raise ValueError('provide the verified public risk text to retain it until a complete edition is available')
+    if not isinstance(note['pending_review'], list) or not all(isinstance(p, str) and p for p in note['pending_review']):
+        raise ValueError('pending risk review items must be report paths')
+    value = require_report(db, subject='material-feedback', trigger_ref=identity([], event), reason=params['reason'],
+                           kind='RISK', legacy_destination=destination)
+    original = risk_note(db, destination, event)
+    if original and (original['valid_until'] != note['valid_until'] or original['text'] != note['text']):
+        raise Conflict('the original public risk wording and its validity are already retained')
+    if not original and value['status'] == 'OPEN' and not value['report_id']:
+        row = _by_id(db, value['obligation_id'], OBLIGATION)
+        _put(db, value['obligation_id'], row, {**value, 'destination': destination, 'public_risk': note},
+             'Keep the verified public event until its complete source edition is ready')
+    return {'status': 'AWAITING_REPORT_BASIS' if not value['report_id'] else value['status'],
+            'obligation_id': value['obligation_id'], 'report_id': value['report_id'], 'missing': missing}
+
+
 def _existing_obligation(db, value, legacy_destination):
     objects = Entities(db)
     prior = objects.get('DELIVERY', _obligation_id(value))
@@ -454,6 +490,16 @@ def get(db, *, report_id):
 def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None):
     # Event and daily notifications also have trigger references. Only an actual
     # decision version under the original subject establishes a decision binding.
+    event = obligation.get('public_risk')
+    if event:
+        expired = millis(event['valid_until']) <= millis()
+        if not expired and coverage is None and event['text'] in body:
+            return
+        _exact(coverage, 'excerpt', 'review of the retained public risk')
+        excerpt = _text(coverage['excerpt'], 'current impact of the original public risk')
+        if excerpt not in body or (expired and excerpt == event['text']):
+            raise Conflict('explain the reviewed effect of the retained public risk in this edition')
+        return
     subject = obligation['subject']
     origin = obligation.get('decision')
     if origin is None and HASH.fullmatch(obligation['trigger_ref']) and len(subject) <= 240:
@@ -563,7 +609,9 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
             raise Conflict('replacement must explicitly cover the prior feedback obligations')
         old_document = prior_report.get('document')
         needs_recomposition = (prior_report['status'] in {'PENDING', 'NOT_SENT_CONFIRMED'}
-                               and (old_document is None or old_document['base_report_id'] != document['base_report_id']
+                               and (old_document is None or not old_document.get('seeded')
+                                    or old_document.get('seed_sources') != document.get('seed_sources')
+                                    or old_document['base_report_id'] != document['base_report_id']
                                     or _risk_window_changed(old_document, document['assessed_at'])))
         if (not needs_recomposition and prior_report['decisions'] == decisions
                 and set(prior_report['obligation_ids']) == set(obligation_ids)
@@ -605,14 +653,12 @@ def _check_inflight_editions(db, destination, report):
     # Once either external request has been dispatched their display order is
     # outside the writer transaction. Different full editions can undo one
     # another even if their authors changed disjoint items of the same base.
-    content = ('modules', 'member_order', 'risk_updates', 'pending_review', 'allocation_terms')
     for other in _records(db, destination):
         if (other.get('status') not in {'SENDING', 'UNKNOWN'} or 'document' not in other
                 or other['report_id'] == report['report_id']):
             continue
-        if (any(report['document'].get(field) != other['document'].get(field) for field in content)
-                or _risk_window_changed(other['document'], report['document']['assessed_at'])):
-            raise Conflict('resolve the outstanding display before sending an edition with different items: '
+        if report['document'] != other['document'] or report['decisions'] != other['decisions']:
+            raise Conflict('resolve the outstanding display before sending a different report edition: '
                            + other['report_id'])
 
 
@@ -624,7 +670,7 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
     if value['status'] not in {'PENDING', 'NOT_SENT_CONFIRMED'} or value.get('superseded_by'):
         return {'report_id': report_id, 'ready_to_send': False, 'status': value['status'],
                 'attempt_id': (value.get('attempt') or {}).get('attempt_id')}
-    if 'document' not in value:
+    if not value.get('document', {}).get('seeded'):
         raise Conflict('replace this unsent legacy draft with a complete report edition covering its obligations')
     _check_report_base(db, destination, value['document']['base_report_id'])
     if _risk_window_changed(value['document'], None):
@@ -639,7 +685,8 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
         if 'decision_coverage' in value:
             coverage = value['decision_coverage'].get(identifier)
             _check_decision_coverage(db, obligation['payload'], value['decisions'],
-                                     _body(db, value) if coverage else '', coverage, value.get('position_line'))
+                                     _body(db, value) if coverage or obligation['payload'].get('public_risk') else '',
+                                     coverage, value.get('position_line'))
     _text(anchor_ref, 'actual target readback cursor')
     _text(run_ref, 'actual sending run')
     number = value['attempt_count'] + 1
