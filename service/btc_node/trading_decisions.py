@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .codec import Conflict, identity, millis, utc
 from .entities import Entities
+from .trading_policy import POSITION_SUBJECT
 
 
 MARKET_PREFIX = 'trading/market/'
@@ -18,10 +19,12 @@ PERSONAL_PREFIX = 'trading/personal/'
 REVIEW_PREFIX = 'trading/review/'
 HISTORICAL_PREFIX = MARKET_PREFIX + 'archived/'
 PRICE_BASELINE_DIRECTIONAL = 'PRICE_BASELINE_DIRECTIONAL'
+SHORT_DIRECTIONS = ('REDUCE', 'KEEP', 'INCREASE')
+POSITION_ACTIONS = {'KEEP', 'REDUCE', 'EXIT'}
 CHOICES = {
     'MONTHLY': {'CONTINUE', 'SKIP', 'UNRESOLVED'},
     'OPPORTUNITY': {'PARTICIPATE', 'WAIT', 'AVOID', 'UNRESOLVED'},
-    'POSITION': {'KEEP', 'REDUCE', 'EXIT', 'HEDGE', 'NO_POSITION', 'UNRESOLVED'},
+    'POSITION': POSITION_ACTIONS | {'INCREASE', 'HEDGE', 'NO_POSITION', 'UNRESOLVED'},
 }
 OUTCOMES = {'SUPPORTED', 'PARTIAL', 'REFUTED', 'NOT_TRIGGERED', 'UNKNOWN'}
 
@@ -207,6 +210,12 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run):
                  'primary': primary, 'alternatives': alternatives,
                  'value': _text(result.get('value'), 'risk and reward at current prices'),
                  'assessments': assessments, **_horizon(result, run)}
+    valuations = result.get('valuations', {})
+    if not isinstance(valuations, dict) or not valuations.keys() <= assessments.keys():
+        raise ValueError('each valuation must name its public assessment at current prices')
+    if valuations:
+        condition_ids = {condition['id'] for condition in judgement['conditions']}
+        judgement['valuations'] = {name: _valuation(terms, condition_ids) for name, terms in valuations.items()}
     return _save(Entities(database), kind='DECISION', object_id=_object_id(MARKET_PREFIX, subject), scope='PUBLIC',
                  payload={'subject': subject, 'result': judgement}, evidence=_evidence(evidence), run=run,
                  expected_version=expected_version, reason=judgement['conclusion'])
@@ -286,10 +295,41 @@ def _value_zone(zone):
             'basis': _text(zone.get('basis'), 'value zone evidence basis')}
 
 
-def market_inputs(record):
+def _valuation(terms, condition_ids):
+    if not isinstance(terms, dict) or not terms.keys() <= {'value_zone', 'condition_ids'}:
+        raise ValueError('use a supported price zone or named market conditions for the valuation')
+    refs = terms.get('condition_ids', [])
+    if (not isinstance(refs, list) or any(not isinstance(key, str) or key not in condition_ids for key in refs)
+            or len(refs) != len(set(refs))):
+        raise ValueError('a valuation must cite distinct conditions of this market judgement')
+    item = {'condition_ids': sorted(refs)} if refs else {}
+    if 'value_zone' in terms:
+        item['value_zone'] = _value_zone(terms['value_zone'])
+    return item
+
+
+def market_inputs(database, record, *, at, state=None):
     result = record['payload']['result']
-    return {**{key: result[key] for key in ('conclusion', 'primary', 'alternatives', 'value')},
-            **{'assessment/' + key: val for key, val in result['assessments'].items()}}
+    inputs = {**{key: result[key] for key in ('conclusion', 'primary', 'alternatives', 'value')},
+              **{'assessment/' + key: val for key, val in result['assessments'].items()}}
+    valuations = result.get('valuations', {})
+    checks = {}
+    if any(terms.get('condition_ids') for terms in valuations.values()):
+        if state is None:
+            state = decision_state(database, record, at=at)
+        for condition in state['conditions']:
+            if not condition.get('from_prior_version'):
+                check = {key: condition[key] for key in ('criterion', 'observation_end') if key in condition}
+                check['outcome'] = (condition['review'] or {}).get('outcome')
+                checks[condition['id']] = check
+    for name, terms in valuations.items():
+        value = {'assessment': result['assessments'][name]}
+        if 'value_zone' in terms:
+            value['value_zone'] = terms['value_zone']
+        if 'condition_ids' in terms:
+            value['conditions'] = {key: checks[key] for key in terms['condition_ids']}
+        inputs['valuation/' + name] = value
+    return inputs
 
 
 def _directional_entry(policy):
@@ -298,7 +338,7 @@ def _directional_entry(policy):
     return policy.get('entry_reference')
 
 
-def _position(judgement, applied_policy, policy, result):
+def _position(judgement, applied_policy, policy, result, *, subject):
     held = policy.get('position_status')
     choice = judgement['decision']
     if choice == 'NO_POSITION' and held != 'ABSENT':
@@ -308,10 +348,23 @@ def _position(judgement, applied_policy, policy, result):
     if held is not None:
         applied_policy['position_status'] = held
 
+    allowed = POSITION_ACTIONS | {'UNRESOLVED'}
+    if subject == POSITION_SUBJECT and held != 'ABSENT':
+        allowed.add('INCREASE')
+        if choice not in allowed:
+            raise ValueError('choose how to adjust the original protective short')
+        comparison = result.get('direction_comparison')
+        if not isinstance(comparison, dict) or comparison.keys() != set(SHORT_DIRECTIONS):
+            raise ValueError('compare reducing, retaining and increasing the original protective short')
+        judgement['direction_comparison'] = {
+            action: _text(comparison[action], 'basis for ' + action) for action in SHORT_DIRECTIONS}
+    elif choice == 'INCREASE' or 'direction_comparison' in result:
+        raise ValueError('this comparison applies to the original protective short while it may still exist')
+
     actions = result.get('conditional_actions')
     entry = _directional_entry(policy)
     if entry is not None:
-        if choice not in {'KEEP', 'REDUCE', 'EXIT', 'UNRESOLVED'} or actions is not None:
+        if choice not in allowed or actions is not None:
             raise ValueError('an entry price basis needs one scoped directional decision')
         applied_policy.update(analysis_mode=PRICE_BASELINE_DIRECTIONAL, entry_reference=entry)
         return
@@ -323,8 +376,7 @@ def _position(judgement, applied_policy, policy, result):
     if held != 'UNKNOWN' or not isinstance(actions, dict) or set(actions) != {'PRESENT', 'ABSENT'}:
         raise ValueError('an unknown position needs distinct in-position and absent conclusions')
     branches = {}
-    for state, choices in (('PRESENT', {'KEEP', 'REDUCE', 'EXIT', 'UNRESOLVED'}),
-                           ('ABSENT', {'NO_POSITION'})):
+    for state, choices in (('PRESENT', allowed), ('ABSENT', {'NO_POSITION'})):
         action = actions[state]
         if (not isinstance(action, dict) or not isinstance(action.get('decision'), str)
                 or action['decision'] not in choices):
@@ -348,13 +400,17 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
     as_of = _time(run.get('known_at'), 'frozen knowledge cutoff')
     if public['known_ms'] > as_of or _time(public['payload']['result']['valid_until'], 'market expiry') <= as_of:
         raise Conflict('the public judgement is outside the applicable decision window')
-    if decision_state(database, public, at=run['known_at'])['status'] != 'CURRENT':
+    state = decision_state(database, public, at=run['known_at'])
+    if state['status'] != 'CURRENT':
         raise Conflict('the public judgement requires reassessment before personal adoption')
-    inputs = market_inputs(public)
+    inputs = market_inputs(database, public, at=run['known_at'], state=state)
     if (not isinstance(market_refs, (list, tuple)) or not market_refs or len(set(market_refs)) != len(market_refs)
             or any(field not in inputs for field in market_refs)):
         raise ValueError('select the exact parts of the market judgement this decision depends on')
     kind = policy.get('kind')
+    if kind in {'MONTHLY', 'OPPORTUNITY'}:
+        if not any(ref == 'value' or ref.startswith('valuation/') for ref in market_refs):
+            raise ValueError('select the applicable current-price valuation for the spot decision')
     choice = result.get('decision')
     if kind not in CHOICES or choice not in CHOICES[kind]:
         raise ValueError('the choice must match its investment purpose')
@@ -379,7 +435,7 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         else:
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':
-        _position(judgement, applied_policy, policy, result)
+        _position(judgement, applied_policy, policy, result, subject=subject)
         if result.get('value_zone') is not None:
             held_action = judgement.get('conditional_actions', {}).get('PRESENT', judgement)
             if held_action['decision'] != 'REDUCE':
@@ -692,6 +748,8 @@ def decision_state(database, record, *, at, policy=None):
         expected_mode = PRICE_BASELINE_DIRECTIONAL if entry is not None else None
         policy_changed |= (applied_policy.get('entry_reference') != entry
                            or applied_policy.get('analysis_mode') != expected_mode)
+        if payload['subject'] == POSITION_SUBJECT and policy.get('position_status') != 'ABSENT':
+            requires_revision |= 'direction_comparison' not in result
     if expired:
         status = 'EXPIRED'
     elif policy_changed or requires_revision:

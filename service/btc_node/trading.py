@@ -237,7 +237,9 @@ def personal_context(db, run, release):
     scope, status = policies(db, release)
     files = confirmed_files(db)
     records = {subject: decisions.current_decision(db, subject) for subject in scope}
-    review = {subject: personal_state(db, record, scope[subject], files, run) for subject, record in records.items()}
+    inputs = decisions.market_inputs(db, market, at=run['known_at'])
+    review = {subject: personal_state(db, record, scope[subject], files, run, market_inputs=inputs)
+              for subject, record in records.items()}
     portfolio = trading_portfolio.current(db)
     for subject, changed in trading_portfolio.changed_inputs(db, portfolio, records).items():
         state = review[subject]
@@ -245,7 +247,7 @@ def personal_context(db, run, release):
             state['status'] = 'NEEDS_REVIEW'
         state['changed_portfolio_inputs'] = changed
     return {'market': reference(market), 'facts': files,
-            'market_inputs': decisions.market_inputs(market),
+            'market_inputs': inputs,
             'policy_status': status, 'policies': scope,
             'current': records, 'portfolio': portfolio,
             'review': review,
@@ -262,7 +264,7 @@ def current_quote(files, ref):
             and ref['quote'] in files[ref['file']]['text'])
 
 
-def personal_state(db, record, policy, files, run):
+def personal_state(db, record, policy, files, run, *, market_inputs=None):
     from . import trading_decisions as decisions
     state = decisions.decision_state(db, record, at=run['known_at'], policy=policy)
     if record:
@@ -272,12 +274,29 @@ def personal_state(db, record, policy, files, run):
         if state['status'] in {'CURRENT', 'UNRESOLVED'}:
             if absent:
                 state.update(status='NEEDS_REVIEW', changed_fact_sources=sorted(set(absent)))
-            if state.get('market_changed'):
-                market = decisions.current_market(db, MARKET)
-                now = decisions.market_inputs(market)
-                changed = [key for key, value in record['payload']['market_inputs'].items() if now.get(key) != value]
+            before = record['payload']['market_inputs']
+            spot = policy['kind'] in {'MONTHLY', 'OPPORTUNITY'}
+            if spot and not any(key == 'value' or key.startswith(('assessment/', 'valuation/')) for key in before):
+                state.update(status='NEEDS_REVIEW', missing_valuation_binding=True)
+            live_conditions = any(key.startswith('valuation/') and value.get('conditions')
+                                  for key, value in before.items())
+            if state.get('market_changed') or live_conditions:
+                if market_inputs is None:
+                    market = decisions.current_market(db, MARKET)
+                    market_inputs = decisions.market_inputs(db, market, at=run['known_at'])
+                changed = [key for key, value in before.items() if market_inputs.get(key) != value]
                 if changed:
                     state.update(status='NEEDS_REVIEW', changed_market_inputs=changed)
+                if spot and state.get('market_changed'):
+                    # Revisit only a previously cited assessment newly identified as a valuation.
+                    names = {key.removeprefix('assessment/') for key in before if key.startswith('assessment/')}
+                    unbound = {name for name in names if 'valuation/' + name in market_inputs
+                               and 'valuation/' + name not in before}
+                    if unbound:
+                        source = record['payload']['market']
+                        original = Entities(db).get(source['kind'], source['object_id'], version=source['version'])
+                        if not original or unbound.difference(original['payload']['result'].get('valuations', {})):
+                            state.update(status='NEEDS_REVIEW', missing_valuation_binding=True)
     return state
 
 
@@ -307,7 +326,7 @@ def adopt_personal(db, run, market, scope, files, *, subject, expected_version, 
         raise ValueError('a current position action needs its actual confirmed source')
     actions = result.get('conditional_actions')
     held_choice = actions.get('PRESENT') if isinstance(actions, dict) else None
-    directional = isinstance(held_choice, dict) and held_choice.get('decision') in ('KEEP', 'REDUCE', 'EXIT')
+    directional = isinstance(held_choice, dict) and held_choice.get('decision') in (*decisions.SHORT_DIRECTIONS, 'EXIT')
     refs = list(public_evidence(db, evidence, required=choice != 'UNRESOLVED' or directional))
     for name in facts:
         digest = db.put_blob(files[name]['text'].encode())
@@ -526,10 +545,23 @@ def invoke(db, method, params):
 def register_notification(db, record, notification):
     from . import trading_delivery as delivery
     if (not isinstance(notification, dict) or 'reason' not in notification
-            or set(notification) - {'reason', 'kind', 'due_at'}):
+            or set(notification) - {'reason', 'kind', 'due_at', 'scope'}):
         raise ValueError('provide the actual reason for a material feedback obligation')
-    delivery.require_report(db, subject=record['payload']['subject'],
-                            trigger_ref=record['digest'], decision=reference(record), **notification)
+    subject = record['payload']['subject']
+    if 'scope' in notification:
+        if (notification['scope'] != 'DIRECTION' or record['kind'] != 'PLAN'
+                or subject != trading_policy.POSITION_SUBJECT or notification.get('kind', 'UPDATE') != 'UPDATE'):
+            raise ValueError('DIRECTION is the ordinary direction update of the original short')
+        plain(notification['reason'], 'why the direction requires feedback')
+        if notification.get('due_at') is None:
+            try:
+                target = destination(db)
+            except Conflict:
+                target = None  # An unavailable destination must preserve the obligation.
+            if target and delivery.position_already_displayed(db, target, record, stamp()):
+                return
+    delivery.require_report(db, subject=subject, trigger_ref=record['digest'], decision=reference(record),
+                            **notification)
 
 
 def validate_report_decisions(db, run, release, refs, *, complete=False, require_portfolio=False):
@@ -539,6 +571,7 @@ def validate_report_decisions(db, run, release, refs, *, complete=False, require
         raise Conflict('recheck the confirmed policies before issuing a complete personal report')
     subjects = {}
     portfolio = None
+    position = None
     objects = Entities(db)
     files = confirmed_files(db)
     for ref in refs:
@@ -561,6 +594,8 @@ def validate_report_decisions(db, run, release, refs, *, complete=False, require
         if state['status'] not in {'CURRENT', 'UNRESOLVED'}:
             raise Conflict('reassess this decision against its actual evidence before reporting it')
         subjects[subject] = ref
+        if subject == trading_policy.POSITION_SUBJECT:
+            position = record
     if reference(market) not in refs:
         raise ValueError('report needs the independent market judgement it presents')
     if complete and applicable.keys() != subjects.keys():
@@ -578,6 +613,7 @@ def validate_report_decisions(db, run, release, refs, *, complete=False, require
         if (source not in applicable or not record or reference(record) != ref
                 or personal_state(db, record, applicable[source], files, run)['status'] not in {'CURRENT', 'UNRESOLVED'}):
             raise Conflict('reassess the linked portfolio input before reporting: ' + source)
+    return position
 
 
 def feedback(db, run, release, action, params):
@@ -628,6 +664,7 @@ def feedback(db, run, release, action, params):
         if purpose == 'DAILY' and not complete:
             raise ValueError('a daily report requires the complete applicable decisions')
         support = None
+        position = None
         if purpose == 'RISK' and not refs and not complete:
             if validity is None:
                 raise ValueError('limited public risk feedback needs its own useful lifetime')
@@ -635,7 +672,10 @@ def feedback(db, run, release, action, params):
             if any(params.get(key) for key in ('obligation_ids', 'supersedes', 'legacy_coverage', 'decision_coverage')):
                 raise Conflict('independent public risk feedback has only its own public event obligation')
         else:
-            validate_report_decisions(db, run, release, refs, complete=complete, require_portfolio=True)
+            position = validate_report_decisions(db, run, release, refs, complete=complete, require_portfolio=True)
+        position_line = delivery.position_line(position) if position and purpose in ('DAILY', 'UPDATE') else None
+        draft = params['body']
+        params['body'] = delivery.render_body(draft, position_line)
         context = delivery.context(db, destination=target, at=run['known_at'])
         obligations = set(params.pop('obligation_ids', []))
         if purpose == 'DAILY':
@@ -645,6 +685,9 @@ def feedback(db, run, release, action, params):
                                                  reason=params['reason'], kind=purpose, legacy_destination=target)
         else:
             event = plain(params['event_ref'], 'original material event reference')
+            if (purpose == 'UPDATE' and position_line and draft.strip() == delivery.POSITION_SLOT
+                    and not obligations and delivery.position_already_displayed(db, target, position, run['known_at'])):
+                raise Conflict('the destination has already received this direction; reserve updates for a material change')
             if not (event in {item['digest'] for item in refs}
                     or db.metadata('trading.public.' + event.removeprefix('sha256:'))):
                 raise ValueError('refer to the actual changed decision or stored event evidence')
@@ -654,7 +697,7 @@ def feedback(db, run, release, action, params):
         params.pop('event_ref', None)
         obligations.add(obligation['obligation_id'])
         return delivery.prepare(db, destination=target, run_ref=run['ref'], complete=complete,
-                                obligation_ids=sorted(obligations), support=support, **params)
+                                obligation_ids=sorted(obligations), support=support, position_line=position_line, **params)
     if action == 'begin_delivery':
         if params.pop('expected_destination') != target:
             raise Conflict('host and service disagree about the original approved destination')

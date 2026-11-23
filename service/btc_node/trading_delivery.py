@@ -14,6 +14,7 @@ from . import trading_decisions, trading_policy
 REPORT = 'trading/report/'
 OBLIGATION = 'trading/feedback/'
 PERSONAL_FEEDBACK = 'trading-personal-feedback'
+POSITION_SLOT = '{{existing_position}}'
 DAY = ZoneInfo('Asia/Tokyo')
 HASH = re.compile(r'[a-f0-9]{64}')
 URL_TOKEN = re.compile(r'\ue200url\ue202([^\ue200\ue201\ue202]+)\ue202(https?://[^\ue200\ue201\ue202]+)\ue201')
@@ -106,6 +107,32 @@ def _archive_confirmation_key(report_id, attempt_id):
 
 def _message_text(value):
     return value[:-1] if value.endswith('\n') and not value.endswith(('\n\n', '\r\n')) else value
+
+
+def position_line(record):
+    result = record['payload']['result']
+    branch = result.get('conditional_actions', {}).get('PRESENT')
+    choice = branch['decision'] if branch else result['decision']
+    labels = {'REDUCE': '建议减持', 'KEEP': '建议不变', 'INCREASE': '建议增加',
+              'EXIT': '建议减持至零（退出）', 'NO_POSITION': '原单已平', 'UNRESOLVED': '方向待定'}
+    if choice not in labels:
+        raise Conflict('reassess the original short before displaying its direction')
+    premise = '（若原单仍在）' if branch and choice != 'UNRESOLVED' else ''
+    return '原 BTCUSDT 保护性空单' + premise + '：' + labels[choice] + '。'
+
+
+def render_body(body, line):
+    """Keep authored Markdown intact and fill only the dedicated original-position line."""
+    _text(body, 'report body')
+    if line is None:
+        if POSITION_SLOT in body:
+            raise ValueError('the position slot requires a cited original short in a daily report or update')
+        return body
+    if body.count(POSITION_SLOT) != 1 or POSITION_SLOT not in body.splitlines():
+        raise ValueError('place exactly one {{existing_position}} on its own line for the adopted original short')
+    if line in body:
+        raise ValueError('leave the original short line to its adopted decision')
+    return body.replace(POSITION_SLOT, line)
 
 
 def _request_body(body):
@@ -259,7 +286,23 @@ def previous_display(db, *, destination, decision_id, at, before_report_id=None)
         best = order
         found = {'report_id': report['report_id'], 'decision': match, 'completed_at': assistant['completed_at'],
                  'receipt_ref': assistant['record_ref'], 'body': assistant['body'], 'source': 'NATIVE_READBACK'}
+        if decision_id == trading_decisions.PERSONAL_PREFIX + trading_policy.POSITION_SUBJECT and 'position_line' in report:
+            found['position_line'] = report['position_line']
     return found
+
+
+def position_already_displayed(db, destination, record, at):
+    decision_id = record['object_id']
+    previous = previous_display(db, destination=destination, decision_id=decision_id, at=at)
+    line = position_line(record)
+    if not previous or previous.get('position_line') != line:
+        return False
+    # An unresolved send at this destination can still change the latest actual display.
+    for report in _records(db, destination):
+        if (report.get('status') in {'SENDING', 'UNKNOWN'} and report.get('position_line') != line
+                and any(ref['object_id'] == decision_id for ref in report.get('decisions', []))):
+            return False
+    return True
 
 
 def context(db, *, destination, at=None):
@@ -343,7 +386,7 @@ def inherit_open(db, *, destination, legacy_root, retain=()):
 
 
 def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=None, legacy_destination=None,
-                   decision=None):
+                   decision=None, scope=None):
     _text(subject, 'feedback subject')
     _text(trigger_ref, 'original feedback trigger')
     _text(reason, 'why feedback is needed')
@@ -351,17 +394,21 @@ def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=No
         raise ValueError('invalid feedback purpose')
     due_at = stamp(due_at) if due_at is not None else None
     return _require_obligation(db, kind=kind, subject=subject, trigger_ref=trigger_ref,
-                               reason=reason, due_at=due_at, legacy_destination=legacy_destination, decision=decision)
+                               reason=reason, due_at=due_at, legacy_destination=legacy_destination, decision=decision,
+                               scope=scope)
 
 
 def _obligation_id(value):
-    return OBLIGATION + identity(value['kind'], value['subject'], value['trigger_ref'])
+    parts = [value['kind'], value['subject'], value['trigger_ref']]
+    if 'scope' in value:
+        parts.extend((value['scope'], value['decision']['version']))
+    return OBLIGATION + identity(*parts)
 
 
 def _existing_obligation(db, value, legacy_destination):
     objects = Entities(db)
     prior = objects.get('DELIVERY', _obligation_id(value))
-    if prior is not None or legacy_destination is None:
+    if prior is not None or legacy_destination is None or 'scope' in value:
         return prior
     channel = _channel(legacy_destination)
     kind, subject, trigger_ref = (value[field] for field in ('kind', 'subject', 'trigger_ref'))
@@ -370,9 +417,13 @@ def _existing_obligation(db, value, legacy_destination):
 
 
 def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None,
-                        decision=None):
+                        decision=None, scope=None):
     payload = {'subject': subject, 'trigger_ref': trigger_ref, 'reason': reason, 'kind': kind, 'due_at': due_at,
                'created_at': stamp(), 'report_id': None, 'status': 'OPEN'}
+    if decision is not None:
+        payload['decision'] = decision
+    if scope is not None:
+        payload['scope'] = scope
     prior = _existing_obligation(db, payload, legacy_destination)
     if prior:
         return prior['payload']
@@ -380,8 +431,6 @@ def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legac
     payload['obligation_id'] = identifier
     if legacy is not None:
         payload['legacy'] = legacy
-    if decision is not None:
-        payload['decision'] = decision
     _put(db, identifier, None, payload, 'Record required feedback')
     return payload
 
@@ -391,7 +440,7 @@ def get(db, *, report_id):
     return {**value, 'body': _body(db, value)}
 
 
-def _check_decision_coverage(db, obligation, decisions, body, coverage):
+def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None):
     # Event and daily notifications also have trigger references. Only an actual
     # decision version under the original subject establishes a decision binding.
     subject = obligation['subject']
@@ -405,7 +454,11 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage):
                         (*possible, obligation['trigger_ref'], millis(obligation['created_at'])))
     ref = next((r for r in decisions if origin and r['kind'] == origin['kind']
                 and r['object_id'] == origin['object_id']), None)
+    detail_owed = bool(position_line and subject == trading_policy.POSITION_SUBJECT and origin
+                      and obligation.get('scope') != 'DIRECTION')
     if coverage is None:
+        if detail_owed:
+            raise Conflict('identify the displayed explanation of the original outstanding position feedback')
         if origin and ref != origin:
             raise Conflict('cite the original decision or explain its successor in the report: ' + subject)
         return
@@ -413,9 +466,10 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage):
         raise Conflict('decision coverage needs an identifiable original decision')
     if 'policy' not in coverage:
         _exact(coverage, 'excerpt', 'successor decision coverage')
-        if (not ref or ref['version'] <= origin['version']
-                or _text(coverage['excerpt'], 'displayed explanation of the successor') not in body):
-            raise Conflict('the successor decision and its explanation must appear in this report')
+        excerpt = _text(coverage['excerpt'], 'displayed explanation of the decision')
+        if (not ref or ref['version'] < origin['version'] or (ref['version'] == origin['version'] and not (ref == origin and detail_owed))
+                or excerpt not in body or (detail_owed and excerpt in position_line)):
+            raise Conflict('the cited decision and its actual owed explanation must appear in this report')
         return
     _exact(coverage, 'policy excerpt', 'retired decision coverage')
     excerpt = _text(coverage['excerpt'], 'displayed explanation of the retired decision')
@@ -425,7 +479,7 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage):
 
 
 def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref, complete,
-            supersedes=None, support=None, legacy_coverage=None, decision_coverage=None):
+            supersedes=None, support=None, legacy_coverage=None, decision_coverage=None, position_line=None):
     destination = validate_destination(destination)
     for value, name in ((body, 'frozen report body'), (reason, 'report reason'), (run_ref, 'original run')):
         _text(value, name)
@@ -463,6 +517,8 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
                       supersedes['report_id'] if supersedes else None]
     if decision_coverage:
         identity_parts.append(decision_coverage)
+    if position_line:
+        identity_parts.append(position_line)
     key = REPORT + identity(*identity_parts)
     prior = Entities(db).get('DELIVERY', key)
     if prior:
@@ -471,7 +527,7 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     old = _by_id(db, supersedes['report_id'], REPORT) if supersedes else None
     for row in obligations:
         entry = row['payload']
-        _check_decision_coverage(db, entry, decisions, body, decision_coverage.get(entry['obligation_id']))
+        _check_decision_coverage(db, entry, decisions, body, decision_coverage.get(entry['obligation_id']), position_line)
         bound = entry.get('destination')
         if not row['active'] or (bound is not None and _channel(bound) != _channel(destination)):
             raise Conflict('only open obligations for the original approved destination may be covered')
@@ -505,6 +561,8 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     if legacy_coverage:
         payload['legacy_coverage'] = legacy_coverage
     payload['decision_coverage'] = decision_coverage
+    if position_line:
+        payload['position_line'] = position_line
     _put(db, key, None, payload, 'Freeze reviewed report', dependencies=_body_dependency(payload))
     if old:
         # Preserve the old request for readback if it may already have reached the target.
@@ -535,7 +593,7 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
         if 'decision_coverage' in value:
             coverage = value['decision_coverage'].get(identifier)
             _check_decision_coverage(db, obligation['payload'], value['decisions'],
-                                     _body(db, value) if coverage else '', coverage)
+                                     _body(db, value) if coverage else '', coverage, value.get('position_line'))
     _text(anchor_ref, 'actual target readback cursor')
     _text(run_ref, 'actual sending run')
     number = value['attempt_count'] + 1

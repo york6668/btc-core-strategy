@@ -123,10 +123,23 @@ DECISION_RESULT = {
                    'observation_end. A changed condition may cite predecessor {target,condition_id,reason}; '
                    'retired_conditions uses the same references for deliberately ended questions.',
 }
+MARKET_RESULT = {
+    **DECISION_RESULT,
+    'description': DECISION_RESULT['description'] + ' Mark named current-price assessments in valuations. '
+                   'Each entry may specify a value_zone and condition_ids. Spot decisions cite the applicable '
+                   'valuation/<name> or overall value.',
+}
+PERSONAL_RESULT = {
+    **DECISION_RESULT,
+    'description': DECISION_RESULT['description'] + ' For an existing-position short that may still be open, '
+                   'give the economic basis for REDUCE, KEEP and INCREASE in direction_comparison.',
+}
 PERSONAL_DECISION_FIELDS = (
     {'subject': TEXT, 'expected_version': VERSION, 'policy_basis': TEXT,
-     'facts': OBJECT, 'fact_refs': OBJECTS, 'result': DECISION_RESULT, 'evidence': OBJECTS,
-     'market_refs': STRINGS, 'entry_reference': TEXT, 'notification': OBJECT},
+     'facts': OBJECT, 'fact_refs': OBJECTS, 'result': PERSONAL_RESULT, 'evidence': OBJECTS,
+     'market_refs': STRINGS, 'entry_reference': TEXT,
+     'notification': {'type': 'object', 'description': 'Use scope=DIRECTION only for an ordinary update of the '
+                      'original short direction. A due time, independent material risk or correction has its own meaning.'}},
     ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence'],
 )
 TRADING_FIELDS = {
@@ -146,7 +159,7 @@ TRADING_FIELDS = {
     'research_result': ({'object_id': TEXT, 'version': VERSION, 'digest': TEXT}, ['object_id','version','digest']),
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
-    'market': ({'evidence': OBJECTS, 'result': DECISION_RESULT, 'expected_version': VERSION,
+    'market': ({'evidence': OBJECTS, 'result': MARKET_RESULT, 'expected_version': VERSION,
                 'market': OBJECT, 'reason': TEXT, 'notification': OBJECT}, ['evidence']),
     'personal_decision': PERSONAL_DECISION_FIELDS,
     'portfolio_decision': (
@@ -164,7 +177,11 @@ TRADING_FIELDS = {
     'research': ({'scope': SCOPE, 'subject': TEXT, 'question': TEXT, 'evidence': OBJECTS,
                   'expected_version': VERSION, 'outcome': OBJECT},
                  ['scope', 'subject', 'question', 'evidence', 'expected_version']),
-    'report': ({'purpose': TEXT, 'event_ref': TEXT, 'body': TEXT, 'complete': {'type': 'boolean'},
+    'report': ({'purpose': TEXT, 'event_ref': TEXT,
+                'body': {'type': 'string', 'minLength': 1,
+                         'description': 'For DAILY or UPDATE citing the original short, place {{existing_position}} '
+                                        'on its own line; the service fills its adopted direction before saving.'},
+                'complete': {'type': 'boolean'},
                 'valid_until': TIME, 'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS,
                 'supersedes': OBJECT, 'legacy_coverage': OBJECT, 'decision_coverage': OBJECT},
                ['purpose', 'body', 'decisions', 'reason']),
