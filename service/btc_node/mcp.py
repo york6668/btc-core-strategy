@@ -43,7 +43,7 @@ DESCRIPTIONS = {
 }
 NODE_ONLY = {'schedule.tick', 'schedule.claim'} | {
     name for name in WRITES if name.startswith('trading.')
-} | {'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.research_archive',
+} | {'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.preview_report', 'trading.research_archive',
      'trading.research_result'}
 EXPOSED = (READS | WRITES) - NODE_ONLY
 

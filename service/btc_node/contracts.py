@@ -150,7 +150,7 @@ TRADING_FIELDS = {
     'seed_policy': ({}, []),
     'policy': ({'subject':TEXT, 'kind':TEXT, 'fields':OBJECT, 'refs':OBJECTS, 'expected_version':VERSION,
                 'active':{'type':'boolean'}}, ['subject','kind','fields','refs','expected_version']),
-    'feedback': ({'decision_id': TEXT, 'before_report_id': TEXT}, []),
+    'feedback': ({'decision_id': TEXT, 'before_report_id': TEXT, 'writing_inputs': {'type': 'boolean'}}, []),
     'inherit_feedback': ({'retain': OBJECTS}, []),
     'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS}, ['outcome','reason','evidence']),
     'source': ({'digest': TEXT}, ['digest']),
@@ -178,17 +178,22 @@ TRADING_FIELDS = {
                   'expected_version': VERSION, 'outcome': OBJECT},
                  ['scope', 'subject', 'question', 'evidence', 'expected_version']),
     'report': ({'purpose': TEXT, 'event_ref': TEXT,
-                'body': {'type': 'string', 'minLength': 1,
-                         'description': 'For DAILY or UPDATE citing the original short, place {{existing_position}} '
-                                        'on its own line; the service fills its adopted direction before saving.'},
+                'base_report_id': {'type': ['string', 'null'], 'description': 'The structured baseline from trading.feedback, or null on first use.'},
+                'assessed_at': TIME,
+                'changes': {'type': 'object', 'description': 'Changed entries by module and subject. Seed all six '
+                            'modules on the first regular report. The original short direction is filled by the service.'},
+                'pending_review': STRINGS,
+                'reviewed_unchanged': STRINGS,
+                'market_sources': OBJECT,
                 'complete': {'type': 'boolean'},
                 'valid_until': TIME, 'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS,
                 'supersedes': OBJECT, 'legacy_coverage': OBJECT, 'decision_coverage': OBJECT},
-               ['purpose', 'body', 'decisions', 'reason']),
+               ['purpose', 'base_report_id', 'assessed_at', 'changes', 'decisions', 'reason']),
     'begin_delivery': ({'report_id': TEXT, 'anchor_ref': TEXT, 'expected_destination': OBJECT},
                        ['report_id', 'anchor_ref', 'expected_destination']),
     'record_delivery': ({'report_id': TEXT, 'action': TEXT, 'receipt': OBJECT}, ['report_id', 'action', 'receipt']),
 }
+TRADING_FIELDS['preview_report'] = TRADING_FIELDS['report']
 PARAMETERS.update({'trading.' + action: obj({'run_ref': TEXT, **fields}, ['run_ref', *required])
                    for action, (fields, required) in TRADING_FIELDS.items()})
 PARAMETERS['trading.set_entry_reference'] = obj(

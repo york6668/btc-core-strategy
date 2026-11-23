@@ -54,19 +54,36 @@
 
 ## 报告、投递和下一轮
 
-读 `trading.feedback` 获取最后实际展示、尚未履行义务和原在途尝试。市场冻结后，针对本次变化的市场或成员用 `trading.feedback {decision_id}` 查询同一正式对象的 `previous_display`，按其中的正文和确切决定引用确认是否涉及同一问题。需要查更早展示时传 `before_report_id`，取前次结果的 `report_id`。本次组合的 `member_reviews` 说明取舍和上次采用安排的关系。
+读 `trading.feedback` 获取应反馈事项、在途尝试及同一目的地最后实际确认的结构化底稿身份 `base_report_id`。独立市场冻结后才取 `report_base` 的模块、评估时点及待复评范围。没有可用底稿时，`base_report_id` 为 null。用 `trading.feedback {decision_id}` 查同一正式对象的 `previous_display`，按其正文、确切决定和本次组合的 `member_reviews` 核对上次判断及安排。需要查更早展示时传前次结果的 `report_id` 作为 `before_report_id`。
 
 决定整轮静默前，核对冻结市场的到期条件、当期配置的适用范围，以及哪些已采用的成员受期限、反证、个人事实或联动变化影响。先复核并采用受影响的决定，再核对各对象的重要待反馈事项。已核为部分兑现或待证的条件按其下一适用期限续查。实质变化按现有 UPDATE 路径处理，普通重复信息保持静默。已开始的投递沿原尝试核收。用 `trading.assess_feedback {outcome,reason,evidence}` 记录本轮实际结论，证据或交付受限用 EVIDENCE_LIMITED。已核实的显著风险可在受影响的研究未采纳时先作有界反馈。
 
-个人报告的 `decisions` 引用冻结的市场、已采纳的组合 `PLAN` 和实际呈现的成员决定。完整日报引用组合的全部适用成员。按组合决定交代各组金额、理由和风险。默认日报及盘中更新引用原空单时，在正文相应位置单独一行写 `{{existing_position}}`。服务以正式成员生成该行并冻结最终正文；其余段落交付各自的市场与配置结论。逐项对照终稿与原决定。用 `trading.report {purpose,body,decisions,reason,obligation_ids}` 提交同一篇 Markdown，服务计算正文摘要并冻结。非日报提供实际原 `event_ref`。公开重大风险缺完整判断时可引用确切公共事件并提交 `purpose=RISK`、空 decisions 和有据的 valid_until，明确已核范围。历史未送达通过 `trading.inherit_feedback` 查实际义务，只承接仍有意义的项。
+日报、盘中更新、更正和风险反馈都交付完整模块。常规出稿用 `trading.report {purpose,base_report_id,assessed_at,changes,decisions,reason,obligation_ids}`。市场冻结、组合采纳后，用 `trading.feedback {writing_inputs:true}` 取公开市场和配置各自的成稿材料。市场、路径、参与或等待的价值、交叉验证及市场风险引用公开研判。组合共同情景、金额和仓位安排用于配置段，保护性空单的执行细节保存在成员决定中。原样传回查询得到的底稿身份，`assessed_at` 取本轮实际形成判断的时刻。`decisions` 引用冻结市场、已采纳组合 `PLAN` 和全部适用成员，包含本轮沿用的决定。非日报另给触发反馈的原 `event_ref`。首份常规结构化稿按当期正式判断补齐全部模块；已有基线时，对照本轮冻结市场和适用组合，只提交需替换的子项，其余由服务保留原文。基线已变则读取新基线、重核本次变化及所据版本。
+
+`changes` 按下列模块及子项提交用户可读的替换段落。段落用简短加粗结论领起，写明对选择有影响的依据、分歧、时点及来源。
+
+| 模块 | 子项与正文内容 |
+| --- | --- |
+| `market` | `BTC`、`SPX`、`NDX` 各自的方向、当前定价及结构变化。区分底层市场与目标 VOO、QQQ 产品的身份、价格和单位。 |
+| `outlook` | `primary`、`alternative` 分别说明中期主情景和竞争路径、机制、把握及改变排序的证据。 |
+| `opportunities` | `comparison` 比较现价参与或等待的风险收益与成本，说明为何现在值得参与、等待或回避。 |
+| `allocation` | 以适用成员的正式 `subject` 标识各组月度决定及独立机会，`cash` 说明规划留存。按月度组、留存、独立机会、存量仓位呈现。`existing-position` 的方向行由服务从正式成员生成。 |
+| `crosschecks` | `evidence` 给出独立来源、分歧及其对判断的影响。 |
+| `risks` | `conditions` 给出主判断失效或安排需要调整的条件、相应影响和待复核范围。 |
+
+常规稿可用 `market_sources` 把 `market.BTC`、`market.SPX`、`market.NDX`、`crosschecks.evidence` 和 `opportunities.comparison` 分别对应到该段实际使用的冻结公开依据。例如本轮确实采用相应判断时，可传 `{"market.BTC":["assessment/BTC","valuation/BTC_VALUE"],"market.SPX":["assessment/VOO"],"crosschecks.evidence":["evidence"]}`。只有 VOO 判断里确实有支持标普底层结论的证据才能这样引用；`evidence` 对应冻结市场的原始证据引用。某路径首次未指定时，服务比对完整公开依据。已有归属跨轮沿用，只有该段实际来源改变时才更新。`outlook.primary`、`outlook.alternative` 分别直接绑定本轮中期主路径、竞争路径。
+
+例如只修正 BTC 市场判断的一条理由时，`changes.market.BTC` 可以传 `{"from":"该子项内唯一匹配的底稿原句","to":"新理由"}`；整段判断改变时传完整替换段落。若主路径或某组投入也受影响，一起替换相应子项。正式市场的主情景、竞争路径、现价价值、条件，或成员的决定、理由、风险、机会成本、金额依据和条件发生变化时，逐项对照对应段落。需要修改的放入 `changes`；已复核且原句仍准确的，可以传 `reviewed_unchanged` 路径数组，如 `["outlook.primary"]`。金额、币种或预算真实变更时，相应金额行必须更新。原文缺项、过期或新增配置的部分，由对应研判补齐。冻结前用只读 `trading.preview_report` 传同一套报告参数，无需 operation_id。常规预览返回将要展示的完整 `body`。按[报告表达](../skill/btc-core-strategy/references/mobile-report.md)通读所有模块，逐项核对投资结论、产品范围、原事实时点、期限及组合安排。发现重复执行细节、过期承诺或失真的取舍就修正相应子项再预览。终稿核准后，向 `trading.report` 提交同一套参数及对应写入操作身份。
+
+可核实的重大风险急需提示、相应判断仍待复评时，走受限风险反馈。提交 `purpose=RISK`、确切公共事件、空 `decisions`、有依据的 `valid_until`，只在 `changes.risks.conditions` 提交本次事件的已核影响。服务将短讯形成时点及该事件自己的有效期一同附在原风险条件之后。到期的原文以历史提示显示，旧记录缺有效期时标为待核。新事件使用自己的证据与期限，不能替此前短讯续期。`pending_review` 是该受限入口的子项路径数组，例如 `["market.BTC"]`。标明哪些已有判断受该风险影响、当前证据尚不足以复评。由服务按原基线组成完整报告并标明沿用判断的时点及待复评范围；无结构化基线时保留缺口。服务根据原决定的 `valid_until` 自动标记到期子项。尚未复评的子项继续带标记。确实完成复评后，才在常规稿的 `changes` 中显式提交该子项的结论，核准沿用时提交同文也可解除标记。整理风险短讯时，正式复核已有提示，把仍有效的影响写入当前 `risks.conditions`，说明失效或引起实际调整的部分，再显式提交该项，由服务收起单列短讯。首份常规稿同时补齐缺口。原空单行由服务生成，只有风险出现后正式采纳该成员的新决定，才清除其待复评标记。受限风险的 `trading.preview_report` 仅返回本轮公开短讯，公开阶段据此核验来源、时点、范围和待复评判断。含个人安排的完整结果由服务组装，沿既有授权投递通道交付。历史未送达沿 `trading.inherit_feedback` 查实际义务，只承接仍有意义的项。
 
 同一对象的新决定要履行较早决定的待反馈义务时，在 `decision_coverage[原义务ID].excerpt` 放入本稿说明怎样承接或纠正旧决定的原句。已确认结束的个人配置另附 `policy`，取该对象反馈查询的 `recorded_scope_end.policy`。其他对象的义务各依自身决定处理。更正带 `supersedes {report_id,reason}` 并显式覆盖原义务。目标不可用时保留待反馈事项，照常形成和保存独立结论。
 
-盘中更新先回答前次实际展示的同一判断是否维持、调整、被推翻或仍待验证，以及原安排是否随之改变，再解释新增证据及下一项检验。首次涉及的问题直接说明本轮判断。市场变化而动作沿用时，写明沿用的理由。同一安排重定价或部分完成时，按已采纳的本轮判断和已确认的执行范围交付。
+在变化所涉模块内说明前次实际展示的判断维持、调整、被推翻或仍待验证，以及原安排是否随之改变，再解释新增证据及下一项检验。市场变化而动作沿用时，说明沿用理由。原安排重定价或部分完成时，分别引用已采纳判断与已确认的执行范围。
 
 默认空单栏只呈现已采用的方向或真实适用状态。“沿用上轮减持”仍显示建议减持。用户追问某轮理由或执行安排时，从 trading.feedback 的 previous_display.decision 取得当次展示确切成员，沿 object.get 的个人历史读取接口传该版本及冻结市场绑定，读取内部比较、参考价和条件；询问现在如何处理时，按当前适用证据复评。
 
-投递沿原已授权目的地和实际可用原生入口。先核目标真实游标，再用 `trading.begin_delivery {report_id,anchor_ref}`。仅首次明确返回 ready_to_send=true 时，使用返回的原目的地及确切 request_body 发起实际调用。按[正式服务的原生投递回执接口](../service/README.md#原生投递回执)登记工具受理、绑定实际原请求并核对其完成正文。投递回执和源稿保留原身份。效果无法确认时沿原尝试保留 UNKNOWN；明确拒绝时只停止对应发送，沿原证据保留义务。失败及未知范围、回读和更正按[当前交付方法](../skill/btc-core-strategy/references/market-reporting.md#当前交付)处理。
+投递沿原已授权目的地和实际可用原生入口。先核目标真实游标，再用 `trading.begin_delivery {report_id,anchor_ref}`。仅首次明确返回 ready_to_send=true 时，使用返回的原目的地及确切 request_body 发起实际调用。公开风险先行投递时，在同一获准工具编排内解析回执、把原请求字节直接交给已核目的地，回读正文在该编排内核对并登记。公开研判上下文只接收投递身份、状态和核对结果，不打印 request_body、个人段落或完整回读。按[正式服务的原生投递回执接口](../service/README.md#原生投递回执)登记工具受理、绑定实际原请求并核对其完成正文。投递回执和源稿保留原身份。效果无法确认时沿原尝试保留 UNKNOWN；明确拒绝时只停止对应发送，沿原证据保留义务。失败及未知范围、回读和更正按[当前交付方法](../skill/btc-core-strategy/references/market-reporting.md#当前交付)处理。
 
 承接仍有效的历史反馈时，用 `trading.inherit_feedback {retain:[{review_id,reason}]}` 取得义务。新正文覆盖该含义时，将返回的 `inherited` 中相应身份列入 `obligation_ids`，在 `legacy_coverage` 中按该身份说明实际覆盖方式。
 

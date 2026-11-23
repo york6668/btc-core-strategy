@@ -8,13 +8,12 @@ from zoneinfo import ZoneInfo
 
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp, utc
 from .entities import Entities, key as entity_key
-from . import trading_decisions, trading_policy
+from . import trading_decisions, trading_policy, trading_report
 
 
 REPORT = 'trading/report/'
 OBLIGATION = 'trading/feedback/'
 PERSONAL_FEEDBACK = 'trading-personal-feedback'
-POSITION_SLOT = '{{existing_position}}'
 DAY = ZoneInfo('Asia/Tokyo')
 HASH = re.compile(r'[a-f0-9]{64}')
 URL_TOKEN = re.compile(r'\ue200url\ue202([^\ue200\ue201\ue202]+)\ue202(https?://[^\ue200\ue201\ue202]+)\ue201')
@@ -93,6 +92,32 @@ def _last_key(destination):
     return 'trading.reported.' + _channel(destination)
 
 
+def _edition_key(destination):
+    return 'trading.report.edition.' + _channel(destination)
+
+
+def report_base(db, destination, *, identity_only=False):
+    """The last modular edition actually displayed at this destination."""
+    displayed = db.metadata(_edition_key(destination))
+    if displayed is None:
+        return None
+    if identity_only:
+        return {'report_id': displayed['report_id']}
+    record = _by_id(db, displayed['report_id'], REPORT)['payload']
+    return {**record['document'], **displayed, 'decisions': record['decisions']}
+
+
+def _check_report_base(db, destination, expected):
+    latest = report_base(db, destination, identity_only=True)
+    if (latest and latest['report_id']) != expected:
+        raise Conflict('a different complete edition was displayed; rebase the changes before dispatch')
+
+
+def _later_display(displayed, previous):
+    return not previous or (utc(displayed['completed_at']), displayed['report_id']) > (
+        utc(previous['completed_at']), previous['report_id'])
+
+
 def _day_key(destination, day):
     return 'trading.report.day.' + _channel(destination) + '.' + day
 
@@ -119,20 +144,6 @@ def position_line(record):
         raise Conflict('reassess the original short before displaying its direction')
     premise = '（若原单仍在）' if branch and choice != 'UNRESOLVED' else ''
     return '原 BTCUSDT 保护性空单' + premise + '：' + labels[choice] + '。'
-
-
-def render_body(body, line):
-    """Keep authored Markdown intact and fill only the dedicated original-position line."""
-    _text(body, 'report body')
-    if line is None:
-        if POSITION_SLOT in body:
-            raise ValueError('the position slot requires a cited original short in a daily report or update')
-        return body
-    if body.count(POSITION_SLOT) != 1 or POSITION_SLOT not in body.splitlines():
-        raise ValueError('place exactly one {{existing_position}} on its own line for the adopted original short')
-    if line in body:
-        raise ValueError('leave the original short line to its adopted decision')
-    return body.replace(POSITION_SLOT, line)
 
 
 def _request_body(body):
@@ -478,7 +489,7 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
         raise Conflict('retired decision coverage needs the confirmed scope ending and its displayed explanation')
 
 
-def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref, complete,
+def prepare(db, *, destination, body, document, decisions, obligation_ids, reason, run_ref, complete,
             supersedes=None, support=None, legacy_coverage=None, decision_coverage=None, position_line=None):
     destination = validate_destination(destination)
     for value, name in ((body, 'frozen report body'), (reason, 'report reason'), (run_ref, 'original run')):
@@ -487,6 +498,8 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
         raise ValueError('report coverage must state whether it is complete')
     if SECRET.search(body):
         raise ValueError('report contains private credential material')
+    if body != trading_report.render(document):
+        raise Conflict('the frozen body must be the rendered complete report edition')
     body_bytes = body.encode('utf-8')
     body_hash = fingerprint(body_bytes)
     if support is not None:
@@ -513,7 +526,7 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     if (not isinstance(decision_coverage, dict) or not decision_coverage.keys() <= set(obligation_ids)
             or any(not isinstance(value, dict) for value in decision_coverage.values())):
         raise ValueError('decision coverage requires an original obligation and its exact displayed explanation')
-    identity_parts = [destination, body_hash, sorted(obligation_ids), decisions, complete, support,
+    identity_parts = [destination, body_hash, document, sorted(obligation_ids), decisions, complete, support,
                       supersedes['report_id'] if supersedes else None]
     if decision_coverage:
         identity_parts.append(decision_coverage)
@@ -523,6 +536,7 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     prior = Entities(db).get('DELIVERY', key)
     if prior:
         return {**prior['payload'], 'body': body}
+    _check_report_base(db, destination, document['base_report_id'])
     obligations = [_by_id(db, item, OBLIGATION) for item in obligation_ids]
     old = _by_id(db, supersedes['report_id'], REPORT) if supersedes else None
     for row in obligations:
@@ -547,12 +561,18 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
             raise Conflict('the rejected original delivery needs recovery in its original authorization scope')
         if not set(prior_report['obligation_ids']) <= set(obligation_ids):
             raise Conflict('replacement must explicitly cover the prior feedback obligations')
-        if (prior_report['decisions'] == decisions and set(prior_report['obligation_ids']) == set(obligation_ids)
+        old_document = prior_report.get('document')
+        needs_recomposition = (prior_report['status'] in {'PENDING', 'NOT_SENT_CONFIRMED'}
+                               and (old_document is None or old_document['base_report_id'] != document['base_report_id']
+                                    or _risk_window_changed(old_document, document['assessed_at'])))
+        if (not needs_recomposition and prior_report['decisions'] == decisions
+                and set(prior_report['obligation_ids']) == set(obligation_ids)
                 and prior_report['status'] != 'CORRECTION_REQUIRED'):
             raise Conflict('replacement requires changed related decisions or a documented communication correction')
     if db.put_blob(body_bytes) != body_hash:
         raise Conflict('stored report bytes differ from the submitted body')
     payload = {'report_id': key, 'destination': destination, 'body_hash': body_hash,
+               'document': document,
                'decisions': decisions, 'obligation_ids': obligation_ids, 'reason': reason,
                'run_ref': run_ref, 'complete': complete, 'status': 'PENDING', 'created_at': stamp(), 'attempt': None,
                'attempt_count': 0, 'supersedes': supersedes}
@@ -576,6 +596,26 @@ def prepare(db, *, destination, body, decisions, obligation_ids, reason, run_ref
     return {**payload, 'body': body}
 
 
+def _risk_window_changed(document, at):
+    return (trading_report.expired_risks(document, document['assessed_at'])
+            != trading_report.expired_risks(document, at))
+
+
+def _check_inflight_editions(db, destination, report):
+    # Once either external request has been dispatched their display order is
+    # outside the writer transaction. Different full editions can undo one
+    # another even if their authors changed disjoint items of the same base.
+    content = ('modules', 'member_order', 'risk_updates', 'pending_review', 'allocation_terms')
+    for other in _records(db, destination):
+        if (other.get('status') not in {'SENDING', 'UNKNOWN'} or 'document' not in other
+                or other['report_id'] == report['report_id']):
+            continue
+        if (any(report['document'].get(field) != other['document'].get(field) for field in content)
+                or _risk_window_changed(other['document'], report['document']['assessed_at'])):
+            raise Conflict('resolve the outstanding display before sending an edition with different items: '
+                           + other['report_id'])
+
+
 def begin(db, *, destination, report_id, anchor_ref, run_ref):
     row = _by_id(db, report_id, REPORT)
     value = row['payload']
@@ -584,6 +624,12 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
     if value['status'] not in {'PENDING', 'NOT_SENT_CONFIRMED'} or value.get('superseded_by'):
         return {'report_id': report_id, 'ready_to_send': False, 'status': value['status'],
                 'attempt_id': (value.get('attempt') or {}).get('attempt_id')}
+    if 'document' not in value:
+        raise Conflict('replace this unsent legacy draft with a complete report edition covering its obligations')
+    _check_report_base(db, destination, value['document']['base_report_id'])
+    if _risk_window_changed(value['document'], None):
+        raise Conflict('an earlier risk note reached its review boundary; recompose before sending')
+    _check_inflight_editions(db, destination, value)
     if value.get('support') and millis(value['support']['valid_until']) <= millis():
         raise Conflict('review the now-expired public report before sending')
     for identifier in value['obligation_ids']:
@@ -717,8 +763,10 @@ def _finalize_feedback(db, value, receipt):
     delivered = {'report_id': report_id, 'completed_at': assistant['completed_at'],
                  'receipt_ref': assistant['record_ref']}
     previous = db.metadata(_last_key(destination))
-    if not previous or millis(delivered['completed_at']) > millis(previous['completed_at']):
+    if _later_display(delivered, previous):
         db.metadata(_last_key(destination), delivered, write=True)
+    if 'document' in value and _later_display(delivered, db.metadata(_edition_key(destination))):
+        db.metadata(_edition_key(destination), delivered, write=True)
     day = utc(assistant['completed_at']).astimezone(DAY).date().isoformat()
     daily_key = _day_key(destination, day)
     credited = db.metadata(daily_key)
@@ -874,7 +922,7 @@ def reconcile_archived(db, *, destination, report_id, receipt):
     displayed = {'report_id': report_id, 'completed_at': completed_at,
                  'receipt_ref': receipt['assistant']['record_ref'], 'archived_confirmation': key}
     last = db.metadata(_last_key(target)) or _historical_feedback(db, target, utc())
-    if not last or millis(last['completed_at']) < millis(completed_at):
+    if _later_display(displayed, last):
         db.metadata(_last_key(target), displayed, write=True)
     day = _archive_credited_day(artifact, completed_at)
     if day:
