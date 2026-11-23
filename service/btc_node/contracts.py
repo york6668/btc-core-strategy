@@ -139,7 +139,7 @@ PERSONAL_DECISION_FIELDS = (
      'facts': OBJECT, 'fact_refs': OBJECTS, 'result': PERSONAL_RESULT, 'evidence': OBJECTS,
      'market_refs': STRINGS, 'entry_reference': TEXT,
      'notification': {'type': 'object', 'description': 'Use scope=DIRECTION only for an ordinary update of the '
-                      'original short direction. A due time, independent material risk or correction has its own meaning.'}},
+                      'original short direction. Ordinary original-short updates default to that projection.'}},
     ['subject', 'expected_version', 'policy_basis', 'facts', 'fact_refs', 'market_refs', 'result', 'evidence'],
 )
 TRADING_FIELDS = {
@@ -151,7 +151,7 @@ TRADING_FIELDS = {
     'policy': ({'subject':TEXT, 'kind':TEXT, 'fields':OBJECT, 'refs':OBJECTS, 'expected_version':VERSION,
                 'active':{'type':'boolean'}}, ['subject','kind','fields','refs','expected_version']),
     'feedback': ({'decision_id': TEXT, 'before_report_id': TEXT, 'writing_inputs': {'type': 'boolean'},
-                  'risk_seed_inputs': {'type': 'boolean'}}, []),
+                  'risk_seed_inputs': {'type': 'boolean'}, 'public_writing_inputs': {'type': 'boolean'}}, []),
     'inherit_feedback': ({'retain': OBJECTS}, []),
     'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS}, ['outcome','reason','evidence']),
     'source': ({'digest': TEXT}, ['digest']),
@@ -161,7 +161,7 @@ TRADING_FIELDS = {
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
     'market': ({'evidence': OBJECTS, 'result': MARKET_RESULT, 'expected_version': VERSION,
-                'market': OBJECT, 'reason': TEXT, 'notification': OBJECT}, ['evidence']),
+                'market': OBJECT, 'reason': TEXT, 'notification': OBJECT, 'public_copy': OBJECT}, ['evidence']),
     'personal_decision': PERSONAL_DECISION_FIELDS,
     'portfolio_decision': (
         {'expected_version': VERSION, 'market': OBJECT, 'primary': TEXT, 'alternatives': STRINGS,
@@ -180,13 +180,14 @@ TRADING_FIELDS = {
                  ['scope', 'subject', 'question', 'evidence', 'expected_version']),
     'report': ({'purpose': TEXT, 'event_ref': TEXT,
                 'base_report_id': {'type': ['string', 'null'], 'description': 'The structured baseline from trading.feedback, or null on first use.'},
-                'assessed_at': TIME,
-                'changes': {'type': 'object', 'description': 'Changed entries by module and subject. Seed all six '
-                            'modules on the first regular report. The original short direction is filled by the service.'},
+                'assessed_at': TIME, 'public_copy_id': TEXT,
+                'changes': {'type': 'object', 'description': 'Regular reports edit allocation only. Public items are frozen '
+                            'by trading.market public_copy. Limited reports submit only their public risk note.'},
                 'pending_review': STRINGS,
                 'reviewed_unchanged': STRINGS,
                 'market_sources': OBJECT,
-                'public_seed': obj({'market': OBJECT, 'sections': OBJECT}, ['market', 'sections']),
+                'public_seed': obj({'market': OBJECT, 'sections': OBJECT, 'legacy_reviewed': OBJECT,
+                                    'reviewed_unchanged': STRINGS}, ['market', 'sections']),
                 'complete': {'type': 'boolean'},
                 'valid_until': TIME, 'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS,
                 'supersedes': OBJECT, 'legacy_coverage': OBJECT, 'decision_coverage': OBJECT},

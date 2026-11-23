@@ -487,6 +487,19 @@ def get(db, *, report_id):
     return {**value, 'body': _body(db, value)}
 
 
+def check_displayed_correction(db, destination, original, event):
+    report = _by_id(db, event, REPORT)['payload']
+    if (report['status'] != 'DELIVERED' or _channel(report['destination']) != _channel(destination)
+            or _confirmed_display(db, report, report['receipt']) == 'MISMATCH'):
+        raise Conflict('the correction must refer to a confirmed display at this destination')
+    if original is not None:
+        _exact(original, 'report_id reason', 'report replacement')
+        if original['report_id'] != event:
+            draft = _by_id(db, original['report_id'], REPORT)['payload']
+            if draft.get('document', {}).get('corrects') != event:
+                raise Conflict('replace the outstanding draft of this correction')
+
+
 def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None):
     # Event and daily notifications also have trigger references. Only an actual
     # decision version under the original subject establishes a decision binding.
@@ -511,11 +524,17 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
                         (*possible, obligation['trigger_ref'], millis(obligation['created_at'])))
     ref = next((r for r in decisions if origin and r['kind'] == origin['kind']
                 and r['object_id'] == origin['object_id']), None)
-    detail_owed = bool(position_line and subject == trading_policy.POSITION_SUBJECT and origin
-                      and obligation.get('scope') != 'DIRECTION')
+    if subject == trading_policy.POSITION_SUBJECT and origin and position_line and ref:
+        if ref['version'] < origin['version'] or (ref['version'] == origin['version'] and ref != origin):
+            raise Conflict('cite the adopted original position decision or its actual successor')
+        if coverage is not None:
+            _exact(coverage, 'excerpt', 'position direction coverage')
+            if coverage['excerpt'] != position_line:
+                raise Conflict('the original position obligation is displayed only through its adopted direction')
+        elif ref != origin:
+            raise Conflict('identify the successor direction displayed in the original position allocation item')
+        return
     if coverage is None:
-        if detail_owed:
-            raise Conflict('identify the displayed explanation of the original outstanding position feedback')
         if origin and ref != origin:
             raise Conflict('cite the original decision or explain its successor in the report: ' + subject)
         return
@@ -524,8 +543,7 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
     if 'policy' not in coverage:
         _exact(coverage, 'excerpt', 'successor decision coverage')
         excerpt = _text(coverage['excerpt'], 'displayed explanation of the decision')
-        if (not ref or ref['version'] < origin['version'] or (ref['version'] == origin['version'] and not (ref == origin and detail_owed))
-                or excerpt not in body or (detail_owed and excerpt in position_line)):
+        if not ref or ref['version'] <= origin['version'] or excerpt not in body:
             raise Conflict('the cited decision and its actual owed explanation must appear in this report')
         return
     _exact(coverage, 'policy excerpt', 'retired decision coverage')
@@ -601,15 +619,23 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
             raise Conflict('an active report already owns this feedback; review its replacement explicitly')
     if old:
         prior_report = old['payload']
-        if _channel(prior_report['destination']) != _channel(destination) or prior_report.get('superseded_by'):
+        if (_channel(prior_report['destination']) != _channel(destination)
+                or (prior_report.get('superseded_by') and prior_report['status'] != 'DELIVERED')):
             raise Conflict('replacement requires the active original report and destination')
         if prior_report['status'] == 'BLOCKED':
             raise Conflict('the rejected original delivery needs recovery in its original authorization scope')
-        if not set(prior_report['obligation_ids']) <= set(obligation_ids):
+        corrected_display = (prior_report['status'] == 'DELIVERED' and document['purpose'] == 'CORRECTION'
+                             and document.get('corrects') == prior_report['report_id'])
+        if prior_report['status'] == 'DELIVERED' and not corrected_display:
+            raise Conflict('use a correction to address a report already displayed')
+        if not corrected_display and not set(prior_report['obligation_ids']) <= set(obligation_ids):
             raise Conflict('replacement must explicitly cover the prior feedback obligations')
         old_document = prior_report.get('document')
         needs_recomposition = (prior_report['status'] in {'PENDING', 'NOT_SENT_CONFIRMED'}
                                and (old_document is None or not old_document.get('seeded')
+                                    or not old_document.get('public_market')
+                                    or old_document.get('public_copy_id') != document.get('public_copy_id')
+                                    or old_document.get('risk_public_copy') != document.get('risk_public_copy')
                                     or old_document.get('seed_sources') != document.get('seed_sources')
                                     or old_document['base_report_id'] != document['base_report_id']
                                     or _risk_window_changed(old_document, document['assessed_at'])))
@@ -632,7 +658,7 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
     if position_line:
         payload['position_line'] = position_line
     _put(db, key, None, payload, 'Freeze reviewed report', dependencies=_body_dependency(payload))
-    if old:
+    if old and old['payload']['status'] != 'DELIVERED':
         # Preserve the old request for readback if it may already have reached the target.
         prior_report = {**old['payload'], 'superseded_by': key}
         if prior_report['status'] in {'PENDING', 'NOT_SENT_CONFIRMED'}:
@@ -670,8 +696,8 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
     if value['status'] not in {'PENDING', 'NOT_SENT_CONFIRMED'} or value.get('superseded_by'):
         return {'report_id': report_id, 'ready_to_send': False, 'status': value['status'],
                 'attempt_id': (value.get('attempt') or {}).get('attempt_id')}
-    if not value.get('document', {}).get('seeded'):
-        raise Conflict('replace this unsent legacy draft with a complete report edition covering its obligations')
+    if not value.get('document', {}).get('public_market'):
+        raise Conflict('recompose this unsent draft with independently frozen public sections and its original obligations')
     _check_report_base(db, destination, value['document']['base_report_id'])
     if _risk_window_changed(value['document'], None):
         raise Conflict('an earlier risk note reached its review boundary; recompose before sending')

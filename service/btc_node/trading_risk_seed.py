@@ -1,7 +1,7 @@
 """Build the first risk edition from adopted decisions without exposing personal inputs to its public author."""
 from __future__ import annotations
 
-from . import trading_decisions, trading_delivery, trading_policy, trading_portfolio, trading_report
+from . import trading_decisions, trading_delivery, trading_policy, trading_portfolio, trading_public_report, trading_report
 from .codec import Conflict, identity, millis
 from .entities import Entities
 from .trading_report_inputs import public_inputs
@@ -11,10 +11,53 @@ class SeedPending(Conflict):
     """A verified event has no complete source edition yet."""
 
 
-def public_source(db):
+def _source_market(db, base):
+    if base and base.get('seeded'):
+        original = base.get('public_market') or (base.get('seed_sources') or {}).get('market') or next(
+            (ref for ref in base.get('decisions', []) if ref['kind'] == 'DECISION'), None)
+        if not original:
+            raise SeedPending('ORIGINAL_PUBLIC_MARKET_REQUIRED')
+        market = Entities(db).get(original['kind'], original['object_id'], version=original['version'])
+        if not market or trading_decisions.binding(market) != original or market['scope'] != 'PUBLIC':
+            raise SeedPending('ORIGINAL_PUBLIC_MARKET_REQUIRED')
+        return market
     from .trading import MARKET
-    market = trading_decisions.current_market(db, MARKET)
+    return trading_decisions.current_market(db, MARKET)
+
+
+def public_source(db, base=None):
+    market = _source_market(db, base)
     return public_inputs(market) if market else None
+
+
+def _public_copy(db, run, target, market, base, supplied):
+    from .trading import material
+    if supplied is None:
+        copy = trading_public_report.read(db, target, market, base)
+        if copy:
+            return copy
+        raise SeedPending('PUBLIC_REPORT_SECTIONS_REQUIRED')
+    if (not isinstance(supplied, dict) or not {'market', 'sections'} <= supplied.keys()
+            or supplied.keys() - {'market', 'sections', 'legacy_reviewed', 'reviewed_unchanged'}):
+        raise ValueError('public_seed needs the exact market and its public report sections')
+    if supplied['market'] != trading_decisions.binding(market):
+        raise SeedPending('PUBLIC_REPORT_SECTIONS_CHANGED')
+    author_run = run
+    if base and base.get('seeded'):
+        author_run = {**run, 'known_at': base.get('reviewed_at') or base['assessed_at']}
+    return trading_public_report.prepare(db, author_run, market, base, {
+        'base_report_id': (base or {}).get('report_id'), 'changes': supplied['sections'],
+        'legacy_reviewed': supplied.get('legacy_reviewed', {}),
+        'reviewed_unchanged': supplied.get('reviewed_unchanged', [])},
+        independent=not material(db, run).get('market_binding'))
+
+
+def migrate_public(db, run, target, base, supplied):
+    market = _source_market(db, base)
+    copy = _public_copy(db, run, target, market, base, supplied)
+    return {**base, **({'risk_public_copy': copy['copy_id']} if supplied is None else {}),
+            'modules': {**base['modules'], **copy['sections']}, 'public_market': copy['market'],
+            'basis': {**base.get('basis', {}), **copy['basis']}, 'market_sources': copy['sources']}
 
 
 def _label(subject, policy, scoped):
@@ -79,19 +122,12 @@ def _portfolio_inputs(db, run, release, assessed_at):
 
 
 def build(db, run, release, assessed_at, public_seed, previous):
-    from .trading import MARKET, report_allocation, report_basis, report_judgement_times
+    from .trading import MARKET, destination, report_allocation, report_basis, report_judgement_times
     market = trading_decisions.current_market(db, MARKET)
     if not market or market['known_ms'] > millis(assessed_at):
         raise SeedPending('PUBLIC_MARKET_ADOPTION_REQUIRED')
-    if public_seed is None:
-        raise SeedPending('PUBLIC_REPORT_SECTIONS_REQUIRED')
-    if not isinstance(public_seed, dict) or set(public_seed) != {'market', 'sections'}:
-        raise ValueError('public_seed requires the adopted market reference and its five public sections')
-    if public_seed['market'] != trading_decisions.binding(market):
-        raise SeedPending('PUBLIC_REPORT_SECTIONS_CHANGED')
-    sections = public_seed['sections']
-    if not isinstance(sections, dict) or sections.keys() != trading_report.SECTIONS.keys() - {'allocation'}:
-        raise ValueError('author the five complete public sections without personal content')
+    copy = _public_copy(db, run, destination(db), market, previous, public_seed)
+    sections = copy['sections']
     scope, portfolio, records, pending, missing, sources = _portfolio_inputs(db, run, release, assessed_at)
     known_kinds = {s: {'kind': scope[s]['kind']} for s in missing if s in scope}
     order, terms = report_allocation(records, {'unavailable': missing}, {'allocation_terms': known_kinds}, {})
@@ -153,8 +189,11 @@ def build(db, run, release, assessed_at, public_seed, previous):
     # This is an adopted source edition. Only a native receipt advances the destination baseline.
     seed.update(report_id=(previous or {}).get('report_id'), reviewed_at=times['allocation.cash'],
                 pending_review={p: assessed_at for p in pending}, allocation_terms=terms, valid_until=expiries,
-                basis=report_basis(db, run, market, records, {}), market_sources={},
+                basis=report_basis(db, run, market, records, copy['sources']),
+                public_market=copy['market'], market_sources=copy['sources'],
                 seed_sources=sources)
+    if public_seed is None:
+        seed['risk_public_copy'] = copy['copy_id']
     if previous:
         seed['risk_updates'] = previous['risk_updates']
         seed['pending_review'].update({p: t for p, t in previous['pending_review'].items() if p in expiries})

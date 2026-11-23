@@ -29,7 +29,7 @@ def expired_risks(document, at):
             if note.get('valid_until') and utc(note['valid_until']) <= moment}
 
 
-def _replace(prior, change):
+def replace_passage(prior, change):
     if isinstance(change, str) and change.strip():
         return change
     if not isinstance(change, dict) or set(change) != {'from', 'to'}:
@@ -147,7 +147,7 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
                 if position_line and position_reviewed:
                     pending.pop(path, None)
             elif item in edits and not limited:
-                section[item] = _replace(old, edits[item])
+                section[item] = replace_passage(old, edits[item])
                 pending.pop(path, None)
             elif old is not None and (limited or seeded):
                 section[item] = old
@@ -166,7 +166,7 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
     pending.update({path: assessed_at for path in pending_review})
     if limited:
         previous = next((u for u in updates if u['event_ref'] == event_ref), None)
-        risk = _replace(previous['text'] if previous else None, changes['risks']['conditions'])
+        risk = replace_passage(previous['text'] if previous else None, changes['risks']['conditions'])
         prior_until = previous.get('valid_until') if previous else None
         if prior_until and utc(risk_valid_until) > utc(prior_until):
             raise Conflict('a continuing public risk needs new evidence to extend its original window')
