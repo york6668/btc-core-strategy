@@ -1,7 +1,7 @@
 """Select adopted sources for each part of the investment report."""
 from __future__ import annotations
 
-from .codec import Conflict
+from .codec import Conflict, millis
 from .trading_decisions import binding
 from .trading_policy import POSITION_SUBJECT
 
@@ -14,6 +14,53 @@ MODULE_SOURCES = {
     'crosschecks': {'evidence': ['public.assessments', 'public.evidence']},
     'risks': {'conditions': ['public.conditions', 'public.valid_until']},
 }
+
+
+def _cash_components(terms):
+    return {name: {key: member.get(key) for key in ('currency', 'budget', 'amount', 'month', 'unavailable')}
+            for name, member in terms.items() if member.get('kind') == 'MONTHLY'}
+
+
+def allocation_changes(base, edits, terms, basis, records, portfolio, *, correction, assessed_at):
+    """Apply edits to confirmed allocation text only where its own sources or scope warrant them."""
+    from .trading_report import edit_item
+    if not base or not base['seeded']:
+        return edits
+    old_terms = base.get('allocation_terms', {})
+    output = {}
+    for subject, change in edits.items():
+        prior = base['modules']['allocation'].get(subject)
+        if prior is None or subject == POSITION_SUBJECT or change == prior:
+            output[subject] = change
+            continue
+        path = 'allocation.' + subject
+        if subject == 'cash':
+            was, now = _cash_components(old_terms), _cash_components(terms)
+            changed = old_terms.get('cash') != terms['cash'] or was != now
+            replaced = was.keys() != now.keys() or old_terms.get('cash', {}).keys() != terms['cash'].keys()
+            record = portfolio
+        else:
+            was, now = old_terms.get(subject, {}), terms.get(subject, {})
+            changed = was != now or base.get('basis', {}).get(path) != basis.get(path)
+            replaced = any(was.get(key) != now.get(key) for key in ('kind', 'decision', 'currency', 'unavailable'))
+            record = records.get(subject) or portfolio
+        # A correction to a displayed fact can be necessary even when its formal source stayed the same.
+        # Bind this exception to the item being corrected, not to the purpose of the entire report.
+        whole = isinstance(change, dict) and 'replace_all' in change
+        explanation = change if whole else (change.get('correction') if isinstance(change, dict) else None)
+        explained = (isinstance(explanation, dict) and record is not None and explanation.get('source') == binding(record)
+                     and isinstance(explanation.get('reason'), str) and bool(explanation['reason'].strip()))
+        expiry = base.get('valid_until', {}).get(path)
+        due = path in base.get('pending_review', {}) or (expiry and millis(expiry) <= millis(assessed_at))
+        correcting_item = explained and (correction or due)
+        if not changed and not correcting_item:
+            raise Conflict('retain the confirmed wording for unchanged allocation inputs: ' + subject)
+        if whole and not (explained and (replaced or correcting_item)):
+            raise Conflict('preserve the valid parts of the allocation item or bind its replacement to its decision: ' + subject)
+        if correcting_item and not whole:
+            change = {key: value for key, value in change.items() if key != 'correction'}
+        output[subject] = edit_item(prior, change, allow_full=whole)
+    return output
 
 
 def _fields(source, names):

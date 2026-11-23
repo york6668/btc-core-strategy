@@ -636,6 +636,7 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
                                     or not old_document.get('public_market')
                                     or old_document.get('public_copy_id') != document.get('public_copy_id')
                                     or old_document.get('risk_public_copy') != document.get('risk_public_copy')
+                                    or old_document.get('legacy_public_review') != document.get('legacy_public_review')
                                     or old_document.get('seed_sources') != document.get('seed_sources')
                                     or old_document['base_report_id'] != document['base_report_id']
                                     or _risk_window_changed(old_document, document['assessed_at'])))

@@ -36,18 +36,19 @@ def _public_copy(db, run, target, market, base, supplied):
         copy = trading_public_report.read(db, target, market, base)
         if copy:
             return copy
+        if trading_public_report.legacy_inputs(db, target, base).get('legacy_review_required'):
+            raise SeedPending('LEGACY_PUBLIC_BASELINE_REVIEW_REQUIRED')
         raise SeedPending('PUBLIC_REPORT_SECTIONS_REQUIRED')
     if (not isinstance(supplied, dict) or not {'market', 'sections'} <= supplied.keys()
-            or supplied.keys() - {'market', 'sections', 'legacy_reviewed', 'reviewed_unchanged'}):
+            or supplied.keys() - {'market', 'sections', 'reviewed_unchanged'}):
         raise ValueError('public_seed needs the exact market and its public report sections')
     if supplied['market'] != trading_decisions.binding(market):
         raise SeedPending('PUBLIC_REPORT_SECTIONS_CHANGED')
     author_run = run
     if base and base.get('seeded'):
         author_run = {**run, 'known_at': base.get('reviewed_at') or base['assessed_at']}
-    return trading_public_report.prepare(db, author_run, market, base, {
+    return trading_public_report.prepare(db, author_run, target, market, base, {
         'base_report_id': (base or {}).get('report_id'), 'changes': supplied['sections'],
-        'legacy_reviewed': supplied.get('legacy_reviewed', {}),
         'reviewed_unchanged': supplied.get('reviewed_unchanged', [])},
         independent=not material(db, run).get('market_binding'))
 
@@ -56,6 +57,7 @@ def migrate_public(db, run, target, base, supplied):
     market = _source_market(db, base)
     copy = _public_copy(db, run, target, market, base, supplied)
     return {**base, **({'risk_public_copy': copy['copy_id']} if supplied is None else {}),
+            **({'legacy_public_review': copy['legacy_review_id']} if copy.get('legacy_review_id') else {}),
             'modules': {**base['modules'], **copy['sections']}, 'public_market': copy['market'],
             'basis': {**base.get('basis', {}), **copy['basis']}, 'market_sources': copy['sources']}
 

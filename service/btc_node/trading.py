@@ -19,7 +19,7 @@ SERVICE_SOURCES = ('api.py', 'contracts.py', 'execution.py', 'mcp.py', 'trading.
 READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.source',
          'trading.research_archive', 'trading.research_result', 'trading.preview_report'}
 WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision', 'trading.portfolio_decision',
-          'trading.review', 'trading.research', 'trading.report', 'trading.begin_delivery',
+          'trading.review', 'trading.review_public_baseline', 'trading.research', 'trading.report', 'trading.begin_delivery',
           'trading.record_delivery', 'trading.assess_feedback', 'trading.inherit_feedback',
           'trading.policy', 'trading.seed_policy', SET_ENTRY_REFERENCE}
 
@@ -685,7 +685,8 @@ def report_basis(db, run, market, records, selected):
         if subject != trading_policy.POSITION_SUBJECT:
             result = record['payload']['result']
             basis['allocation.' + subject] = {key: result[key] for key in
-                ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions') if key in result}
+                ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone')
+                if key in result}
     return {entry: fingerprint(encode(value)) for entry, value in basis.items()}
 
 
@@ -701,7 +702,7 @@ def report_judgement_times(market, records, portfolio):
     return times
 
 
-def compose_report(db, run, release, target, refs, support, complete, params):
+def compose_report(db, run, release, target, refs, support, complete, params, *, purpose):
     from . import trading_delivery as delivery, trading_risk_seed
     base = delivery.report_base(db, target)
     if params.pop('base_report_id') != (base['report_id'] if base else None):
@@ -718,6 +719,7 @@ def compose_report(db, run, release, target, refs, support, complete, params):
         raise ValueError('market_sources and public text reviews belong to the independently frozen public copy')
     seed_sources = None
     risk_public_copy = None
+    legacy_public_review = None
     original_risk = None
     if support:
         if (not isinstance(changes, dict) or set(changes) != {'risks'} or not isinstance(changes['risks'], dict)
@@ -733,6 +735,7 @@ def compose_report(db, run, release, target, refs, support, complete, params):
         risk_public_copy = base.get('risk_public_copy')
     elif support and not base.get('public_market'):
         base = trading_risk_seed.migrate_public(db, run, target, base, public_seed)
+        legacy_public_review = base.get('legacy_public_review')
         risk_public_copy = base.get('risk_public_copy')
     elif public_seed is not None:
         raise ValueError('a public seed applies only when the risk edition still needs independent public wording')
@@ -768,6 +771,10 @@ def compose_report(db, run, release, target, refs, support, complete, params):
             raise ValueError('allocation changes must be keyed by subject')
         members, terms = report_allocation(records, status, base, allocation_edits)
         basis = report_basis(db, run, market, records, chosen)
+        if allocation_edits:
+            from .trading_report_inputs import allocation_changes
+            changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
+                                                      correction=purpose == 'CORRECTION', assessed_at=assessed_at)
         market_end = market['payload']['result']['valid_until']
         expiries = {section + '.' + entry: market_end for section, (_, entries) in trading_report.SECTIONS.items()
                     for entry in entries}
@@ -819,6 +826,8 @@ def compose_report(db, run, release, target, refs, support, complete, params):
         document['public_copy_id'] = public_copy['copy_id']
     elif risk_public_copy:
         document['risk_public_copy'] = risk_public_copy
+    if legacy_public_review:
+        document['legacy_public_review'] = legacy_public_review
     document['public_market'] = base['public_market'] if support else public_copy['market']
     document['allocation_terms'] = terms
     document['valid_until'] = expiries
@@ -847,6 +856,10 @@ def feedback(db, run, release, action, params):
         load_methods(release)
         return delivery.inherit_open(db, destination=target,
                                     legacy_root=Path(db.settings['project']) / '.strategy/v4', **params)
+    if action == 'review_public_baseline':
+        if not material(db, run).get('market_binding'):
+            raise Conflict('review the original personal display only after the public market stage')
+        return trading_public_report.review_baseline(db, target, **params)
     if action == 'feedback':
         if params.get('public_writing_inputs'):
             if set(params) != {'public_writing_inputs'}:
@@ -865,7 +878,8 @@ def feedback(db, run, release, action, params):
             needed = not (base and base.get('seeded') and base.get('public_market'))
             return {'base_report_id': base['report_id'] if base else None, 'needs_public_seed': bool(needed),
                     'public': trading_risk_seed.public_source(db, base) if needed else None,
-                    'pending_public_risks': delivery.pending_public_risks(db, target)}
+                    'pending_public_risks': delivery.pending_public_risks(db, target),
+                    **trading_public_report.legacy_inputs(db, target, base)}
         if 'before_report_id' in params and 'decision_id' not in params:
             raise ValueError('name the decision whose earlier display is needed')
         if not material(db, run).get('market_binding'):
@@ -940,8 +954,11 @@ def feedback(db, run, release, action, params):
             raise ValueError('the public event uses its own evidence and edition')
         recovery = dict(params) if support else None
         try:
-            body, document, position_line, base = compose_report(db, run, release, target, refs, support, complete, params)
-        except trading_risk_seed.SeedPending as gap:
+            body, document, position_line, base = compose_report(db, run, release, target, refs, support, complete,
+                                                                 params, purpose=purpose)
+        except (trading_risk_seed.SeedPending, trading_public_report.LegacyReviewRequired) as gap:
+            if support is None:
+                raise
             if action == 'preview_report':
                 return {'status': 'AWAITING_REPORT_BASIS', 'missing': str(gap)}
             return delivery.defer_public_risk(db, target, support, recovery, str(gap))
@@ -997,6 +1014,8 @@ def feedback(db, run, release, action, params):
             return delivery.begin(db, destination=target, run_ref=run['ref'], **params)
         if existing.get('support'):
             risk_support(db, run, **existing['support'])
+            if existing.get('document', {}).get('legacy_public_review'):
+                trading_public_report.check_legacy_source(db, target, existing['document'])
             if existing.get('document', {}).get('risk_public_copy'):
                 trading_public_report.verify_frozen(db, target, existing['document'])
             seed_sources = existing.get('document', {}).get('seed_sources')

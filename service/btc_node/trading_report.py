@@ -1,6 +1,7 @@
 """Compose the displayed investment report from the destination's confirmed edition."""
 from __future__ import annotations
 
+import re
 from zoneinfo import ZoneInfo
 
 from .codec import Conflict, utc
@@ -43,6 +44,65 @@ def replace_passage(prior, change):
     result = prior.replace(old, new, 1)
     if not result.strip():
         raise ValueError('a report item cannot be emptied')
+    return result
+
+
+# Source references stay with the displayed copy, but they do not constitute a retained investment judgement.
+_REFERENCES = re.compile(
+    r'!?\[(?:\\.|[^\]\\\n])*\]\((?:\\.|[^()\\\n]|\([^()\n]*\))*\)'
+    r'|!?\[[^\]\n]*\]\[[^\]\n]*\]|\[\^[^\]\n]+\]|^\s*\[[^\]\n]+\]:[^\n]*'
+    r'|<a\b[^>]*>[^<]*</a>|</?[a-z][\w:-]*(?:\s+[^<>]*)?\s*/?>'
+    r'|https?://[^\s<>\[\]()。，；！？、]+|&(?:#\d+|#x[\da-f]+|[a-z]+);', re.I | re.M)
+
+
+def edit_item(prior, change, *, allow_full=False):
+    """Apply independent edits against the same original. The author validates any whole-item exception."""
+    if prior is None:
+        if isinstance(change, str) and change.strip():
+            return change
+        raise ValueError('a missing report item needs its independently supported initial text')
+    if isinstance(change, dict) and set(change) == {'replace_all', 'source', 'reason'}:
+        if not allow_full or not isinstance(change['reason'], str) or not change['reason'].strip():
+            raise Conflict('replace a whole report item only for a verified invalidation or substantive correction')
+        text = change['replace_all']
+        if not change['source'] or not isinstance(text, str) or not text.strip() or text == prior:
+            raise ValueError('identify why the whole prior item is obsolete and its actual new text and source')
+        return text
+    if isinstance(change, dict) and set(change) == {'from', 'to'}:
+        edits = [change]
+    elif isinstance(change, dict) and set(change) == {'edits'} and isinstance(change['edits'], list):
+        edits = change['edits']
+    else:
+        raise ValueError('edit an existing report item with exact {from,to} replacements against its original text')
+    if not edits:
+        raise ValueError('omit an unchanged item from the report edits')
+    spans = []
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit) != {'from', 'to'}:
+            raise ValueError('each edit needs the exact from and to text')
+        old, new = edit['from'], edit['to']
+        if not isinstance(old, str) or not old.strip() or not isinstance(new, str) or new == old:
+            raise ValueError('each edit needs a real change to a nonempty original passage')
+        start = prior.find(old)
+        if start < 0 or prior.find(old, start + 1) >= 0:
+            raise Conflict('each original passage must occur exactly once before any edits')
+        spans.append((start, start + len(old), new))
+    # Mask the original offsets, so even keeping half of a URL cannot disguise a whole-item rewrite.
+    judgement = _REFERENCES.sub(lambda match: ' ' * len(match[0]), prior)
+    source_end, retained_judgement, parts = 0, [], []
+    for start, end, replacement in sorted(spans):
+        if start < source_end:
+            raise Conflict('report edits overlap in the original text')
+        untouched = prior[source_end:start]
+        retained_judgement.append(judgement[source_end:start])
+        parts.extend([untouched, replacement])
+        source_end = end
+    retained_judgement.append(judgement[source_end:])
+    if not any(c.isalnum() for c in ''.join(retained_judgement)):
+        raise Conflict('the edits consume the whole original judgement; verify a full replacement explicitly')
+    result = ''.join(parts) + prior[source_end:]
+    if not result.strip() or result == prior:
+        raise ValueError('supply a material change to the cited passages')
     return result
 
 
