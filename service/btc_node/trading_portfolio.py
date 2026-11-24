@@ -28,9 +28,15 @@ def scenario_review(database, portfolio, market):
         prior_paths = {key: original['payload']['result'][key] for key in current_paths}
     if prior_paths == current_paths:
         return None
+    requires_adoption = (
+        prior_paths is None
+        or len(prior_paths['alternatives']) != len(current_paths['alternatives'])
+        or current_paths['primary'] in prior_paths['alternatives']
+        or prior_paths['primary'] in current_paths['alternatives']
+    )
     return {'portfolio': decisions.binding(portfolio), 'market': market_ref, 'prior_market': previous,
             'previous_paths': prior_paths, 'current_paths': current_paths,
-            'requires_adoption': prior_paths is None or len(prior_paths['alternatives']) != len(current_paths['alternatives'])}
+            'requires_adoption': requires_adoption}
 
 
 def _choice(record):

@@ -75,16 +75,19 @@ def previous_display(base):
     if not base:
         return None
     from .trading_report import displayed_modules
-    return {'modules': displayed_modules(base), 'lead': base.get('presentation', {}).get('lead')}
+    presentation = base.get('presentation', {})
+    display = {'modules': displayed_modules(base), 'lead': presentation.get('lead')}
+    if presentation.get('additional_lead'):
+        display['additional_lead'] = presentation['additional_lead']
+    return display
 
 
 def _shown_sentences(document):
-    from .trading_report import sentences
+    from .trading_report import lead_excerpts, sentences
     display = previous_display(document)
     by_path = {section + '.' + item: set(sentences(text)) for section, items in display['modules'].items()
                for item, text in items.items()}
-    lead = display['lead']
-    if lead:
+    for lead in lead_excerpts(display):
         by_path.setdefault(lead['path'], set()).update(sentences(lead['quote']))
     return by_path
 
@@ -100,6 +103,7 @@ def check_shortened_correction(document, base, original):
     from .trading_report import sentences
     if not original:
         raise Conflict('use the complete wording when correcting an older display without item boundaries')
+    current_shown = _shown_sentences(document)
     last_shown = _shown_sentences(base)
     for path in document['presentation'].get('shorten', {}):
         section, item = path.split('.', 1)
@@ -107,12 +111,21 @@ def check_shortened_correction(document, base, original):
         after = document['modules'][section][item]
         if after == before:
             continue
-        new_sentences = set(sentences(after)).difference(sentences(before))
-        # A corrected sentence carried only in an abridged edition's full source is still owed.
+        original_sentences = set(sentences(before))
+        remaining = set(sentences(after))
+        new_sentences = remaining - original_sentences
+        visible = current_shown.get(path, set())
         seen = last_shown.get(path, set())
-        already_shown = (new_sentences or set(sentences(after))).issubset(seen)
-        if base['modules'].get(section, {}).get(item) != after or not already_shown:
-            raise Conflict('show the correction in the affected report item: ' + path)
+        if new_sentences:
+            # A received edition that still displayed the removed wording cannot settle its correction.
+            if seen & (original_sentences - remaining):
+                seen = set()
+            if new_sentences <= visible | seen:
+                continue
+        elif remaining <= visible or (base['modules'].get(section, {}).get(item) == after and remaining <= seen):
+            # When the edit only removes text, an abbreviated view may look unchanged.
+            continue
+        raise Conflict('show the correction in the affected report item: ' + path)
 
 
 def public_inputs(market):

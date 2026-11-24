@@ -10,6 +10,7 @@ TIME = {'type': 'string', 'format': 'date-time', 'description': 'Explicit ISO 86
 SCOPE = {'type': 'string', 'enum': ['PUBLIC', 'PERSONAL']}
 VERSION = {'type': 'integer', 'minimum': 0}
 MARKET_BINDING = obj({'object_id':TEXT,'version':VERSION,'digest':TEXT}, ['object_id','version','digest'])
+LEAD_EXCERPT = obj({'path': TEXT, 'quote': TEXT}, ['path', 'quote'])
 SPEC = obj({'kind': TEXT, 'object_id': TEXT, 'scope': SCOPE, 'product': {'type': ['string','null']},
     'observed_at': TIME, 'known_at': TIME, 'identified_at': TIME,
     'change_reason': TEXT, 'source_ref': TEXT, 'method_version': TEXT,
@@ -186,7 +187,8 @@ TRADING_FIELDS = {
                 'assessed_at': TIME, 'public_copy_id': TEXT,
                 'changes': {'type': 'object', 'description': 'Regular reports edit allocation only. Public items are frozen '
                             'by trading.market public_copy. Limited reports submit only their public risk note.'},
-                'presentation': obj({'lead': obj({'path': TEXT, 'quote': TEXT}, ['path', 'quote']),
+                'presentation': obj({'lead': LEAD_EXCERPT,
+                                     'additional_lead': {'type': 'array', 'items': LEAD_EXCERPT, 'maxItems': 2},
                                      'shorten': {'type': 'object', 'additionalProperties': STRINGS}}, ['lead']),
                 'pending_review': STRINGS,
                 'reviewed_unchanged': STRINGS,

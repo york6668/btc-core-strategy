@@ -515,9 +515,7 @@ def _abridged_decision_text(document, origin, subject):
     visible = trading_report.displayed_modules(document)
     passages = [text for section, items in visible.items() for item, text in items.items()
                 if relevant(section + '.' + item)]
-    lead = presentation.get('lead')
-    if lead and relevant(lead['path']):
-        passages.append(lead['quote'])
+    passages.extend(lead['quote'] for lead in trading_report.lead_excerpts(presentation) if relevant(lead['path']))
     return '\n\n'.join(passages)
 
 

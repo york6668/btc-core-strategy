@@ -116,11 +116,13 @@ def _public_display(base, approved, legacy):
         return {'modules': legacy['sections'], 'lead': None} if legacy else None
     displayed = previous_display(base)
     modules = {name: displayed['modules'][name] for name in ITEMS}
-    lead = displayed['lead']
     risk_paths = {'risk_updates.' + note['event_ref'] for note in base.get('risk_updates', [])}
-    if lead and lead['path'] not in PATHS | risk_paths:
-        lead = None
-    return {'modules': modules, 'lead': lead}
+    public_paths = PATHS | risk_paths
+    leads = [lead for lead in trading_report.lead_excerpts(displayed) if lead['path'] in public_paths]
+    result = {'modules': modules, 'lead': leads[0] if leads else None}
+    if len(leads) > 1:
+        result['additional_lead'] = leads[1:]
+    return result
 
 
 def _public_reviews(db, run, snapshot):

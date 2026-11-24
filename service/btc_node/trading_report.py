@@ -175,11 +175,16 @@ def _report_item(document, path):
     raise ValueError('select an item from this complete report edition')
 
 
+def lead_excerpts(presentation):
+    lead = presentation.get('lead')
+    return [lead, *presentation.get('additional_lead', [])] if lead is not None else []
+
+
 def present(document, presentation):
     """Bind this edition's display to exact excerpts without modifying its complete authored copy."""
     if presentation is None:
         return document
-    if not isinstance(presentation, dict) or presentation.keys() - {'lead', 'shorten'}:
+    if not isinstance(presentation, dict) or presentation.keys() - {'lead', 'additional_lead', 'shorten'}:
         raise ValueError('presentation accepts a lead and per-item excerpts')
     shorten = presentation.get('shorten', {})
     if not isinstance(shorten, dict):
@@ -191,11 +196,19 @@ def present(document, presentation):
         start = _check_quotes(source, quotes)
         if section == 'allocation' and quotes != [source]:
             _allocation_excerpt(document, item, '\n\n'.join(quotes), not source[:start].strip())
-    lead = presentation.get('lead')
-    if lead is not None:
+    additional = presentation.get('additional_lead', [])
+    if not isinstance(additional, list) or len(additional) > 2:
+        raise ValueError('select up to two additional lead excerpts')
+    if additional and (document['limited'] or presentation.get('lead') is None):
+        raise ValueError('additional excerpts require a regular report lead')
+    lead_paths = set()
+    for lead in lead_excerpts(presentation):
         if not isinstance(lead, dict) or set(lead) != {'path', 'quote'} or not isinstance(lead['path'], str):
             raise ValueError('select the lead by its report item and exact quote')
         path = lead['path']
+        if path in lead_paths:
+            raise ValueError('select one continuous lead excerpt per report item')
+        lead_paths.add(path)
         if document['limited']:
             event = next((n for n in document['risk_updates'] if path == 'risk_updates.' + n['event_ref']), None)
             if not event or not event.get('valid_until') or utc(event['valid_until']) <= utc(document['assessed_at']):
@@ -239,9 +252,8 @@ def render(document):
     else:
         heading = '评估时间 ' + moment
     parts = [heading]
-    lead = document.get('presentation', {}).get('lead')
     featured_event = None
-    if lead:
+    for lead in lead_excerpts(document.get('presentation', {})):
         if document['limited']:
             event = next(n for n in document['risk_updates'] if lead['path'] == 'risk_updates.' + n['event_ref'])
             parts.append('**' + _display_time(event['at']) + ' 风险更新（有效至 '
