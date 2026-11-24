@@ -194,7 +194,9 @@ TRADING_FIELDS = {
                 'reviewed_unchanged': STRINGS,
                 'market_sources': OBJECT,
                 'public_seed': obj({'market': OBJECT, 'sections': OBJECT, 'reviewed_unchanged': STRINGS}, ['market', 'sections']),
-                'complete': {'type': 'boolean'},
+                'complete': {'type': 'boolean', 'description': 'Delivery as a complete daily report. '
+                             'Use false for an intraday update after daily feedback is confirmed. '
+                             'Regular updates still include all six modules and applicable decisions.'},
                 'valid_until': TIME, 'decisions': OBJECTS, 'reason': TEXT, 'obligation_ids': STRINGS,
                 'supersedes': OBJECT, 'legacy_coverage': OBJECT, 'decision_coverage': OBJECT},
                ['purpose', 'base_report_id', 'assessed_at', 'changes', 'decisions', 'reason']),
