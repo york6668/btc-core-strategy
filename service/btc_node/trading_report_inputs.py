@@ -71,6 +71,50 @@ def _conditions(result):
     return [_fields(item, ('id', 'criterion', 'review_at', 'observation_end')) for item in result['conditions']]
 
 
+def previous_display(base):
+    if not base:
+        return None
+    from .trading_report import displayed_modules
+    return {'modules': displayed_modules(base), 'lead': base.get('presentation', {}).get('lead')}
+
+
+def _shown_sentences(document):
+    from .trading_report import sentences
+    display = previous_display(document)
+    by_path = {section + '.' + item: set(sentences(text)) for section, items in display['modules'].items()
+               for item, text in items.items()}
+    lead = display['lead']
+    if lead:
+        by_path.setdefault(lead['path'], set()).update(sentences(lead['quote']))
+    return by_path
+
+
+def newly_displayed_content(document, base):
+    """Moving a sentence to the lead or joining excerpts does not communicate a new decision."""
+    before = _shown_sentences(base)
+    return any(current.difference(before.get(path, set())) for path, current in _shown_sentences(document).items()
+               if not path.startswith('risk_updates.'))
+
+
+def check_shortened_correction(document, base, original):
+    from .trading_report import sentences
+    if not original:
+        raise Conflict('use the complete wording when correcting an older display without item boundaries')
+    last_shown = _shown_sentences(base)
+    for path in document['presentation'].get('shorten', {}):
+        section, item = path.split('.', 1)
+        before = original['modules'].get(section, {}).get(item, '')
+        after = document['modules'][section][item]
+        if after == before:
+            continue
+        new_sentences = set(sentences(after)).difference(sentences(before))
+        # A corrected sentence carried only in an abridged edition's full source is still owed.
+        seen = last_shown.get(path, set())
+        already_shown = (new_sentences or set(sentences(after))).issubset(seen)
+        if base['modules'].get(section, {}).get(item) != after or not already_shown:
+            raise Conflict('show the correction in the affected report item: ' + path)
+
+
 def public_inputs(market):
     if market['kind'] != 'DECISION' or market['scope'] != 'PUBLIC':
         raise Conflict('report writing needs the frozen public market judgement')
@@ -78,9 +122,13 @@ def public_inputs(market):
     public = _fields(result, ('conclusion', 'primary', 'alternatives', 'value', 'assessments', 'valid_until'))
     public.update(decision=binding(market), known_ms=market['known_ms'], valuations=result.get('valuations', {}),
                   conditions=_conditions(result),
-                  evidence=[_fields(ref, ('type', 'kind', 'object_id', 'version', 'digest', 'product',
-                                           'series', 'item_key', 'observation_key')) for ref in market['dependencies']])
+                  evidence=evidence_refs(market['dependencies']))
     return public
+
+
+def evidence_refs(dependencies):
+    return [_fields(ref, ('type', 'kind', 'object_id', 'version', 'digest', 'product',
+                          'series', 'item_key', 'observation_key')) for ref in dependencies]
 
 
 def writing_inputs(market, portfolio, records, position_line):
@@ -93,6 +141,8 @@ def writing_inputs(market, portfolio, records, position_line):
         return inputs
     plan = portfolio['payload']
     allocation['portfolio'] = binding(portfolio)
+    allocation['scenarios'] = _fields(plan, ('primary', 'alternatives'))
+    allocation['interactions'] = plan.get('interactions', [])
     unavailable = set(plan.get('unavailable_members', {})) | (records.keys() - plan['decisions'].keys())
     for subject, ref in plan['decisions'].items():
         record = records.get(subject)

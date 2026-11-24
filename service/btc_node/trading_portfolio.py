@@ -12,6 +12,27 @@ def current(database):
     return Entities(database).get('PLAN', OBJECT_ID)
 
 
+def scenario_review(database, portfolio, market):
+    """Show the paths behind the adopted joint assessment when the public basis has moved."""
+    if not portfolio:
+        return None
+    previous = portfolio['payload']['market']
+    market_ref = decisions.binding(market)
+    if previous == market_ref:
+        return None
+    original = Entities(database).get(previous['kind'], previous['object_id'], version=previous['version'])
+    current_result = market['payload']['result']
+    current_paths = {key: current_result[key] for key in ('primary', 'alternatives')}
+    prior_paths = None
+    if original and decisions.binding(original) == previous:
+        prior_paths = {key: original['payload']['result'][key] for key in current_paths}
+    if prior_paths == current_paths:
+        return None
+    return {'portfolio': decisions.binding(portfolio), 'market': market_ref, 'prior_market': previous,
+            'previous_paths': prior_paths, 'current_paths': current_paths,
+            'requires_adoption': prior_paths is None or len(prior_paths['alternatives']) != len(current_paths['alternatives'])}
+
+
 def _choice(record):
     payload = record['payload']
     result = payload['result']

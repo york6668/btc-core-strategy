@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from . import trading_decisions, trading_delivery, trading_report
-from .codec import Conflict, encode, fingerprint, identity
-from .trading_report_inputs import public_inputs
+from .codec import Conflict, encode, fingerprint, identity, millis
+from .entities import Entities
+from .trading_report_inputs import evidence_refs, previous_display, public_inputs
 
 
 ITEMS = {name: items for name, (_, items) in trading_report.SECTIONS.items() if name != 'allocation'}
@@ -110,7 +111,55 @@ def legacy_inputs(db, target, base):
             'previous_public': reviewed['sections'] if reviewed else None}
 
 
-def context(db, target, market, base):
+def _public_display(base, approved, legacy):
+    if not approved:
+        return {'modules': legacy['sections'], 'lead': None} if legacy else None
+    displayed = previous_display(base)
+    modules = {name: displayed['modules'][name] for name in ITEMS}
+    lead = displayed['lead']
+    risk_paths = {'risk_updates.' + note['event_ref'] for note in base.get('risk_updates', [])}
+    if lead and lead['path'] not in PATHS | risk_paths:
+        lead = None
+    return {'modules': modules, 'lead': lead}
+
+
+def _public_reviews(db, run, snapshot):
+    """Read this run's actual checks, including conditions subsequently retired by its new judgement."""
+    objects = Entities(db)
+    origins = {}
+    reviews = []
+    for ref in snapshot.get('independent_condition_reviews', []):
+        record = objects.get('REVIEW', ref['object_id'], version=ref['version'])
+        if (not record or trading_decisions.binding(record) != ref or record['scope'] != 'PUBLIC'
+                or record['source_ref'] != run['ref']):
+            raise Conflict('recover the exact independent public condition review for this run')
+        if record['known_ms'] > millis(run['known_at']):
+            continue
+        review = record['payload']
+        target = review['subject']
+        if target['digest'] not in origins:
+            original = objects.get(target['kind'], target['object_id'], version=target['version'])
+            if not original or original['scope'] != 'PUBLIC' or trading_decisions.binding(original) != target:
+                raise Conflict('public condition review no longer resolves to its original public judgement')
+            origins[target['digest']] = {c['id']: c for c in original['payload']['result']['conditions']}
+        condition = origins[target['digest']][review['condition_id']]
+        evidence = [ref for ref in record['dependencies'] if ref.get('relation') != 'ORIGINAL_JUDGEMENT']
+        reviews.append({'origin': target, 'condition_id': condition['id'], 'criterion': condition['criterion'],
+                        'review_ref': ref, 'known_ms': record['known_ms'],
+                        'outcome': review['outcome'], 'impact': review.get('impact'), 'explanation': review['explanation'],
+                        'review_at': condition['review_at'], 'observation_end': condition.get('observation_end'),
+                        'next_review_at': review.get('next_review_at'), 'evidence': evidence_refs(evidence)})
+    return reviews
+
+
+def _market_review(snapshot, market, at):
+    review = snapshot.get('market_review') or {}
+    if review.get('public_market') == trading_decisions.binding(market) and millis(review['assessed_at']) <= millis(at):
+        return {**review, 'evidence': evidence_refs(review['evidence'])}
+    return None
+
+
+def context(db, target, market, base, *, run, snapshot):
     approved = bool(base and base.get('public_market'))
     staged = read(db, target, market, base)
     legacy = _legacy_review(db, target, base)
@@ -118,6 +167,9 @@ def context(db, target, market, base):
     sections = previous['sections'] if previous else (_original_sections(base) if approved else None)
     return {'market': public_inputs(market), 'base_report_id': (base or {}).get('report_id'),
             'previous_public': sections, 'previous_copy_id': staged['copy_id'] if staged else None,
+            'previous_display': _public_display(base, approved, legacy),
+            'market_review': _market_review(snapshot, market, run['known_at']),
+            'condition_reviews': _public_reviews(db, run, snapshot),
             'public_risk_updates': [{k: v for k, v in note.items() if approved or k != 'text'}
                                     for note in (base or {}).get('risk_updates', [])],
             'legacy_review_required': bool(base and base.get('seeded') and not approved and not legacy and not staged),
@@ -135,7 +187,7 @@ def _sources(market):
     return sources
 
 
-def _extract(sources, value):
+def _extract(sources, value, *, used=None):
     if not isinstance(value, dict) or set(value) != {'extracts'} or not isinstance(value['extracts'], list):
         raise ValueError('after the market freeze use extracts from actual public sources')
     parts = []
@@ -147,6 +199,8 @@ def _extract(sources, value):
         if not isinstance(quote, str) or not quote.strip() or quote not in source:
             raise Conflict('the cited public source does not contain this passage')
         parts.append(quote)
+        if used is not None:
+            used.add(item['source'])
     if not parts:
         raise ValueError('select the public evidence to display')
     return '\n\n'.join(parts)
@@ -175,29 +229,29 @@ def risk_text(db, run, target, support, value):
     return text
 
 
-def _check_source(market, evidence):
+def _check_source(sources, evidence, used):
     if not isinstance(evidence, dict) or set(evidence) != {'source', 'quote'}:
         raise ValueError('cite the decisive passage in the exact frozen public source')
-    _extract(_sources(market), {'extracts': [evidence]})
+    _extract(sources, {'extracts': [evidence]}, used=used)
 
 
-def _update_item(market, prior, value, *, independent, changed):
+def _update_item(sources, prior, value, *, independent, changed, review_sources, used):
     if prior is None:
         if not independent or isinstance(value, dict):
-            value = _extract(_sources(market), value)
+            value = _extract(sources, value, used=used)
         return trading_report.edit_item(None, value)
     if not isinstance(value, dict):
         raise ValueError('update the confirmed public wording with exact edits; use reviewed_unchanged to retain it')
     value = dict(value)
     correction = value.pop('correction', None)
     if correction is not None:
-        _check_source(market, correction)
-    if not (changed or correction):
-        raise Conflict('the public input for this item is unchanged; cite the actual evidence for a display correction')
+        _check_source(sources, correction, used)
     if 'replace_all' in value:
-        _check_source(market, value.get('source'))
+        if not (changed or correction):
+            raise Conflict('a changed public basis or actual correction is required to replace the original item')
+        _check_source(sources, value.get('source'), used)
         if not independent or isinstance(value['replace_all'], dict):
-            value['replace_all'] = _extract(_sources(market), value['replace_all'])
+            value['replace_all'] = _extract(sources, value['replace_all'], used=used)
         return trading_report.edit_item(prior, value, allow_full=True)
     edits = value.get('edits', [value])
     if not isinstance(edits, list):
@@ -207,8 +261,12 @@ def _update_item(market, prior, value, *, independent, changed):
         if not isinstance(edit, dict) or set(edit) != {'from', 'to'}:
             raise ValueError('each public edit needs the unique original passage and replacement')
         replacement = edit['to']
+        excerpt_sources = set()
         if isinstance(replacement, dict) or (not independent and replacement != ''):
-            replacement = _extract(_sources(market), replacement)
+            replacement = _extract(sources, replacement, used=excerpt_sources)
+        if not (changed or correction or excerpt_sources.intersection(review_sources)):
+            raise Conflict('use an exact new public review excerpt for an update to unchanged market inputs')
+        used.update(excerpt_sources)
         changes.append({'from': edit['from'], 'to': replacement})
     if set(value) not in ({'from', 'to'}, {'edits'}):
         raise ValueError('public partial edits and whole-item replacements have distinct scopes')
@@ -216,7 +274,7 @@ def _update_item(market, prior, value, *, independent, changed):
 
 
 def prepare(db, run, target, market, base, draft, *, independent, previous=None):
-    from .trading import report_basis
+    from .trading import material, report_basis
     if (not isinstance(draft, dict) or 'base_report_id' not in draft
             or set(draft) - {'base_report_id', 'changes', 'market_sources', 'reviewed_unchanged',
                              'legacy_reviewed', 'previous_copy_id'}):
@@ -236,6 +294,18 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
     chosen = dict(previous['sources'] if previous else (base or {}).get('market_sources', {}))
     chosen.update(draft.get('market_sources', {}))
     basis = report_basis(db, run, market, {}, chosen)
+    snapshot = material(db, run)
+    sources = _sources(market)
+    review_sources = {}
+    review = _market_review(snapshot, market, run['known_at'])
+    if review and review['mode'] == 'REUSE':
+        sources['market_review'] = review['reason']
+        review_sources['market_review'] = {'run_ref': run['ref'], 'market_review': review}
+    for check in _public_reviews(db, run, snapshot):
+        key = 'review/' + check['review_ref']['digest']
+        sources[key] = check['explanation']
+        review_sources[key] = {'run_ref': run['ref'], 'review_ref': check['review_ref']}
+    used = set()
     previous_basis = (previous or base or {}).get('basis', {})
     affected = {p for p, digest in basis.items() if (previous or existing_edition) and previous_basis.get(p) != digest}
     pending = (base or {}).get('pending_review', {})
@@ -250,7 +320,8 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
             path = name + '.' + key
             prior = prior_sections.get(name, {}).get(key)
             if key in items:
-                text = _update_item(market, prior, items[key], independent=independent, changed=path in affected)
+                text = _update_item(sources, prior, items[key], independent=independent, changed=path in affected,
+                                    review_sources=review_sources, used=used)
                 edited.add(path)
             elif prior is None:
                 raise Conflict('provide the independently sourced public report item ' + path)
@@ -278,6 +349,12 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
             'reviewed': sorted((reviewed - edited) & still_changed)}
     if legacy:
         copy['legacy_review_id'] = legacy['review_id']
+    bindings = list((previous or {}).get('review_sources', []))
+    for name in sorted(used.intersection(review_sources)):
+        if review_sources[name] not in bindings:
+            bindings.append(review_sources[name])
+    if bindings:
+        copy['review_sources'] = bindings
     return {**copy, 'copy_id': fingerprint(encode(copy))}
 
 

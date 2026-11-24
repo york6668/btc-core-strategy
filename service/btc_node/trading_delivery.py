@@ -500,7 +500,28 @@ def check_displayed_correction(db, destination, original, event):
                 raise Conflict('replace the outstanding draft of this correction')
 
 
-def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None):
+def _abridged_decision_text(document, origin, subject):
+    """Return the words shown for an owed decision if this edition shortened its subject."""
+    presentation = (document or {}).get('presentation', {})
+    shortened = presentation.get('shorten', {})
+    if not shortened or not origin:
+        return None
+    personal = origin['kind'] == 'PLAN'
+    def relevant(path):
+        return path == 'allocation.' + subject if personal else not path.startswith('allocation.')
+
+    if not any(relevant(path) for path in shortened):
+        return None
+    visible = trading_report.displayed_modules(document)
+    passages = [text for section, items in visible.items() for item, text in items.items()
+                if relevant(section + '.' + item)]
+    lead = presentation.get('lead')
+    if lead and relevant(lead['path']):
+        passages.append(lead['quote'])
+    return '\n\n'.join(passages)
+
+
+def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None, document=None):
     # Event and daily notifications also have trigger references. Only an actual
     # decision version under the original subject establishes a decision binding.
     event = obligation.get('public_risk')
@@ -534,6 +555,12 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
         elif ref != origin:
             raise Conflict('identify the successor direction displayed in the original position allocation item')
         return
+    shown = _abridged_decision_text(document, origin, subject)
+    if shown is not None and ref == origin:
+        _exact(coverage, 'excerpt', 'displayed coverage of the abridged decision')
+        if _text(coverage['excerpt'], 'the displayed material meaning') not in shown:
+            raise Conflict('the shortened report must show the specific point owed for this decision')
+        return
     if coverage is None:
         if origin and ref != origin:
             raise Conflict('cite the original decision or explain its successor in the report: ' + subject)
@@ -543,7 +570,7 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
     if 'policy' not in coverage:
         _exact(coverage, 'excerpt', 'successor decision coverage')
         excerpt = _text(coverage['excerpt'], 'displayed explanation of the decision')
-        if not ref or ref['version'] <= origin['version'] or excerpt not in body:
+        if not ref or ref['version'] <= origin['version'] or excerpt not in (body if shown is None else shown):
             raise Conflict('the cited decision and its actual owed explanation must appear in this report')
         return
     _exact(coverage, 'policy excerpt', 'retired decision coverage')
@@ -605,7 +632,8 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
     old = _by_id(db, supersedes['report_id'], REPORT) if supersedes else None
     for row in obligations:
         entry = row['payload']
-        _check_decision_coverage(db, entry, decisions, body, decision_coverage.get(entry['obligation_id']), position_line)
+        _check_decision_coverage(db, entry, decisions, body, decision_coverage.get(entry['obligation_id']),
+                                 position_line, document)
         bound = entry.get('destination')
         if not row['active'] or (bound is not None and _channel(bound) != _channel(destination)):
             raise Conflict('only open obligations for the original approved destination may be covered')
@@ -713,7 +741,7 @@ def begin(db, *, destination, report_id, anchor_ref, run_ref):
             coverage = value['decision_coverage'].get(identifier)
             _check_decision_coverage(db, obligation['payload'], value['decisions'],
                                      _body(db, value) if coverage or obligation['payload'].get('public_risk') else '',
-                                     coverage, value.get('position_line'))
+                                     coverage, value.get('position_line'), value.get('document'))
     _text(anchor_ref, 'actual target readback cursor')
     _text(run_ref, 'actual sending run')
     number = value['attempt_count'] + 1

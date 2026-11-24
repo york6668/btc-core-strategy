@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from .codec import Conflict, utc
@@ -106,8 +107,129 @@ def edit_item(prior, change, *, allow_full=False):
     return result
 
 
+_SENTENCE_END = re.compile(r"""(?:[。！？!?]+|\.(?=[”’」』）"'*_]*(?:\s|$)))[”’」』）"'*_]*|\n\s*\n""")
+
+
+def _sentence_spans(source):
+    # Keep offsets while preventing punctuation in a URL or its link label from making a boundary.
+    prose = _REFERENCES.sub(lambda match: 'x' * len(match[0]), source)
+    cuts = [0, *(m.end() for m in _SENTENCE_END.finditer(prose)), len(source)]
+    for left, right in zip(cuts, cuts[1:]):
+        unit = source[left:right]
+        if unit.strip():
+            yield left + len(unit) - len(unit.lstrip()), left + len(unit.rstrip())
+
+
+def sentences(source):
+    """Return the original display units, excluding citation-only tails."""
+    units = (source[start:end] for start, end in _sentence_spans(source))
+    return [unit for unit in units if any(c.isalnum() for c in _REFERENCES.sub('', unit))]
+
+
+def _check_quotes(source, quotes):
+    """Select complete sentences or paragraphs in source order, outside links."""
+    if not isinstance(quotes, list) or not quotes:
+        raise ValueError('select one or more exact sentences from this report item')
+    spans = list(_sentence_spans(source))
+    starts = [start for start, _ in spans]
+    ends = {end for _, end in spans}
+    cursor = 0
+    for i, quote in enumerate(quotes):
+        if not isinstance(quote, str) or not any(c.isalnum() for c in _REFERENCES.sub('', quote)):
+            raise ValueError('a presentation excerpt needs substantive report text')
+        hits = [(start, start + len(quote)) for start in starts
+                if start >= cursor and start + len(quote) in ends and source.startswith(quote, start)]
+        if len(hits) != 1:
+            raise Conflict('select unambiguous complete original sentences in order, including their Markdown')
+        start, cursor = hits[0]
+        if i == 0:
+            first_start = start
+    return first_start
+
+
+def _allocation_excerpt(document, item, text, includes_opening):
+    # The opening decision and all adopted planning amounts must be readable in the short item itself.
+    terms = document.get('allocation_terms', {}).get(item) or {}
+    if not includes_opening or not terms or terms.get('unavailable') or item == POSITION_SUBJECT:
+        raise Conflict('keep the full allocation decision when its opening, scope or direction cannot be retained')
+    if item == 'cash':
+        required = terms.items()
+    else:
+        required = [(terms.get('currency'), terms[key]) for key in ('amount', 'budget') if key in terms]
+    prose = _REFERENCES.sub(' ', text)
+    for currency, amount in required:
+        if not currency or amount is None:
+            raise Conflict('keep the full entry while a planning amount is unresolved')
+        pattern = r'(?<![\d.,−-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*' + re.escape(currency) + r'(?![A-Za-z])'
+        if not any(Decimal(number.replace(',', '')) == Decimal(str(amount))
+                   for number in re.findall(pattern, prose, flags=re.IGNORECASE)):
+            raise Conflict('the short allocation entry must show the adopted amount, budget and currency')
+
+
+def _report_item(document, path):
+    if isinstance(path, str):
+        section, _, item = path.partition('.')
+        source = document['modules'].get(section, {}).get(item)
+        if source is not None:
+            return section, item, source
+    raise ValueError('select an item from this complete report edition')
+
+
+def present(document, presentation):
+    """Bind this edition's display to exact excerpts without modifying its complete authored copy."""
+    if presentation is None:
+        return document
+    if not isinstance(presentation, dict) or presentation.keys() - {'lead', 'shorten'}:
+        raise ValueError('presentation accepts a lead and per-item excerpts')
+    shorten = presentation.get('shorten', {})
+    if not isinstance(shorten, dict):
+        raise ValueError('key short excerpts by report item')
+    if document['limited'] and shorten:
+        raise ValueError('a public risk update cannot reselect excerpts from inherited judgements')
+    for path, quotes in shorten.items():
+        section, item, source = _report_item(document, path)
+        start = _check_quotes(source, quotes)
+        if section == 'allocation' and quotes != [source]:
+            _allocation_excerpt(document, item, '\n\n'.join(quotes), not source[:start].strip())
+    lead = presentation.get('lead')
+    if lead is not None:
+        if not isinstance(lead, dict) or set(lead) != {'path', 'quote'} or not isinstance(lead['path'], str):
+            raise ValueError('select the lead by its report item and exact quote')
+        path = lead['path']
+        if document['limited']:
+            event = next((n for n in document['risk_updates'] if path == 'risk_updates.' + n['event_ref']), None)
+            if not event or not event.get('valid_until') or utc(event['valid_until']) <= utc(document['assessed_at']):
+                raise Conflict('the public risk lead must come from a verified current risk event')
+            source = event['text']
+        else:
+            section, item, source = _report_item(document, path)
+            if path in document['pending_review'] or (section == 'allocation' and item == POSITION_SUBJECT):
+                raise Conflict('this judgement must stay with its status in the original report item')
+        _check_quotes(source, [lead['quote']])
+    if document['limited'] and document.get('presentation', {}).get('shorten'):
+        presentation = {**presentation, 'shorten': document['presentation']['shorten']}
+    return {**document, 'presentation': presentation}
+
+
+def displayed_modules(document):
+    """Text actually shown under each item, independent of the full decision copy and the lead."""
+    shorten = document.get('presentation', {}).get('shorten', {})
+    if not shorten:
+        return document['modules']
+    return {name: {item: '\n\n'.join(shorten[name + '.' + item]) if name + '.' + item in shorten else text
+                   for item, text in entries.items()} for name, entries in document['modules'].items()}
+
+
+def _item_label(name, item):
+    if name == 'market':
+        return '**' + MARKET_LABELS[item] + '**　'
+    if name == 'outlook':
+        return '**主情景**　' if item == 'primary' else '**竞争情景**　'
+    return ''
+
+
 def render(document):
-    sections = document['modules']
+    sections = displayed_modules(document)
     moment = _display_time(document['assessed_at'])
     if document['limited']:
         heading = '公开风险更新于 ' + moment
@@ -117,15 +239,24 @@ def render(document):
     else:
         heading = '评估时间 ' + moment
     parts = [heading]
+    lead = document.get('presentation', {}).get('lead')
+    featured_event = None
+    if lead:
+        if document['limited']:
+            event = next(n for n in document['risk_updates'] if lead['path'] == 'risk_updates.' + n['event_ref'])
+            parts.append('**' + _display_time(event['at']) + ' 风险更新（有效至 '
+                         + _display_time(event['valid_until']) + '）。** ' + lead['quote'])
+            if lead['quote'] == event['text']:
+                featured_event = event['event_ref']
+        else:
+            # A scenario or market-specific observation still needs its attribution above the modules.
+            name, item = lead['path'].split('.', 1)
+            parts.append(_item_label(name, item) + lead['quote'])
     for name, (title, items) in SECTIONS.items():
         parts.append('## ' + title)
         order = document['member_order'] if name == 'allocation' else items
         for item in order:
-            paragraph = sections[name][item]
-            if name == 'market':
-                paragraph = '**' + MARKET_LABELS[item] + '**　' + paragraph
-            elif name == 'outlook':
-                paragraph = ('**主情景**　' if item == 'primary' else '**竞争情景**　') + paragraph
+            paragraph = _item_label(name, item) + sections[name][item]
             marked = document['pending_review'].get(name + '.' + item)
             if marked:
                 if 'judgement_times' in document:
@@ -139,6 +270,8 @@ def render(document):
         if name == 'risks':
             expired = expired_risks(document, document['assessed_at'])
             for update in document['risk_updates']:
+                if update['event_ref'] == featured_event:
+                    continue
                 formed = _display_time(update['at'])
                 until = update.get('valid_until')
                 window = ('有效至 ' + _display_time(until)) if until else '原有效期未核实'
@@ -241,6 +374,9 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
                 'assessed_at': assessed_at, 'reviewed_at': (base or {}).get('reviewed_at') if limited else assessed_at,
                 'limited': limited, 'seeded': seeded or not limited, 'member_order': order,
                 'pending_review': pending, 'risk_updates': updates, 'judgement_times': judgement_times}
+    # A public risk author adds its event without widening the preceding edition's disclosure.
+    if limited and base.get('presentation', {}).get('shorten'):
+        document['presentation'] = {'shorten': base['presentation']['shorten']}
     body = render(document)
     if '{{existing_position}}' in body or (position_line and body.count(position_line) != 1):
         raise ValueError('the adopted original position belongs only in its allocation item')

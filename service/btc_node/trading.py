@@ -168,7 +168,8 @@ def public_evidence(db, refs, *, required=True):
 def market_ready(db, run, *, evidence, market=None, expected_version=None, result=None, reason=None, notification=None,
                  public_copy=None):
     from . import trading_decisions as decisions
-    independent = not material(db, run).get('market_binding')
+    snapshot = material(db, run)
+    independent = not snapshot.get('market_binding')
     refs = public_evidence(db, evidence)
     if not deep_gate.check_scope(db, scope='btc/market')['allowed']:
         raise Conflict('known market defect limits new market conclusions')
@@ -182,12 +183,17 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
             raise Conflict('reuse requires the exact current market judgment')
         if decisions.decision_state(db, record, at=run['known_at'])['status'] != 'CURRENT':
             raise Conflict('market judgment has expired; review the original conditions')
+    bound = reference(record)
+    review = {'reason': reason, 'evidence': refs}
+    if independent:
+        review.update(public_market=bound, assessed_at=run['known_at'], mode='ADOPT' if result is not None else 'REUSE')
+    elif snapshot.get('market_review', {}).get('public_market') == bound:
+        # A later portfolio-side copy request cannot replace the independent assessment for its public author.
+        review = snapshot['market_review']
+    db.metadata(material_key(run['ref']), {**snapshot, 'market_binding': bound, 'market_review': review}, write=True)
     copy_id = None
     if public_copy is not None:
         copy_id = trading_public_report.freeze(db, run, destination(db), record, public_copy, independent=independent)
-    bound = reference(record)
-    db.metadata(material_key(run['ref']), {**material(db, run), 'market_binding': bound,
-                 'market_review': {'reason': reason, 'evidence': refs}}, write=True)
     if notification is not None:
         if result is None:
             raise ValueError('a new decision obligation must reference the adopted change')
@@ -257,6 +263,7 @@ def personal_context(db, run, release):
             'market_inputs': inputs,
             'policy_status': status, 'policies': scope,
             'current': records, 'portfolio': portfolio,
+            'scenario_review': trading_portfolio.scenario_review(db, portfolio, market),
             'review': review,
             'review_targets': [{'subject': subject, **condition}
                                for subject, state in review.items() for condition in state['conditions']],
@@ -471,15 +478,21 @@ def research(db, run, *, scope, subject, question, evidence, expected_version, o
 
 def review(db, run, *, target, condition_id, outcome, explanation, evidence, **updates):
     from . import trading_decisions as decisions
-    material(db, run)
+    snapshot = material(db, run)
     record = Entities(db).get(target['kind'], target['object_id'], version=target['version'])
     if not record or record['digest'] != target['digest']:
         raise Conflict('review requires the original condition and decision')
     if record['scope'] == 'PERSONAL':
         frozen_market(db, run)
-    return decisions.record_review(db, target=target, condition_id=condition_id, outcome=outcome,
-                                   explanation=explanation, evidence=public_evidence(db, evidence, required=outcome != 'UNKNOWN'),
-                                   run=run, **updates)
+    checked = decisions.record_review(db, target=target, condition_id=condition_id, outcome=outcome,
+                                     explanation=explanation, evidence=public_evidence(db, evidence, required=outcome != 'UNKNOWN'),
+                                     run=run, **updates)
+    if record['scope'] == 'PUBLIC' and not snapshot.get('market_binding'):
+        checks = snapshot.get('independent_condition_reviews', [])
+        ref = reference(checked)
+        if ref not in checks:
+            db.metadata(material_key(run['ref']), {**snapshot, 'independent_condition_reviews': [*checks, ref]}, write=True)
+    return checked
 
 
 def invoke(db, method, params):
@@ -824,6 +837,8 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         raise ValueError('reviewed_unchanged applies only when reviewing an existing regular edition')
     if support is None:
         document['public_copy_id'] = public_copy['copy_id']
+        if public_copy.get('review_sources'):
+            document['public_review_sources'] = public_copy['review_sources']
     elif risk_public_copy:
         document['risk_public_copy'] = risk_public_copy
     if legacy_public_review:
@@ -865,10 +880,10 @@ def feedback(db, run, release, action, params):
             if set(params) != {'public_writing_inputs'}:
                 raise ValueError('request public author inputs separately')
             from . import trading_decisions
-            material(db, run)
+            snapshot = material(db, run)
             market = trading_decisions.current_market(db, MARKET)
             base = delivery.report_base(db, target)
-            return trading_public_report.context(db, target, market, base) if market else {
+            return trading_public_report.context(db, target, market, base, run=run, snapshot=snapshot) if market else {
                 'market': None, 'base_report_id': (base or {}).get('report_id'), 'copy_ready': False}
         if params.get('risk_seed_inputs'):
             if set(params) != {'risk_seed_inputs'}:
@@ -897,7 +912,7 @@ def feedback(db, run, release, action, params):
         if params.pop('writing_inputs', False):
             if params:
                 raise ValueError('request the report writing inputs separately from prior decision displays')
-            from .trading_report_inputs import writing_inputs
+            from .trading_report_inputs import previous_display, writing_inputs
             portfolio = trading_portfolio.current(db)
             records = {}
             if portfolio and portfolio['payload']['market'] == reference(market):
@@ -907,7 +922,7 @@ def feedback(db, run, release, action, params):
                     if record and reference(record) == ref:
                         records[subject] = record
             position = records.get(trading_policy.POSITION_SUBJECT)
-            return {**edition, 'writing_inputs': writing_inputs(
+            return {**edition, 'previous_display': previous_display(base), 'writing_inputs': writing_inputs(
                 market, portfolio, records, delivery.position_line(position) if position else None)}
         before = {**delivery.context(db, destination=target, at=run['known_at']), **edition}
         if 'decision_id' in params:
@@ -931,7 +946,12 @@ def feedback(db, run, release, action, params):
         event = params.get('event_ref')
         displayed_correction = purpose == 'CORRECTION' and isinstance(event, str) and event.startswith(delivery.REPORT)
         support = None
+        presentation = params.pop('presentation', None)
+        if complete and isinstance(presentation, dict) and presentation.get('shorten'):
+            raise ValueError('a complete report can select a lead; it must show each applicable item in full')
         if purpose == 'RISK' and not refs and not complete:
+            if presentation is not None:
+                raise ValueError('the limited public event leads with its verified risk; it cannot select portfolio text')
             if validity is None:
                 raise ValueError('limited public risk feedback needs its own useful lifetime')
             support = risk_support(db, run, params['event_ref'], validity, assessed_at=params['assessed_at'])
@@ -949,6 +969,8 @@ def feedback(db, run, release, action, params):
                 raise ValueError('a verified public risk can only submit its event note')
             risk_text = trading_public_report.risk_text(db, run, target, support, edits['risks']['conditions'])
             params['changes'] = {'risks': {'conditions': risk_text}}
+            first = next(paragraph.strip() for paragraph in risk_text.split('\n\n') if paragraph.strip())
+            presentation = {'lead': {'path': 'risk_updates.' + event, 'quote': first}, 'shorten': {}}
         expected_copy = params.pop('public_copy_id', None)
         if support and expected_copy is not None:
             raise ValueError('the public event uses its own evidence and edition')
@@ -966,9 +988,27 @@ def feedback(db, run, release, action, params):
                                 and expected_copy != document['public_copy_id']):
             raise Conflict('preview the current public copy, then submit its public_copy_id')
         document['purpose'] = purpose
+        if presentation is not None:
+            if (not support and isinstance(presentation, dict) and presentation.get('shorten')
+                    and not (base and base.get('seeded'))):
+                raise Conflict('show all items when establishing the first confirmed report at this destination')
+            document = trading_report.present(document, presentation)
+            body = trading_report.render(document)
         if displayed_correction:
             delivery.check_displayed_correction(db, target, params.get('supersedes'), event)
             document['corrects'] = event
+            # A shortened correction must still show the corrected content of each affected item.
+            if presentation and presentation.get('shorten') and base:
+                from .trading_report_inputs import check_shortened_correction
+                original = base if base['report_id'] == event else delivery.get(db, report_id=event).get('document')
+                check_shortened_correction(document, base, original)
+        if purpose == 'UPDATE' and not params.get('obligation_ids') and base and base['seeded']:
+            from .trading_report_inputs import newly_displayed_content
+            if (document['pending_review'] == base['pending_review'] and document['risk_updates'] == base['risk_updates']
+                    and trading_report.expired_risks(base, base['assessed_at'])
+                    == trading_report.expired_risks(document, document['assessed_at'])
+                    and not newly_displayed_content(document, base)):
+                raise Conflict('the destination has already received these conclusions; check for a material change')
         if action == 'preview_report':
             if support:
                 return {'base_report_id': document['base_report_id'], 'assessed_at': document['assessed_at'],
@@ -984,13 +1024,6 @@ def feedback(db, run, release, action, params):
                                                  reason=params['reason'], kind=purpose, legacy_destination=target)
         else:
             event = plain(params['event_ref'], 'original material event reference')
-            if (purpose == 'UPDATE' and not obligations and base and base['seeded']
-                    and document['modules'] == base['modules']
-                    and document['pending_review'] == base['pending_review']
-                    and document['risk_updates'] == base['risk_updates']
-                    and trading_report.expired_risks(base, base['assessed_at'])
-                    == trading_report.expired_risks(document, document['assessed_at'])):
-                raise Conflict('the destination has already received these conclusions; check for a material change')
             if not (displayed_correction or event in {item['digest'] for item in refs}
                     or db.metadata('trading.public.' + event.removeprefix('sha256:'))):
                 raise ValueError('refer to the actual changed decision or stored event evidence')
@@ -1053,7 +1086,7 @@ def _unchecked_due_condition(state):
     return None
 
 
-def _require_current_feedback_review(db, run, release, market):
+def _require_current_feedback_review(db, run, release, market, scenario_continuity=None):
     from . import trading_decisions as decisions
     due = _unchecked_due_condition(decisions.decision_state(db, market, at=run['known_at']))
     if due:
@@ -1065,6 +1098,16 @@ def _require_current_feedback_review(db, run, release, market):
     ended = (adopted.keys() | prior.keys()) & set(scope_status['ended'])
     if ended:
         raise Conflict('adopt the confirmed scope ending before choosing silence: ' + ', '.join(sorted(ended)))
+    comparison = trading_portfolio.scenario_review(db, portfolio, market) if scope else None
+    if comparison:
+        if comparison['requires_adoption']:
+            raise Conflict('adopt the joint effect of the current market scenarios before choosing silence')
+        if (not isinstance(scenario_continuity, dict) or set(scenario_continuity) != {'portfolio', 'market', 'reason'}
+                or any(scenario_continuity[k] != comparison[k] for k in ('portfolio', 'market'))):
+            raise Conflict('review the changed scenario descriptions against the adopted portfolio before choosing silence')
+        plain(scenario_continuity['reason'], 'why the existing joint assessment still covers the current paths')
+    elif scenario_continuity is not None:
+        raise Conflict('the supplied scenario comparison does not match the current market and portfolio')
     if not scope:
         return
     files = confirmed_files(db)
@@ -1081,7 +1124,7 @@ def _require_current_feedback_review(db, run, release, market):
             raise Conflict('check the due decision condition before choosing silence: ' + subject + '/' + due)
 
 
-def assess_feedback(db, run, release, *, outcome, reason, evidence):
+def assess_feedback(db, run, release, *, outcome, reason, evidence, scenario_continuity=None):
     from . import trading_delivery as delivery
     snapshot = material(db, run)
     if outcome not in ('SILENT', 'EVIDENCE_LIMITED', 'REPORT_REQUIRED'):
@@ -1092,8 +1135,12 @@ def assess_feedback(db, run, release, *, outcome, reason, evidence):
         status = delivery.context(db, destination=destination(db), at=run['known_at'])
         if status['daily_due'] or status['due_obligation_ids']:
             raise Conflict('daily or due material feedback is outstanding; check the original obligation and delivery')
-        _require_current_feedback_review(db, run, release, market)
+        _require_current_feedback_review(db, run, release, market, scenario_continuity)
+    elif scenario_continuity is not None:
+        raise ValueError('scenario continuity belongs to the review of an unchanged portfolio before silence')
     result = {'outcome': outcome, 'reason': plain(reason, 'actual feedback basis'), 'evidence': refs,
               'decided_at': run['known_at']}
+    if scenario_continuity is not None:
+        result['scenario_continuity'] = scenario_continuity
     db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': result}, write=True)
     return result
