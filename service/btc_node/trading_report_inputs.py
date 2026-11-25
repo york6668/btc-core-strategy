@@ -193,11 +193,13 @@ def position_explanation(record, previous, base, edit):
             if not previous or not isinstance(comparison, str) or not comparison.strip():
                 raise ValueError('compare with an actual previous display, using its bound decision')
     action = position_action(record)
-    if action in ('REDUCE', 'INCREASE') and previous and not comparison:
+    if action in ('REDUCE', 'INCREASE') and previous:
         if same_decision:
+            if comparison is not None:
+                raise Conflict('omit comparison when the same adjustment was already displayed; its continuation is automatic')
             verb = '减持' if action == 'REDUCE' else '增持'
-            comparison = f'沿用上次的{verb}安排，本轮没有新增{verb}。'
-        elif previous.get('action') in (None, action):
+            comparison = f'沿用上次的{verb}建议，本轮没有新增{verb}安排。'
+        elif comparison is None and previous.get('action') in (None, action):
             raise Conflict('explain whether this adjustment continues, reprices or adds to the previously displayed plan')
     summary = {'decision': ref, 'reason': reason.strip()}
     if comparison:
