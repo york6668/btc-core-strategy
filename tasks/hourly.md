@@ -27,7 +27,7 @@
 
 ## 研判与个人决定
 
-1. 先对照前次独立市场结论、当前证据及其事前条件，判断原主情景的驱动和反证是否兑现。说明本轮证据影响的是日内观察、中期判断还是现价参与价值，以及参与相对等待的净补偿。从上下文的 `review_targets` 取得可核验的原条件，用 `trading.review` 核查出现相关新事实或已到期的条件。提交返回的 `target {kind,object_id,version,digest}`、原 `condition_id`、`outcome`、`explanation`、`evidence` 和实际影响 `impact=KEEP/REVISE`。结果使用 SUPPORTED、PARTIAL、REFUTED、NOT_TRIGGERED 或 UNKNOWN。没有固定日期的条件按相关新事实核查。后置事实须带确切来源，证据不足和未兑现沿原条件保留。
+1. 先对照原判断、当时已定价的预期与实际价格响应，裁决最强反证，判断原主情景的驱动是否仍然成立。说明本轮证据影响的是日内观察、中期判断还是现价参与价值，以及参与相对等待的净补偿。从上下文的 `review_targets` 取得可核验的原条件，用 `trading.review` 核查出现相关新事实或已到期的条件。提交返回的 `target {kind,object_id,version,digest}`、原 `condition_id`、`outcome`、`explanation`、`evidence` 和实际影响 `impact=KEEP/REVISE`。结果使用 SUPPORTED、PARTIAL、REFUTED、NOT_TRIGGERED 或 UNKNOWN。没有固定日期的条件按相关新事实核查。后置事实须带确切来源，证据不足和未兑现沿原条件保留。
 2. 有重要反证、缺失或明确重评要求时，用 `trading.research` 承接实际问题及来源，参数包括 `scope,subject,question,evidence,expected_version`。公开研究只交公开问题及证据。已有研究从原状态继续。新的原生研究调用通过节点 MCP 的 `model_deep_claim` 或 `btc-core data` 的 `model.deep.claim`，提交 `{claim_id,issue_id,scope,phase,input_digest}`。由 `trading.research` 的 `result.object_id` 取得 `issue_id`，由 `result.payload` 取得 `claim_scope`、`phase` 和 `input_digest`，将 `claim_scope` 传给 `scope`。为本次实际尝试固定 `claim_id`，接续同一尝试时沿用。领取的新尝试按 `CLAIMED_NEW` 启动，`REUSE` 沿原结果核对。
 
    取得真实完成正文后，计算其 UTF-8 字节的 `result_ref=sha256:<64 位十六进制摘要>`。用节点 `model.deep.finish`（MCP 中为 `model_deep_finish`）提交 `{claim_id,outcome:"COMPLETE",result_ref}`，再用 `trading.research` 追加 `outcome {claim_id,result_ref,conclusion,origin_run,agent_id,turn_id}`。 `origin_run` 取发起研究记录的 `source_ref`，`agent_id`、`turn_id` 取产生确切正文的原生子任务与完成回合。后续从 `trading.research_result` 读取确切原文。原生完成来源无法核实时保留原请求。主轮可在研究待办期间继续有依据的独立工作。
@@ -42,13 +42,13 @@
 
    用 `trading.portfolio_decision {expected_version,market,primary,alternatives,interactions,decisions,reuse,member_reviews}` 登记。版本取 `personal.portfolio.version`，初次为 0；`market` 传本次评估使用的 `personal.market` 确切引用。`primary` 和按冻结顺序排列的 `alternatives` 写各情景的组合净效果。`interactions` 项为 `{subject,depends_on,reason}`，分别写受影响的决定、它实际依赖的另一项决定及依据。所有适用决定各提交一次，`decisions` 放新评估，`reuse` 按 subject 放上个组合中仍有效的确切引用 `{kind,object_id,version,digest}`。前一组合缺席时完成新评估；同一组合仅复评相关市场、事实、条件及实际联动变化所影响的决定。
 
-   重新判断会影响选择的依据和联动，包括本轮新出现的因素。对跨轮含义影响行动或排序的成员，在 `member_reviews[subject]` 给出 `{relation,reason}`：CONTINUE 沿用、REPRICE 对原安排重定价、REVISE 调整、NEW 新安排、UNRESOLVED 关系待明。说明为什么选择或沿用这个方案。相同方向可以对应不同安排，已完成数量只取已确认的操作。范围有缺口时交付可判断的组合，保留其他成员的缺口和原决定来源。先核原始确认措辞是否明确结束该配置，再按 policy_status.ended 查已登记的结束范围。既有组合的最后一项适用配置确认结束时，沿同一组合入口提交空的 decisions、reuse 和 interactions；仅仅缺少资料时保留原成员待查。
+   重新判断会影响选择的依据和联动，包括本轮新出现的因素。对跨轮含义影响行动或排序的成员，在 `member_reviews[subject]` 给出 `{relation,reason}`：CONTINUE 沿用、REPRICE 对原安排重定价、REVISE 调整、NEW 新安排、UNRESOLVED 关系待明。说明为什么选择或沿用这个方案。相同方向可以对应不同安排，已完成数量只取已确认的操作。区分上一采纳版本与用户上次实收的建议，尤其核清同方向减持是沿用、重定价还是再减一笔。范围有缺口时交付可判断的组合，保留其他成员的缺口和原决定来源。先核原始确认措辞是否明确结束该配置，再按 policy_status.ended 查已登记的结束范围。既有组合的最后一项适用配置确认结束时，沿同一组合入口提交空的 decisions、reuse 和 interactions；仅仅缺少资料时保留原成员待查。
 
    每项新决定提供 `subject,expected_version,policy_basis,facts,fact_refs,market_refs,result,evidence`，另有适用的 `notification`。facts 列实际使用文件及摘要，fact_refs 为 `[{file,quote}]`，market_refs 选择实际依赖的市场字段。来源文字实际变更时，用 `trading.policy {subject,kind,fields,refs,expected_version}` 更新受影响的范围。result 含 `decision,reason,risk,opportunity_cost,valid_until,conditions`。
 
    月度组逐组比较足额、跳过和有依据的分批。说明在主要与竞争情景下，哪项收益、成本、共同风险或等待代价决定了排序。历史波动测算说明风险规模，分批金额要有独立的配置理由。区分本月安排和当前费用、价格能否支持实施。填写 `comparisons [{amount,reason}],amount`，分批加 `amount_basis`。独立机会按净补偿评估，正额带 `value_zone {lower,upper,quote_unit,basis}`。投入真实未决时填写具体 `gap` 和 `amount:null`。
 
-   原空单成员的普通 UPDATE 采用 DIRECTION，附实际理由。定时到期、重要风险和更正按自身含义登记，正文展示该成员正式方向。
+   原空单成员的普通 UPDATE 采用 DIRECTION，附实际理由。方向相同但安排或风险收益发生实质变化时也按其实际影响反馈，常规正文说明已采纳方向及本轮取舍。
 
    原空单的开单价与来源从 `policies[subject].entry_reference` 读取。价格基准适用时，新决定的顶层 `entry_reference` 传该对象的 `revision` 字符串。在 result.direction_comparison 中分别以 REDUCE、KEEP、INCREASE 为键，记录同一市场情景下三个选择的实质依据。result.decision 采用 REDUCE、KEEP、INCREASE 中的一项，减至零可选 EXIT；研判范围为 PRICE_BASELINE_DIRECTIONAL，仓位事实可以为 UNKNOWN。真实可能改变方向的市场证据缺口用 UNRESOLVED 并说明 `gap`。确认已平时给出 NO_POSITION 并省略三向比较，提交时省略顶层 `entry_reference`。当前开单价缺失且仓位未知时，沿有依据的条件判断，在 `result.conditional_actions` 以 PRESENT、ABSENT 记录各自的 `{decision,reason}`。在仓分支确实未决时注明其 `gap`。在仓分支的三向比较也写在顶层 result.direction_comparison。后续改判条件写入 `conditions`。
 
@@ -68,7 +68,7 @@
 
 若组合研判后才发现应出稿，沿 `trading.market` 复用本轮确切市场并补交公开补丁。旧段的 `from` 仍取上述公开底稿，新的 `to` 使用 `{"extracts":[{"source":"condition/<确切id>","quote":"该条件中的连续原句"}]}`。也可按 `conclusion`、`primary`、`value`、`alternative/<从0计数的序号>` 或 `assessment/<正式名称>` 摘录。本轮独立冻结的市场沿用理由用 `source:"market_review"`，本轮在冻结前完成的公开条件复核用 `source:"review/<condition_reviews 中 review_ref 的 digest>"`，从相应理由或解释中摘录。省略 `quote` 取整条，多段按顺序展示。删去已失效的旧片段时 `to` 可用空字符串。只有真正缺少原文的子项直接给撑得住的新段，后补时该段使用公开原文 extracts。
 
-组合采纳后用 `trading.feedback {writing_inputs:true}` 取配置各组、独立机会和现金的正式来源。常规 `trading.preview_report` 的 `changes` 只传 `allocation` 修改，无配置改动时给空对象。各成员依据自身的已采纳安排撰写，现金取各月度组的留存。如果真实联动改变了某组的选择，只解释对该组取舍的影响。原空单的参考价、首批、余仓与内部执行比较保存在对应成员的正式决定中，其他配置组及现金行也维持各自用途。原空单方向行由服务生成。实际已有配置行时，以一个 `{from,to}` 或多个 `{edits:[{from,to},…]}` 定位原稿中的变更处，保留仍有效的金额、单位、选择和理由原句。两组留存的组成、预算、计划额、月份和币种都沿用时，现金行直接沿用。需要纠正已展示的具体错误或更新确已到期的原句时，对该项补丁附 `correction:{source,reason}`，`source` 使用准确的成员绑定，现金使用组合绑定。该项原判断整体失效时提交 `{replace_all,reason,source}`；只改一条理由时继续使用局部补丁。
+组合采纳后用 `trading.feedback {writing_inputs:true}` 取配置各组、独立机会和现金的正式来源。常规 `trading.preview_report` 的 `changes` 只传 `allocation` 修改，无配置改动时给空对象。各成员依据自身的已采纳安排撰写，现金取各月度组的留存。如果真实联动改变了某组的选择，只解释对该组取舍的影响。原空单的参考价、首批、余仓与内部执行比较保存在对应成员的正式决定中，其他配置组及现金行也维持各自用途。原空单由服务依据采纳决定生成方向。配置作者在 `changes.allocation["existing-position"]` 提交 `{decision,previous_report_id,reason}`。`decision` 取该成员写作输入的 `source`，`previous_report_id` 取该成员 `previous_display.report_id`，无实收则为 null。`reason` 简述本轮决定性的依据、为何优于相关备选和必要的执行前提。涉及跨期变化时另附 `comparison`，按实收正文和所绑定决定说明；同方向减持或增持的不同决定须说明是延续、重定价还是另一次调整，无法确认执行时明确其影响。对照 `previous_choice_review.previous` 核清是否指向同一实收决定。相同决定已有此目的地确认的说明时可省略沿用，确定已平时可只用事实行。实际已有配置行时，以一个 `{from,to}` 或多个 `{edits:[{from,to},…]}` 定位原稿中的变更处，保留仍有效的金额、单位、选择和理由原句。两组留存的组成、预算、计划额、月份和币种都沿用时，现金行直接沿用。需要纠正已展示的具体错误或更新确已到期的原句时，对该项补丁附 `correction:{source,reason}`，`source` 使用准确的成员绑定，现金使用组合绑定。该项原判断整体失效时提交 `{replace_all,reason,source}`；只改一条理由时继续使用局部补丁。
 
 预览和终稿都给 `purpose,base_report_id,assessed_at,changes,decisions,reason,obligation_ids`。原样传回底稿身份，`assessed_at` 取本轮实际形成判断的时刻。`decisions` 引用冻结市场、已采纳组合 `PLAN` 和全部适用成员。用常规 `trading.feedback` 的 `daily_due` 和实际交付义务选版：当日完整日报已核收且本次是盘中变化，`purpose=UPDATE` 传 `complete=false`，仅在实际要履行完整日报义务时给 `complete=true`。盘中稿同样审读全部成员与六模块。非日报另给真实 `event_ref`。预览返回实际将显示的 `body` 和 `public_copy_id`；审读通过后用相同参数和该 `public_copy_id` 提交 `trading.report`。公开稿或实收底稿有变化时，读回并在最新稿上重核。成稿的各子项如下。
 
@@ -77,7 +77,7 @@
 | `market` | `BTC`、`SPX`、`NDX` 各自的方向、当前定价及结构变化。区分底层市场与目标 VOO、QQQ 产品的身份、价格和单位。 |
 | `outlook` | `primary`、`alternative` 分别说明中期主情景和竞争路径、机制、把握及改变排序的证据。 |
 | `opportunities` | `comparison` 比较现价参与或等待的风险收益与成本，说明为何现在值得参与、等待或回避。 |
-| `allocation` | 以适用成员的正式 `subject` 标识各组月度决定及独立机会，`cash` 说明规划留存。按月度组、留存、独立机会、存量仓位呈现。`existing-position` 的方向行由服务从正式成员生成。 |
+| `allocation` | 以适用成员的正式 `subject` 标识各组月度决定及独立机会，`cash` 说明规划留存。按月度组、留存、独立机会、存量仓位呈现。`existing-position` 展示正式方向和基于该成员的决定性理由。 |
 | `crosschecks` | `evidence` 给出独立来源、分歧及其对判断的影响。 |
 | `risks` | `conditions` 给出主判断失效或安排需要调整的条件、相应影响和待复核范围。 |
 
@@ -91,11 +91,11 @@
 
 已核实的风险暂缺完整公开作者稿、正式市场或可用组合时，`trading.report` 返回 `AWAITING_REPORT_BASIS` 和原义务身份，并保留风险原文、事件与有效期。预览仅返回缺项。原任务沿 `pending_public_risks` 读回，依据补齐后用原事件、原短讯、原有效期、本次成稿时间与新的写操作身份再次提交。原有效期已过时，先复核其实际影响，在当前有效报告的 `obligation_ids` 纳入原义务，并在 `decision_coverage[原义务ID].excerpt` 给出本稿交代原风险结果的原句。公开阶段只读取并提交公开内容。
 
-同一对象的新决定要履行较早决定的待反馈义务时，在 `decision_coverage[原义务ID].excerpt` 放入本稿说明怎样承接或纠正旧决定的原句。已确认结束的个人配置另附 `policy`，取该对象反馈查询的 `recorded_scope_end.policy`。原空单成员的后继决定只引用本稿正式方向行；当时的执行依据仍绑定在相应成员版本。其他对象的义务各依自身决定处理。更换未送达稿时用 `supersedes {report_id,reason}`，承接该稿仍待履行的义务。已确认送达的正文如有实质错误（例如风险栏给出个人回补批次），在原定时轮核实受影响的段落，按更正反馈。提交 `purpose=CORRECTION`，`event_ref` 指向实际出错的报告 ID，`base_report_id` 指向最新实收底稿，用 `supersedes` 说明更正哪份报告及原因。已核收的义务保留原回执。若更正草稿在发送前需要重组，`supersedes` 改指该草稿，`event_ref` 仍指实收原稿。目标不可用时保留待反馈事项，照常形成和保存独立结论。
+同一对象的新决定要履行较早决定的待反馈义务时，在 `decision_coverage[原义务ID].excerpt` 放入本稿说明怎样承接或纠正旧决定的原句。已确认结束的个人配置另附 `policy`，取该对象反馈查询的 `recorded_scope_end.policy`。原空单成员的后继决定引用本稿包含方向和理由的完整空单段；当时的执行依据仍绑定在相应成员版本。其他对象的义务各依自身决定处理。更换未送达稿时用 `supersedes {report_id,reason}`，承接该稿仍待履行的义务。已确认送达的正文如有实质错误（例如风险栏给出个人回补批次），在原定时轮核实受影响的段落，按更正反馈。提交 `purpose=CORRECTION`，`event_ref` 指向实际出错的报告 ID，`base_report_id` 指向最新实收底稿，用 `supersedes` 说明更正哪份报告及原因。已核收的义务保留原回执。若更正草稿在发送前需要重组，`supersedes` 改指该草稿，`event_ref` 仍指实收原稿。目标不可用时保留待反馈事项，照常形成和保存独立结论。
 
-公开成稿从 public_writing_inputs 的 `market_review`、`condition_reviews` 核本轮沿用或调整的公开判断、原条件及后置证据；其 `previous_public` 是可继续编辑的完整底稿，`previous_display` 是上次在这个目的地实际展示的内容。组合成稿对照 writing_inputs 内 allocation 的 scenarios 和 interactions，说明影响本次取舍的联合效果。各成员的方向、金额及已知实际操作来自相应正式记录。以当前采纳的判断为依据，对照实收稿写出原条件状态、新证据的适用窗口和接下来足以改判的检验。
+公开成稿从 public_writing_inputs 的 `market_review`、`condition_reviews` 核本轮沿用或调整的公开判断、原条件及后置证据；其 `previous_public` 是可继续编辑的完整底稿，`previous_display` 是上次在这个目的地实际展示的内容。组合成稿对照 writing_inputs 内 allocation 的 scenarios 和 interactions，说明影响本次取舍的联合效果。各成员的方向、金额与实际操作分别引用正式决定及已确认的操作。逐组给出本月投入、留存和金额取舍，额外 BTC 单独比较，现货与保护仓各按用途决策。以当前采纳的判断为依据，对照实收稿写出原条件状态、新证据的适用窗口和接下来足以改判的检验。
 
-为常规稿从已冻结的公开原文和已采纳的配置原文中选可独立阅读的完整句，连贯说明本轮最重要的事实、影响与安排。预览和冻结提交同一 `presentation:{lead:{path,quote},additional_lead:[{path,quote},…],shorten:{模块.子项:[原句,…]}}`。首屏从主摘录 `lead` 开始，按需要用 `additional_lead` 补充至多两个子项。每项摘录一个确切的连续片段。当市场风险发生变化而配置维持时，首屏写明风险变化适用的期限，以及仍适用的安排；两组都与本轮重点有关时分别交代。目的地首份报告、每日稿及作为完整日报交付的稿件使用 lead 并展示完整模块。盘中对照同一目的地上次的实收，简述仍有效的部分，一项既有旧收盘又有新盘前报价时，留当前判断所需的行情和产品限制。同一证据展开一次，其他模块写它对各自选择的影响。缩写按原序选完整句。重要风险、配置改判或待兑现条件要在手机正文中实际可见。受限公开风险首屏由服务使用当次已核风险生成。简写覆盖待反馈的具体决定时，在该义务的 `decision_coverage` 附可见正文中交代该决定的原句 `excerpt`。以目标实际展示内容判断所欠反馈是否已履行。市场变化而动作沿用时，说明沿用理由。原安排重定价或部分完成时，分别引用已采纳判断与已确认的执行范围。
+为常规稿从已冻结的公开原文和已采纳的配置原文中选可独立阅读的完整句，连贯说明本轮最重要的事实、影响与安排。预览和冻结提交同一 `presentation:{lead:{path,quote},additional_lead:[{path,quote},…],shorten:{模块.子项:[原句,…]}}`。首屏选能直接读懂本次判断与安排的句子，避免只摘行情收盘或在各模块重复逐所报价。首屏从主摘录 `lead` 开始，按需要用 `additional_lead` 补充至多两个子项。每项摘录一个确切的连续片段。空单确为本轮重点时，从该项方向句开头选取，保留决定适用的前提；有跨期比较时展示完整空单项。当市场风险发生变化而配置维持时，首屏写明风险变化适用的期限，以及仍适用的安排；两组都与本轮重点有关时分别交代。目的地首份报告、每日稿及作为完整日报交付的稿件使用 lead 并展示完整模块。盘中对照同一目的地上次的实收，简述仍有效的部分，一项既有旧收盘又有新盘前报价时，留当前判断所需的行情和产品限制。同一证据展开一次，其他模块写它对各自选择的影响。缩写按原序选完整句。重要风险、配置改判或待兑现条件要在手机正文中实际可见。受限公开风险首屏由服务使用当次已核风险生成。简写覆盖待反馈的具体决定时，在该义务的 `decision_coverage` 附可见正文中交代该决定的原句 `excerpt`。以目标实际展示内容判断所欠反馈是否已履行。市场变化而动作沿用时，说明沿用理由。原安排重定价或部分完成时，分别引用已采纳判断与已确认的执行范围。
 
 默认空单栏只呈现已采用的方向或真实适用状态。“沿用上轮减持”仍显示建议减持。用户追问某轮理由或执行安排时，从 trading.feedback 的 previous_display.decision 取得当次展示确切成员，沿 object.get 的个人历史读取接口传该版本及冻结市场绑定，读取内部比较、参考价和条件；追问某份公开风险稿中沿用的方向时，从该次确认报告的 `document.base_report_id` 找到作出判断的当期底稿。首次风险稿从 `document.seed_sources.portfolio` 回查精确的组合和成员版本。询问现在如何处理时，按当前适用证据复评。
 

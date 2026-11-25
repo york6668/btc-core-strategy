@@ -753,6 +753,7 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
     elif public_seed is not None:
         raise ValueError('a public seed applies only when the risk edition still needs independent public wording')
     members, terms, line = None, (base or {}).get('allocation_terms', {}), None
+    explanation = (base or {}).get('position_explanation') if support else None
     position_reviewed = False
     source_times = {}
     pending_review = params.pop('pending_review', [])
@@ -782,9 +783,15 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         allocation_edits = changes.get('allocation', {})
         if not isinstance(allocation_edits, dict):
             raise ValueError('allocation changes must be keyed by subject')
+        allocation_edits = dict(allocation_edits)
+        position_key = trading_policy.POSITION_SUBJECT
+        position = records.get(position_key)
+        if position_key in allocation_edits and (not position or not isinstance(allocation_edits[position_key], dict)):
+            raise ValueError('a position explanation needs the adopted member and its bound reasoning')
+        position_edit = allocation_edits.pop(position_key, None)
         members, terms = report_allocation(records, status, base, allocation_edits)
         basis = report_basis(db, run, market, records, chosen)
-        if allocation_edits:
+        if 'allocation' in changes:
             from .trading_report_inputs import allocation_changes
             changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
                                                       correction=purpose == 'CORRECTION', assessed_at=assessed_at)
@@ -796,9 +803,12 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         budgets = [expiries['allocation.' + subject] for subject, record in records.items()
                    if record['payload']['policy']['kind'] == 'MONTHLY']
         expiries['allocation.cash'] = min(budgets, key=millis, default=market_end)
-        position = records.get(trading_policy.POSITION_SUBJECT)
         if position:
-            line = delivery.position_line(position)
+            if position_edit is not None or delivery.position_action(position) != 'NO_POSITION':
+                from .trading_report_inputs import position_explanation, prior_position
+                previous = prior_position(db, target, position, run['known_at'])
+                explanation = position_explanation(position, previous, base, position_edit)
+            line = delivery.explained_position(position, explanation)
             marked = (base or {}).get('pending_review', {}).get('allocation.' + trading_policy.POSITION_SUBJECT)
             position_reviewed = bool(marked and position['known_ms'] > millis(marked))
         elif trading_policy.POSITION_SUBJECT in status['unavailable']:
@@ -844,6 +854,8 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
     if legacy_public_review:
         document['legacy_public_review'] = legacy_public_review
     document['public_market'] = base['public_market'] if support else public_copy['market']
+    if explanation:
+        document['position_explanation'] = explanation
     document['allocation_terms'] = terms
     document['valid_until'] = expiries
     document['basis'] = basis
@@ -912,7 +924,7 @@ def feedback(db, run, release, action, params):
         if params.pop('writing_inputs', False):
             if params:
                 raise ValueError('request the report writing inputs separately from prior decision displays')
-            from .trading_report_inputs import previous_display, writing_inputs
+            from .trading_report_inputs import previous_display, prior_position, writing_inputs
             portfolio = trading_portfolio.current(db)
             records = {}
             if portfolio and portfolio['payload']['market'] == reference(market):
@@ -923,7 +935,8 @@ def feedback(db, run, release, action, params):
                         records[subject] = record
             position = records.get(trading_policy.POSITION_SUBJECT)
             return {**edition, 'previous_display': previous_display(base), 'writing_inputs': writing_inputs(
-                market, portfolio, records, delivery.position_line(position) if position else None)}
+                market, portfolio, records, delivery.position_line(position) if position else None,
+                prior_position(db, target, position, run['known_at']) if position else None)}
         before = {**delivery.context(db, destination=target, at=run['known_at']), **edition}
         if 'decision_id' in params:
             before['previous_display'] = delivery.previous_display(db, destination=target, at=run['known_at'], **params)

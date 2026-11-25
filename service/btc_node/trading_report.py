@@ -216,8 +216,13 @@ def present(document, presentation):
             source = event['text']
         else:
             section, item, source = _report_item(document, path)
-            if path in document['pending_review'] or (section == 'allocation' and item == POSITION_SUBJECT):
+            if path in document['pending_review']:
                 raise Conflict('this judgement must stay with its status in the original report item')
+            if section == 'allocation' and item == POSITION_SUBJECT:
+                explanation = document.get('position_explanation')
+                if (not explanation or not isinstance(lead['quote'], str) or not source.startswith(lead['quote'])
+                        or (explanation.get('comparison') and lead['quote'] != source)):
+                    raise Conflict('lead with the bound position direction and retain any comparison with the last display')
         _check_quotes(source, [lead['quote']])
     if document['limited'] and document.get('presentation', {}).get('shorten'):
         presentation = {**presentation, 'shorten': document['presentation']['shorten']}

@@ -95,7 +95,14 @@ def _shown_sentences(document):
 def newly_displayed_content(document, base):
     """Moving a sentence to the lead or joining excerpts does not communicate a new decision."""
     before = _shown_sentences(base)
-    return any(current.difference(before.get(path, set())) for path, current in _shown_sentences(document).items()
+    shown = _shown_sentences(document)
+    position = document.get('position_explanation', {})
+    prior = base.get('position_explanation', {})
+    if (position and position.get('decision') == prior.get('decision') and position['reason'] == prior.get('reason')
+            and not position.get('previous_report_id')):
+        # The automatic reminder about an already displayed adjustment does not warrant its own update.
+        shown.pop('allocation.' + POSITION_SUBJECT, None)
+    return any(current.difference(before.get(path, set())) for path, current in shown.items()
                if not path.startswith('risk_updates.'))
 
 
@@ -144,7 +151,63 @@ def evidence_refs(dependencies):
                           'series', 'item_key', 'observation_key')) for ref in dependencies]
 
 
-def writing_inputs(market, portfolio, records, position_line):
+def prior_position(db, destination, position, at):
+    from .entities import Entities
+    from .trading_delivery import position_action, previous_display
+    shown = previous_display(db, destination=destination, decision_id=position['object_id'], at=at)
+    if not shown:
+        return None
+    ref = shown['decision']
+    prior = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
+    view = _fields(shown, ('report_id', 'completed_at', 'decision', 'position_line', 'position_pending_review'))
+    if prior and binding(prior) == ref:
+        result = prior['payload']['result']
+        active = result.get('conditional_actions', {}).get('PRESENT', result)
+        view.update(action=position_action(prior), basis=active['reason'])
+    return view
+
+
+def position_explanation(record, previous, base, edit):
+    """Keep current reasoning reusable. Relative wording belongs to this comparison only."""
+    from .trading_delivery import position_action
+    ref = binding(record)
+    stored = (base or {}).get('position_explanation') or {}
+    previous_id = previous and previous['report_id']
+    same_decision = bool(previous and previous['decision'] == ref)
+    comparison = None
+    if edit is None:
+        if not same_decision or stored.get('decision') != ref:
+            raise Conflict('explain the adopted protective-short choice against its last confirmed display')
+        reason = stored['reason']
+    else:
+        required = {'decision', 'previous_report_id', 'reason'}
+        if not isinstance(edit, dict) or set(edit) not in (required, required | {'comparison'}):
+            raise ValueError('the position item needs decision, previous_report_id, reason and optional comparison')
+        if edit['decision'] != ref or edit['previous_report_id'] != previous_id:
+            raise Conflict('review the current position decision and its last confirmed display')
+        reason = edit['reason']
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError('explain why this position choice is preferable at the current price')
+        if 'comparison' in edit:
+            comparison = edit['comparison']
+            if not previous or not isinstance(comparison, str) or not comparison.strip():
+                raise ValueError('compare with an actual previous display, using its bound decision')
+    action = position_action(record)
+    if action in ('REDUCE', 'INCREASE') and previous and not comparison:
+        if same_decision:
+            verb = '减持' if action == 'REDUCE' else '增持'
+            comparison = f'沿用上次的{verb}安排，本轮没有新增{verb}。'
+        elif previous.get('action') in (None, action):
+            raise Conflict('explain whether this adjustment continues, reprices or adds to the previously displayed plan')
+    summary = {'decision': ref, 'reason': reason.strip()}
+    if comparison:
+        summary['comparison'] = comparison.strip()
+        if edit and 'comparison' in edit:
+            summary['previous_report_id'] = previous_id
+    return summary
+
+
+def writing_inputs(market, portfolio, records, position_line, previous_position=None):
     """Project public analysis once and expose only choices adopted by the matching portfolio."""
     public = public_inputs(market)
     allocation = {'portfolio': None, 'members': {}, 'cash_sources': [], 'unavailable_members': []}
@@ -163,18 +226,20 @@ def writing_inputs(market, portfolio, records, position_line):
                 or record['payload']['subject'] != subject):
             unavailable.add(subject)
             continue
-        if subject == POSITION_SUBJECT:
-            allocation['members'][subject] = {'direction': position_line}
-            continue
         payload = record['payload']
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'amount_basis', 'gap', 'value_zone', 'valid_until')))
+                                       'comparisons', 'amount_basis', 'gap', 'value_zone', 'valid_until')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         previous = plan.get('member_reviews', {}).get(subject, {})
         if 'relation' in previous:
-            member['previous_choice_review'] = _fields(previous, ('relation', 'reason'))
+            member['previous_choice_review'] = _fields(previous, ('previous', 'relation', 'reason'))
+        if subject == POSITION_SUBJECT:
+            member.update(direction=position_line, previous_display=previous_position,
+                          position_status=policy.get('position_status', 'UNKNOWN'))
+            member.update(_fields(choice, ('direction_comparison', 'conditional_actions')))
+            member['fact_refs'] = payload.get('fact_refs', [])
         allocation['members'][subject] = member
         if policy['kind'] == 'MONTHLY':
             allocation['cash_sources'].append(subject)

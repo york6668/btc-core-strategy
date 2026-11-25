@@ -134,16 +134,32 @@ def _message_text(value):
     return value[:-1] if value.endswith('\n') and not value.endswith(('\n\n', '\r\n')) else value
 
 
-def position_line(record):
+def position_action(record):
     result = record['payload']['result']
-    branch = result.get('conditional_actions', {}).get('PRESENT')
-    choice = branch['decision'] if branch else result['decision']
-    labels = {'REDUCE': '建议减持', 'KEEP': '建议不变', 'INCREASE': '建议增加',
-              'EXIT': '建议减持至零（退出）', 'NO_POSITION': '原单已平', 'UNRESOLVED': '方向待定'}
+    return result.get('conditional_actions', {}).get('PRESENT', result)['decision']
+
+
+def position_line(record, reason=None):
+    payload = record['payload']
+    choice = position_action(record)
+    labels = {'REDUCE': '建议减持空单', 'KEEP': '建议不变（维持现有空单规模）', 'INCREASE': '建议增持空单',
+              'EXIT': '建议平掉剩余空单', 'NO_POSITION': '原单已平', 'UNRESOLVED': '调整方向待定'}
     if choice not in labels:
         raise Conflict('reassess the original short before displaying its direction')
-    premise = '（若原单仍在）' if branch and choice != 'UNRESOLVED' else ''
-    return '原 BTCUSDT 保护性空单' + premise + '：' + labels[choice] + '。'
+    policy = payload.get('policy', {})
+    conditional = ('PRESENT' in payload['result'].get('conditional_actions', {}) or
+                   (policy.get('position_status') == 'UNKNOWN' and policy.get('entry_reference') is not None))
+    premise = '（若原单仍在）' if conditional else ''
+    line = '原 BTCUSDT 保护性空单' + premise + '：' + labels[choice] + '。'
+    return line if reason is None else line + ' ' + _text(reason, 'reviewed position explanation').strip()
+
+
+def explained_position(record, explanation):
+    """Render the current reason together with the comparison adopted for this edition."""
+    if not explanation:
+        return position_line(record)
+    text = ' '.join(explanation[key] for key in ('reason', 'comparison') if key in explanation)
+    return position_line(record, text)
 
 
 def _request_body(body):
@@ -152,12 +168,16 @@ def _request_body(body):
             '正文从下一空行开始直至消息结束。\n\n' + _message_text(body))
 
 
+def _restore_links(text):
+    return URL_TOKEN.sub(lambda match: '[' + match[1] + '](' + match[2] + ')', text)
+
+
 def _display_match(body, displayed):
     if body == displayed:
         return 'EXACT'
     if _message_text(body) == _message_text(displayed):
         return 'TERMINAL_LF_ONLY'
-    restored = URL_TOKEN.sub(lambda match: '[' + match[1] + '](' + match[2] + ')', displayed)
+    restored = _restore_links(displayed)
     if restored != displayed and _message_text(restored) == _message_text(body):
         return 'PLATFORM_URL_MARKUP'
     return 'MISMATCH'
@@ -266,6 +286,42 @@ def _closed_reports(db, destination):
         cursor = (rows[-1]['last_checked_ms'], rows[-1]['object_id'])
 
 
+def _report_position_line(report):
+    document = report.get('document') or {}
+    if 'modules' in document:
+        return trading_report.displayed_modules(document).get('allocation', {}).get(trading_policy.POSITION_SUBJECT)
+    return report.get('position_line')
+
+
+def _displayed_member(db, report, decision_id):
+    ref = next((r for r in report['decisions'] if r['object_id'] == decision_id), None)
+    if decision_id != trading_decisions.PERSONAL_PREFIX + trading_policy.POSITION_SUBJECT:
+        return {'decision': ref} if ref else None
+
+    line = _report_position_line(report)
+    if not line and ref is None:
+        return None
+    body = _restore_links(report['receipt']['assistant']['body']).strip('\n')
+    if not line or f'\n\n{line}\n\n' not in f'\n\n{body}\n\n':
+        return {'decision': None}
+    document = report.get('document') or {}
+    explanation = document.get('position_explanation') or {}
+    source = explanation.get('decision') or {}
+    # A limited risk report may show an inherited position without adopting personal decisions.
+    if (ref is None and document.get('limited') and source.get('kind') == 'PLAN'
+            and source.get('object_id') == decision_id and type(source.get('version')) is int
+            and explanation.get('reason')):
+        origin = Entities(db).get('PLAN', decision_id, version=source['version'])
+        if origin and trading_decisions.binding(origin) == source and explained_position(origin, explanation) == line:
+            ref = source
+    shown = {'decision': ref, 'position_line': line}
+    if ref and source == ref and explanation.get('reason'):
+        shown['position_explanation'] = explanation
+    if 'allocation.' + trading_policy.POSITION_SUBJECT in document.get('pending_review', {}):
+        shown['position_pending_review'] = True
+    return shown
+
+
 def previous_display(db, *, destination, decision_id, at, before_report_id=None):
     """Find a confirmed display of this decision, using display time rather than acknowledgement order."""
     _text(decision_id, 'decision object identity')
@@ -273,7 +329,7 @@ def previous_display(db, *, destination, decision_id, at, before_report_id=None)
     if before_report_id is not None:
         anchor = _by_id(db, before_report_id, REPORT)['payload']
         if (anchor['status'] != 'DELIVERED' or _channel(anchor['destination']) != _channel(destination)
-                or not any(ref['object_id'] == decision_id for ref in anchor['decisions'])):
+                or not (_displayed_member(db, anchor, decision_id) or {}).get('decision')):
             raise Conflict('the comparison cursor must be a delivered report citing this decision at this destination')
         before = (utc(anchor['receipt']['assistant']['completed_at']), before_report_id)
 
@@ -287,31 +343,48 @@ def previous_display(db, *, destination, decision_id, at, before_report_id=None)
         report = db.value(row['digest'])['payload']
         if report['status'] != 'DELIVERED':
             continue
-        match = next((ref for ref in report['decisions'] if ref['object_id'] == decision_id), None)
-        if match is None:
-            continue
         assistant = report['receipt']['assistant']
         order = (utc(assistant['completed_at']), report['report_id'])
         if order[0] > cutoff or (before and order >= before) or (best and order <= best):
             continue
+        member = _displayed_member(db, report, decision_id)
+        if member is None:
+            continue
         best = order
-        found = {'report_id': report['report_id'], 'decision': match, 'completed_at': assistant['completed_at'],
-                 'receipt_ref': assistant['record_ref'], 'body': assistant['body'], 'source': 'NATIVE_READBACK'}
-        if decision_id == trading_decisions.PERSONAL_PREFIX + trading_policy.POSITION_SUBJECT and 'position_line' in report:
-            found['position_line'] = report['position_line']
+        # A more recent visible position with no verifiable binding breaks the comparison.
+        found = ({'report_id': report['report_id'], 'completed_at': assistant['completed_at'],
+                  'receipt_ref': assistant['record_ref'], 'body': assistant['body'], 'source': 'NATIVE_READBACK',
+                  **member} if member['decision'] else None)
     return found
 
 
 def position_already_displayed(db, destination, record, at):
     decision_id = record['object_id']
+    ref = trading_decisions.binding(record)
     previous = previous_display(db, destination=destination, decision_id=decision_id, at=at)
-    line = position_line(record)
-    if not previous or previous.get('position_line') != line:
+    if not previous or previous['decision'] != ref or previous.get('position_pending_review'):
         return False
-    # An unresolved send at this destination can still change the latest actual display.
+    explanation = previous.get('position_explanation') or {}
+    confirmed_closed = (position_action(record) == 'NO_POSITION'
+                        and record['payload'].get('policy', {}).get('position_status') == 'ABSENT')
+    if not explanation.get('reason') and not confirmed_closed:
+        return False
+    line = explained_position(record, explanation)
+    if previous['position_line'] != line:
+        return False
+    # An unresolved send may show an older decision or its older explanation, including in a risk edition.
     for report in _records(db, destination):
-        if (report.get('status') in {'SENDING', 'UNKNOWN'} and report.get('position_line') != line
-                and any(ref['object_id'] == decision_id for ref in report.get('decisions', []))):
+        if report.get('status') not in {'SENDING', 'UNKNOWN'}:
+            continue
+        visible = _report_position_line(report)
+        binding = next((r for r in report.get('decisions', []) if r['object_id'] == decision_id), None)
+        if visible is None and binding is None:
+            continue
+        document = report.get('document') or {}
+        inherited = binding is None and document.get('limited') and explanation.get('decision') == ref
+        if (visible != line or (document.get('position_explanation') or {}) != explanation
+                or (binding != ref and not inherited)
+                or 'allocation.' + trading_policy.POSITION_SUBJECT in document.get('pending_review', {})):
             return False
     return True
 

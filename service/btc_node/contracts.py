@@ -185,8 +185,11 @@ TRADING_FIELDS = {
     'report': ({'purpose': TEXT, 'event_ref': TEXT,
                 'base_report_id': {'type': ['string', 'null'], 'description': 'The structured baseline from trading.feedback, or null on first use.'},
                 'assessed_at': TIME, 'public_copy_id': TEXT,
-                'changes': {'type': 'object', 'description': 'Regular reports edit allocation only. Public items are frozen '
-                            'by trading.market public_copy. Limited reports submit only their public risk note.'},
+                'changes': {'type': 'object', 'description': 'Regular reports edit allocation only. For existing-position '
+                            'supply its adopted decision reference, previous_report_id (null before first display), '
+                            'reason and optional comparison. Explain repeated adjustments against the last confirmed '
+                            'display. Public items are frozen by trading.market public_copy. Limited reports submit '
+                            'only their public risk note.'},
                 'presentation': obj({'lead': LEAD_EXCERPT,
                                      'additional_lead': {'type': 'array', 'items': LEAD_EXCERPT, 'maxItems': 2},
                                      'shorten': {'type': 'object', 'additionalProperties': STRINGS}}, ['lead']),
