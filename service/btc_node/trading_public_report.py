@@ -11,6 +11,20 @@ ITEMS = {name: items for name, (_, items) in trading_report.SECTIONS.items() if 
 PATHS = {name + '.' + key for name, items in ITEMS.items() for key in items}
 
 
+def shared_sentence_context(sections):
+    """Locate exact sentences shared by different public sections for the author's review."""
+    locations = {}
+    for section, items in ITEMS.items():
+        entries = (sections or {}).get(section, {})
+        for item in items:
+            sentences = trading_report.sentences(entries.get(item) or '')
+            for sentence in dict.fromkeys(sentences):
+                locations.setdefault(sentence, []).append(section + '.' + item)
+    shared = [{'sentence': sentence, 'paths': paths} for sentence, paths in locations.items()
+              if len({path.partition('.')[0] for path in paths}) > 1]
+    return {'shared_public_sentences': shared} if shared else {}
+
+
 def _edition_key(target, market, base_id):
     return 'trading.public.copy.' + identity(target['thread_id'], market, base_id)
 
@@ -169,6 +183,7 @@ def context(db, target, market, base, *, run, snapshot):
     sections = previous['sections'] if previous else (_original_sections(base) if approved else None)
     return {'market': public_inputs(market), 'base_report_id': (base or {}).get('report_id'),
             'previous_public': sections, 'previous_copy_id': staged['copy_id'] if staged else None,
+            **shared_sentence_context(sections),
             'previous_display': _public_display(base, approved, legacy),
             'market_review': _market_review(snapshot, market, run['known_at']),
             'condition_reviews': _public_reviews(db, run, snapshot),

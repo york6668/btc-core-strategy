@@ -1027,7 +1027,8 @@ def feedback(db, run, release, action, params):
                 return {'base_report_id': document['base_report_id'], 'assessed_at': document['assessed_at'],
                         'risk_update': next(entry['text'] for entry in document['risk_updates']
                                             if entry['event_ref'] == support['event_ref'])}
-            return {'body': body, 'base_report_id': document['base_report_id'], 'public_copy_id': document['public_copy_id']}
+            return {'body': body, 'base_report_id': document['base_report_id'], 'public_copy_id': document['public_copy_id'],
+                    **trading_public_report.shared_sentence_context(trading_report.displayed_modules(document))}
         context = delivery.context(db, destination=target, at=run['known_at'])
         obligations = set(params.pop('obligation_ids', []))
         if purpose == 'DAILY':
