@@ -288,7 +288,7 @@ def render(document):
                 for update in document.get('execution_updates', []):
                     if update['subject'] == item:
                         parts.append('**已采纳原计划的条件复核。** ' + _display_time(update['formed_at'])
-                                     + ' 提出的安排本次核实为：' + update['judgement'] + ' ' + update['execution'])
+                                     + ' 提出的原安排已有核验结果。' + update['judgement'] + ' ' + update['execution'])
         if name == 'risks':
             expired = expired_risks(document, document['assessed_at'])
             for update in document['risk_updates']:

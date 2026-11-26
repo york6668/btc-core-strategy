@@ -501,7 +501,7 @@ def research(db, run, *, scope, subject, question, evidence, expected_version, o
     return entities.get('RESEARCH', issue)
 
 
-def confirmed_plan_condition(db, record, at):
+def plan_execution_status(db, record, at):
     """A model recommendation and the arrangement actually accepted by the user may differ."""
     subject = record['payload']['subject']
     portfolio = trading_portfolio.current(db)
@@ -510,21 +510,20 @@ def confirmed_plan_condition(db, record, at):
     accepted = row.get('accepted_arrangement')
     target = reference(record)
     followup = trading_portfolio.followup(db, target, as_of=at)
-    if followup['execution'] == 'EXECUTED' or followup['adoption'] == 'DECLINED':
-        raise Conflict('the original arrangement was already completed or declined')
+    execution = followup['execution']
+    if execution == 'EXECUTED' or followup['adoption'] == 'DECLINED':
+        return ('ALREADY_EXECUTED' if execution == 'EXECUTED' else 'DECLINED'), execution
     if accepted != target or followup['adoption'] != 'ACCEPTED':
-        raise Conflict('verify the condition of the exact user-accepted arrangement, which may predate the latest advice')
+        return 'NOT_USER_ACCEPTED', execution
+    return 'ACCEPTED', execution
 
 
 def execution_note(db, notice, at):
     """Present a verified condition against the user's plan, even while newer advice is outstanding."""
     change, ref = notice['change'], notice['decision']
     record = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
-    followup = trading_portfolio.followup(db, ref, as_of=at)
-    state = followup['execution']
-    try:
-        confirmed_plan_condition(db, record, at)
-    except Conflict:
+    status, state = plan_execution_status(db, record, at)
+    if status != 'ACCEPTED':
         outcome = ('该安排已确认执行完毕，无需重复操作。' if state == 'EXECUTED' else
                    '当前已确认的安排已有变化，这次条件兑现只作原计划复核。')
     else:
@@ -549,7 +548,7 @@ def review(db, run, *, target, condition_id, outcome, explanation, evidence, not
         if (record['scope'] != 'PERSONAL' or outcome not in {'SUPPORTED', 'REFUTED'}
                 or not isinstance(change, dict) or change.get('impact') != 'PLAN_READY'):
             raise ValueError('an execution notice must verify an original personal plan condition')
-        confirmed_plan_condition(db, record, run['known_at'])
+        plan_status, _ = plan_execution_status(db, record, run['known_at'])
     checked = decisions.record_review(db, target=target, condition_id=condition_id, outcome=outcome,
                                      explanation=explanation, evidence=public_evidence(db, evidence, required=outcome != 'UNKNOWN'),
                                      run=run, **updates)
@@ -559,6 +558,8 @@ def review(db, run, *, target, condition_id, outcome, explanation, evidence, not
         if ref not in checks:
             db.metadata(material_key(run['ref']), {**snapshot, 'independent_condition_reviews': [*checks, ref]}, write=True)
     if notification is not None:
+        if plan_status != 'ACCEPTED':
+            return {**checked, 'notification_status': plan_status}
         # A confirming observation on the next hour is still the same execution opportunity.
         transition = checked
         while transition['version'] > 1:
@@ -679,6 +680,11 @@ def checked_change(db, target, base, record, change, condition_review=None):
                            if lead['path'] == path)]
         if not any(before in text for text in quotes) or any(after in text for text in quotes):
             raise Conflict('compare against the actual prior arrangement displayed for this member')
+        if change['impact'] != 'PLAN_READY':
+            from .trading_delivery import previous_display
+            prior = previous_display(db, destination=target, decision_id=record['object_id'], at=stamp())
+            if prior and prior['decision'] == reference(record):
+                raise Conflict('the same adopted member cannot become a new recommendation through wording changes')
         result = record['payload']['result']
         active = result.get('conditional_actions', {}).get('PRESENT', result)
         sources = [active.get(k, '') for k in ('reason', 'risk', 'opportunity_cost', 'amount_basis')]
@@ -726,8 +732,10 @@ def register_notification(db, record, notification, *, condition_review=None, tr
             if previous:
                 ref = previous['decision']
                 prior = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
-                if prior and reference(prior) == ref and trading_portfolio._choice(prior) == trading_portfolio._choice(record):
-                    return 'ASSESSMENT_ONLY'
+                if prior and reference(prior) == ref:
+                    before, after = trading_portfolio._choice(prior), trading_portfolio._choice(record)
+                    if all(before.get(k) == after.get(k) for k in ('decision', 'amount', 'currency', 'conditional_actions')):
+                        return 'ASSESSMENT_ONLY'
     elif change is not None:
         raise ValueError('a decision comparison is for an ordinary intraday update')
     if (subject == trading_policy.POSITION_SUBJECT and record['kind'] == 'PLAN'
