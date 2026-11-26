@@ -470,7 +470,7 @@ def inherit_open(db, *, destination, legacy_root, retain=()):
 
 
 def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=None, legacy_destination=None,
-                   decision=None, scope=None):
+                   decision=None, scope=None, change=None):
     _text(subject, 'feedback subject')
     _text(trigger_ref, 'original feedback trigger')
     _text(reason, 'why feedback is needed')
@@ -479,10 +479,19 @@ def require_report(db, *, subject, trigger_ref, reason, kind='UPDATE', due_at=No
     due_at = stamp(due_at) if due_at is not None else None
     return _require_obligation(db, kind=kind, subject=subject, trigger_ref=trigger_ref,
                                reason=reason, due_at=due_at, legacy_destination=legacy_destination, decision=decision,
-                               scope=scope)
+                               scope=scope, change=change)
 
 
 def _obligation_id(value):
+    change = value.get('change')
+    if change:
+        if change['impact'] == 'PLAN_READY':
+            return OBLIGATION + identity(_channel(value['destination']), value['kind'], value['subject'],
+                                         change['impact'], value['trigger_ref'])
+        # Another market version or portfolio binding can adopt exactly the same unsent change.
+        parts = [_channel(value['destination']), value['kind'], value['subject'], change['base_report_id'],
+                 change['path'], change['impact'], change['before'], change['after']]
+        return OBLIGATION + identity(*parts)
     parts = [value['kind'], value['subject'], value['trigger_ref']]
     if 'scope' in value:
         parts.extend((value['scope'], value['decision']['version']))
@@ -528,6 +537,11 @@ def defer_public_risk(db, destination, support, params, missing):
 def _existing_obligation(db, value, legacy_destination):
     objects = Entities(db)
     prior = objects.get('DELIVERY', _obligation_id(value))
+    if prior is None and 'change' in value:
+        original = {k: v for k, v in value.items() if k not in {'change', 'destination'}}
+        prior = objects.get('DELIVERY', _obligation_id(original))
+        if prior and prior['payload'].get('destination') not in (None, legacy_destination):
+            prior = None
     if prior is not None or legacy_destination is None or 'scope' in value:
         return prior
     channel = _channel(legacy_destination)
@@ -537,13 +551,15 @@ def _existing_obligation(db, value, legacy_destination):
 
 
 def _require_obligation(db, *, kind, subject, trigger_ref, reason, due_at, legacy=None, legacy_destination=None,
-                        decision=None, scope=None):
+                        decision=None, scope=None, change=None):
     payload = {'subject': subject, 'trigger_ref': trigger_ref, 'reason': reason, 'kind': kind, 'due_at': due_at,
                'created_at': stamp(), 'report_id': None, 'status': 'OPEN'}
     if decision is not None:
         payload['decision'] = decision
     if scope is not None:
         payload['scope'] = scope
+    if change is not None:
+        payload.update(change=change, destination=validate_destination(legacy_destination))
     prior = _existing_obligation(db, payload, legacy_destination)
     if prior:
         return prior['payload']
@@ -616,6 +632,27 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
                         (*possible, obligation['trigger_ref'], millis(obligation['created_at'])))
     ref = next((r for r in decisions if origin and r['kind'] == origin['kind']
                 and r['object_id'] == origin['object_id']), None)
+    change = obligation.get('change')
+    if change and change['impact'] == 'PLAN_READY' and subject in document.get('member_order', []):
+        updates = document.get('execution_updates', [])
+        if not any(update['obligation_id'] == obligation['obligation_id'] and update['decision'] == origin
+                   and update['subject'] == subject and update['judgement'] == change['after'] for update in updates):
+            raise Conflict('show the original user-accepted plan and its verified execution condition')
+        return
+    if change and ref and not (coverage or {}).get('policy'):
+        if ref['version'] < origin['version'] or (ref['version'] == origin['version'] and ref != origin):
+            raise Conflict('cite the original material decision or its reviewed successor')
+        section, item = change['path'].split('.', 1)
+        visible = [trading_report.displayed_modules(document)[section].get(item, '')]
+        visible.extend(lead['quote'] for lead in trading_report.lead_excerpts(document.get('presentation', {}))
+                       if lead['path'] == change['path'])
+        excerpt = change['after']
+        if coverage is not None:
+            _exact(coverage, 'excerpt', 'displayed investment change')
+            excerpt = _text(coverage['excerpt'], 'displayed investment change')
+        if change['after'] not in excerpt or not any(excerpt in text for text in visible):
+            raise Conflict('show the material judgement or its reviewed excerpt in the affected report item')
+        return
     if subject == trading_policy.POSITION_SUBJECT and origin and position_line and ref:
         if ref['version'] < origin['version'] or (ref['version'] == origin['version'] and ref != origin):
             raise Conflict('cite the adopted original position decision or its actual successor')

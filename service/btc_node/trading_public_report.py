@@ -1,8 +1,8 @@
 """The public author owns the five public sections. A portfolio report only consumes their frozen wording."""
 from __future__ import annotations
 
-from . import trading_decisions, trading_delivery, trading_report
-from .codec import Conflict, encode, fingerprint, identity, millis
+from . import trading_decisions, trading_delivery, trading_report, trading_theses
+from .codec import Conflict, encode, fingerprint, identity, millis, stamp
 from .entities import Entities
 from .trading_report_inputs import evidence_refs, previous_display, public_inputs
 
@@ -139,6 +139,33 @@ def _public_display(base, approved, legacy):
     return result
 
 
+def changed_judgement(db, destination, base, market, path, before, after):
+    """Use only the public text actually shown and the adopted public judgement."""
+    if path not in PATHS:
+        raise ValueError('choose the public report item whose investment judgement changed')
+    if base.get('public_market') == trading_decisions.binding(market):
+        raise Conflict('adopt the changed market judgement before announcing an intraday revision')
+    display = _public_display(base, bool(base.get('public_market')), _legacy_review(db, destination, base))
+    if not display:
+        raise Conflict('verify the public part of the delivered edition before using it for a market update')
+    section, item = path.split('.', 1)
+    visible = [display['modules'][section].get(item) or '']
+    visible.extend(lead['quote'] for lead in trading_report.lead_excerpts(display) if lead['path'] == path)
+    if not any(before in text for text in visible) or any(after in text for text in visible):
+        raise Conflict('compare the changed judgement with what this destination actually saw in that item')
+    if not base.get('public_market'):
+        issued = trading_report.displayed_modules(base)[section].get(item, '')
+        leads = trading_report.lead_excerpts(base.get('presentation', {}))
+        if before not in issued and not any(before in lead['quote'] for lead in leads if lead['path'] == path):
+            raise Conflict('the approved legacy passage must also have been displayed in the affected item')
+    previous = base.get('public_market')
+    prior = Entities(db).get(previous['kind'], previous['object_id'], version=previous['version']) if previous else None
+    former = _sources(db, prior) if prior and trading_decisions.binding(prior) == previous else {}
+    if any(after in source and after not in former.get(name, '') for name, source in _sources(db, market).items()):
+        return
+    raise Conflict('cite the revised judgement from the adopted public decision or its changed cycle thesis')
+
+
 def _public_reviews(db, run, snapshot):
     """Read this run's actual checks, including conditions subsequently retired by its new judgement."""
     objects = Entities(db)
@@ -181,7 +208,8 @@ def context(db, target, market, base, *, run, snapshot):
     legacy = _legacy_review(db, target, base)
     previous = staged or legacy
     sections = previous['sections'] if previous else (_original_sections(base) if approved else None)
-    return {'market': public_inputs(market), 'base_report_id': (base or {}).get('report_id'),
+    return {'market': public_inputs(market), 'thesis_sources': _thesis_sources(db, market),
+            'base_report_id': (base or {}).get('report_id'),
             'previous_public': sections, 'previous_copy_id': staged['copy_id'] if staged else None,
             **shared_sentence_context(sections),
             'previous_display': _public_display(base, approved, legacy),
@@ -195,12 +223,22 @@ def context(db, target, market, base, *, run, snapshot):
             'copy_ready': bool(staged or (approved and base['public_market'] == trading_decisions.binding(market)))}
 
 
-def _sources(market):
+def _thesis_sources(db, market):
+    sources = {}
+    for key, ref in trading_theses.bindings(market).items():
+        thesis = trading_theses.bound(db, ref, stamp())['payload']
+        sources.update({'thesis/' + key + '/' + field: thesis[field]
+                        for field in trading_theses.THESIS_FIELDS if thesis.get(field)})
+    return sources
+
+
+def _sources(db, market):
     result = market['payload']['result']
     sources = {k: result[k] for k in ('conclusion', 'primary', 'value')}
     sources.update({'alternative/' + str(i): value for i, value in enumerate(result['alternatives'])})
     sources.update({'assessment/' + name: value for name, value in result['assessments'].items()})
     sources.update({'condition/' + c['id']: c['criterion'] for c in result['conditions']})
+    sources.update(_thesis_sources(db, market))
     return sources
 
 
@@ -239,7 +277,7 @@ def risk_text(db, run, target, support, value):
     if isinstance(value, str) and value.strip() and value in event_text:
         return value
     market = trading_decisions.current_market(db, MARKET)
-    sources = _sources(market) if market else {}
+    sources = _sources(db, market) if market else {}
     text = _extract({**sources, 'event': event_text}, value)
     if not any(item['source'] == 'event' for item in value['extracts']):
         raise ValueError('the limited risk update must reference its verified public event')
@@ -312,7 +350,7 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
     chosen.update(draft.get('market_sources', {}))
     basis = report_basis(db, run, market, {}, chosen)
     snapshot = material(db, run)
-    sources = _sources(market)
+    sources = _sources(db, market)
     review_sources = {}
     review = _market_review(snapshot, market, run['known_at'])
     if review and review['mode'] == 'REUSE':

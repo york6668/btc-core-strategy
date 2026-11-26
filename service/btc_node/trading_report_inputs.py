@@ -79,6 +79,8 @@ def previous_display(base):
     display = {'modules': displayed_modules(base), 'lead': presentation.get('lead')}
     if presentation.get('additional_lead'):
         display['additional_lead'] = presentation['additional_lead']
+    if base.get('execution_updates'):
+        display['execution_updates'] = base['execution_updates']
     return display
 
 
@@ -90,20 +92,6 @@ def _shown_sentences(document):
     for lead in lead_excerpts(display):
         by_path.setdefault(lead['path'], set()).update(sentences(lead['quote']))
     return by_path
-
-
-def newly_displayed_content(document, base):
-    """Moving a sentence to the lead or joining excerpts does not communicate a new decision."""
-    before = _shown_sentences(base)
-    shown = _shown_sentences(document)
-    position = document.get('position_explanation', {})
-    prior = base.get('position_explanation', {})
-    if (position and position.get('decision') == prior.get('decision') and position['reason'] == prior.get('reason')
-            and not position.get('previous_report_id')):
-        # The automatic reminder about an already displayed adjustment does not warrant its own update.
-        shown.pop('allocation.' + POSITION_SUBJECT, None)
-    return any(current.difference(before.get(path, set())) for path, current in shown.items()
-               if not path.startswith('risk_updates.'))
 
 
 def check_shortened_correction(document, base, original):
@@ -141,6 +129,7 @@ def public_inputs(market):
     result = market['payload']['result']
     public = _fields(result, ('conclusion', 'primary', 'alternatives', 'value', 'assessments', 'valid_until'))
     public.update(decision=binding(market), known_ms=market['known_ms'], valuations=result.get('valuations', {}),
+                  theses=result.get('theses', {}),
                   conditions=_conditions(result),
                   evidence=evidence_refs(market['dependencies']))
     return public
@@ -148,26 +137,45 @@ def public_inputs(market):
 
 def evidence_refs(dependencies):
     return [_fields(ref, ('type', 'kind', 'object_id', 'version', 'digest', 'product',
-                          'series', 'item_key', 'observation_key')) for ref in dependencies]
+                          'series', 'item_key', 'observation_key', 'sample')) for ref in dependencies]
 
 
 def prior_position(db, destination, position, at):
     from .entities import Entities
+    from . import trading_portfolio
     from .trading_delivery import position_action, previous_display
     shown = previous_display(db, destination=destination, decision_id=position['object_id'], at=at)
     if not shown:
         return None
     ref = shown['decision']
-    prior = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
+    objects = Entities(db)
+    prior = objects.get(ref['kind'], ref['object_id'], version=ref['version'])
     view = _fields(shown, ('report_id', 'completed_at', 'decision', 'position_line', 'position_pending_review'))
-    if prior and binding(prior) == ref:
-        result = prior['payload']['result']
-        active = result.get('conditional_actions', {}).get('PRESENT', result)
-        view.update(action=position_action(prior), basis=active['reason'])
+    if not prior or binding(prior) != ref:
+        return view
+    result = prior['payload']['result']
+    active = result.get('conditional_actions', {}).get('PRESENT', result)
+    original = trading_portfolio._arrangement(objects, prior, at)
+    previous_root = binding(original)
+    view.update(action=position_action(prior), basis=active['reason'], arrangement=previous_root,
+                value_zone=trading_portfolio._choice(prior).get('value_zone'))
+    if prior['digest'] == position['digest']:
+        return view
+    current_root = trading_portfolio._arrangement(objects, position, at)
+    if binding(current_root) == previous_root:
+        return view
+    adoption = trading_portfolio.first_member_review(objects, current_root, at)
+    source = adoption.get('previous')
+    if adoption.get('relation') == 'ADDITIONAL' and source:
+        predecessor = objects.get(source['kind'], source['object_id'], version=source['version'])
+        if (predecessor and binding(predecessor) == source and
+                binding(trading_portfolio._arrangement(objects, predecessor, at)) == previous_root):
+            view['addition_to_displayed_arrangement'] = True
+            view['execution'] = trading_portfolio._followup(objects, original, at)['execution']
     return view
 
 
-def position_explanation(record, previous, base, edit):
+def position_explanation(record, previous, base, edit, member_review=None):
     """Keep current reasoning reusable. Relative wording belongs to this comparison only."""
     from .trading_delivery import position_action
     ref = binding(record)
@@ -194,22 +202,56 @@ def position_explanation(record, previous, base, edit):
                 raise ValueError('compare with an actual previous display, using its bound decision')
     action = position_action(record)
     if action in ('REDUCE', 'INCREASE') and previous:
-        if same_decision:
-            if comparison is not None:
-                raise Conflict('omit comparison when the same adjustment was already displayed; its continuation is automatic')
-            verb = '减持' if action == 'REDUCE' else '增持'
-            comparison = f'沿用上次的{verb}建议，本轮没有新增{verb}安排。'
+        reviewed = member_review or {}
+        last_shown = previous['decision']
+        root = reviewed.get('arrangement')
+        if previous.get('arrangement') and root:
+            same_arrangement = previous['arrangement'] == root
+        else:
+            same_arrangement = (reviewed.get('relation') in ('CONTINUE', 'READY', 'REPRICE') and
+                                last_shown in (root, reviewed.get('previous')))
+        verb = '减持' if action == 'REDUCE' else '增持'
+        execution = reviewed.get('actual_execution')
+        if same_decision or same_arrangement:
+            from .trading_portfolio import _choice
+            zone = _choice(record).get('value_zone')
+            if 'value_zone' in previous and (zone is not None or previous['value_zone'] is not None):
+                repriced = previous['value_zone'] != zone
+            else:
+                repriced = not same_decision and reviewed.get('relation') == 'REPRICE'
+            if repriced and execution == 'PARTIALLY_EXECUTED':
+                comparison = f'上次{verb}已确认部分执行，本轮重估的价格只适用于尚未执行的部分。'
+            elif reviewed.get('user_adoption') == 'DECLINED' and execution != 'PARTIALLY_EXECUTED':
+                comparison = f'你已明确未采纳上次{verb}安排，本轮仍是同一笔建议。'
+            elif repriced:
+                comparison = f'本轮仅重估上次{verb}的适用价格。若原安排仍有未执行部分，沿用原定规模。'
+            elif execution == 'PARTIALLY_EXECUTED':
+                comparison = f'上次{verb}安排已确认部分执行，本轮只承接尚未执行的部分。'
+            elif execution == 'NOT_EXECUTED':
+                comparison = f'上次{verb}安排已确认尚未执行，本轮沿用该安排。'
+            elif 'arrangement' in reviewed:
+                comparison = f'上次{verb}的执行情况尚未确认。若仍有未执行部分，本轮只沿用该部分。'
+            else:
+                comparison = f'沿用上次的{verb}建议，本轮没有新增{verb}安排。'
+        elif (previous.get('action') == action and
+              (previous.get('addition_to_displayed_arrangement') or
+               (reviewed.get('relation') == 'ADDITIONAL' and reviewed.get('previous') == last_shown))):
+            comparison = f'本轮建议在上次{verb}安排之外追加一笔。'
+            if execution == 'PARTIALLY_EXECUTED':
+                comparison = f'上次{verb}安排之外追加的一笔已确认部分执行，本轮只承接该笔尚未执行的部分。'
+            if previous.get('execution', 'UNKNOWN') == 'UNKNOWN':
+                comparison += f'上次{verb}的执行情况尚未确认。'
         elif comparison is None and previous.get('action') in (None, action):
             raise Conflict('explain whether this adjustment continues, reprices or adds to the previously displayed plan')
     summary = {'decision': ref, 'reason': reason.strip()}
     if comparison:
         summary['comparison'] = comparison.strip()
-        if edit and 'comparison' in edit:
+        if not same_decision:
             summary['previous_report_id'] = previous_id
     return summary
 
 
-def writing_inputs(market, portfolio, records, position_line, previous_position=None):
+def writing_inputs(market, portfolio, records, position_line, previous_position=None, *, confirmations=None):
     """Project public analysis once and expose only choices adopted by the matching portfolio."""
     public = public_inputs(market)
     allocation = {'portfolio': None, 'members': {}, 'cash_sources': [], 'unavailable_members': []}
@@ -237,6 +279,13 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         previous = plan.get('member_reviews', {}).get(subject, {})
         if 'relation' in previous:
             member['previous_choice_review'] = _fields(previous, ('previous', 'relation', 'reason'))
+        if 'arrangement' in previous:
+            member['arrangement'] = previous['arrangement']
+            member['user_adoption'] = previous.get('user_adoption', 'UNKNOWN')
+            member['actual_execution'] = previous.get('actual_execution', 'UNKNOWN')
+            member.update(_fields(previous, ('accepted_arrangement', 'last_user_feedback', 'last_retrospective', 'prior_retrospective')))
+        if (confirmations or {}).get(subject):
+            member['confirmations'] = confirmations[subject]
         if subject == POSITION_SUBJECT:
             member.update(direction=position_line, previous_display=previous_position,
                           position_status=policy.get('position_status', 'UNKNOWN'))

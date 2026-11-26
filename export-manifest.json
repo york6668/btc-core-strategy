@@ -46,6 +46,7 @@
     "service/btc_node/series.py",
     "service/btc_node/tasks.py",
     "service/btc_node/trading.py",
+    "service/btc_node/trading_theses.py",
     "service/btc_node/trading_archive.py",
     "service/btc_node/trading_decisions.py",
     "service/btc_node/trading_delivery.py",

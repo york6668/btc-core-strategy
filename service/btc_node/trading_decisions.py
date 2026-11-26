@@ -134,8 +134,8 @@ def _horizon(result, run):
     return horizon
 
 
-def current_market(database, subject):
-    return Entities(database).get('DECISION', _object_id(MARKET_PREFIX, subject))
+def current_market(database, subject, *, as_of=None):
+    return Entities(database).get('DECISION', _object_id(MARKET_PREFIX, subject), as_of=as_of)
 
 
 def current_decision(database, subject):
@@ -193,7 +193,7 @@ def _save(objects, *, kind, object_id, scope, payload, evidence, run, expected_v
     return objects.get(kind, object_id)
 
 
-def adopt_market(database, *, subject, expected_version, result, evidence, run):
+def adopt_market(database, *, subject, expected_version, result, evidence, run, theses=None):
     primary = _text(result.get('primary'), 'primary market scenario')
     alternatives = result.get('alternatives')
     if not isinstance(alternatives, list) or not alternatives:
@@ -210,6 +210,9 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run):
                  'primary': primary, 'alternatives': alternatives,
                  'value': _text(result.get('value'), 'risk and reward at current prices'),
                  'assessments': assessments, **_horizon(result, run)}
+    if theses:
+        judgement['theses'] = theses
+        evidence = [*evidence, *({'type': 'ENTITY', **ref} for ref in theses.values())]
     valuations = result.get('valuations', {})
     if not isinstance(valuations, dict) or not valuations.keys() <= assessments.keys():
         raise ValueError('each valuation must name its public assessment at current prices')
@@ -311,7 +314,8 @@ def _valuation(terms, condition_ids):
 def market_inputs(database, record, *, at, state=None):
     result = record['payload']['result']
     inputs = {**{key: result[key] for key in ('conclusion', 'primary', 'alternatives', 'value')},
-              **{'assessment/' + key: val for key, val in result['assessments'].items()}}
+              **{'assessment/' + key: val for key, val in result['assessments'].items()},
+              **{'thesis/' + key: ref for key, ref in result.get('theses', {}).items()}}
     valuations = result.get('valuations', {})
     checks = {}
     if any(terms.get('condition_ids') for terms in valuations.values()):
@@ -604,9 +608,13 @@ def _later_evidence(database, objects, evidence, *, original, cutoff, observatio
             sample = objects.get(reference['kind'], reference['object_id'], version=reference['version'])
         elif reference['type'] == 'BLOB':
             tagged = database.metadata('trading.public.' + reference['digest'].removeprefix('sha256:'))
-            if not tagged or tagged['provider'] != 'PUBLIC_SOURCE_RETRIEVAL':
+            if tagged and 'sample' in reference:
+                from .trading_theses import packet_sample
+                _, _, sample = packet_sample(database, reference, tagged)
+            elif tagged and tagged['provider'] == 'PUBLIC_SOURCE_RETRIEVAL':
+                sample = {'observed_ms': millis(tagged['observed_at']), 'known_ms': millis(tagged['known_at'])}
+            else:
                 continue  # The newest packet clock cannot date its constituent observations.
-            sample = {'observed_ms': millis(tagged['observed_at']), 'known_ms': millis(tagged['known_at'])}
         else:
             continue  # An undated blob or a prior judgement is supporting material only.
         if (sample and original < sample['observed_ms'] <= sample['known_ms'] <= cutoff

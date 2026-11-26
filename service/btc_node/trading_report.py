@@ -284,6 +284,11 @@ def render(document):
                 else:
                     paragraph += '\n\n截至 ' + _display_time(marked) + '，此项待复评。'
             parts.append(paragraph)
+            if name == 'allocation':
+                for update in document.get('execution_updates', []):
+                    if update['subject'] == item:
+                        parts.append('**已采纳原计划的条件复核。** ' + _display_time(update['formed_at'])
+                                     + ' 提出的安排本次核实为：' + update['judgement'] + ' ' + update['execution'])
         if name == 'risks':
             expired = expired_risks(document, document['assessed_at'])
             for update in document['risk_updates']:

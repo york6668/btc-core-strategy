@@ -133,7 +133,8 @@ def build(db, run, release, assessed_at, public_seed, previous):
     scope, portfolio, records, pending, missing, sources = _portfolio_inputs(db, run, release, assessed_at)
     known_kinds = {s: {'kind': scope[s]['kind']} for s in missing if s in scope}
     order, terms = report_allocation(records, {'unavailable': missing}, {'allocation_terms': known_kinds}, {})
-    times = report_judgement_times(market, records, portfolio)
+    confirmations = trading_portfolio.arrangement_confirmations(db, portfolio)
+    times = report_judgement_times(market, records, portfolio, confirmations)
     market_end = market['payload']['result']['valid_until']
     expiries = {name + '.' + item: market_end for name, (_, items) in trading_report.SECTIONS.items() for item in items}
     for subject, record in records.items():
@@ -157,6 +158,9 @@ def build(db, run, release, assessed_at, public_seed, previous):
                 pending.add(path)
         else:
             allocation[subject] = _choice_text(subject, record, scope)
+            if confirmations.get(subject):
+                facts = ' '.join(event['fact_ref']['quote'] for event in confirmations[subject])
+                allocation[subject] += ' 用户确认记录如下。' + facts
     cash_gap = False
     for subject in missing:
         policy = scope.get(subject)
@@ -191,7 +195,7 @@ def build(db, run, release, assessed_at, public_seed, previous):
     # This is an adopted source edition. Only a native receipt advances the destination baseline.
     seed.update(report_id=(previous or {}).get('report_id'), reviewed_at=times['allocation.cash'],
                 pending_review={p: assessed_at for p in pending}, allocation_terms=terms, valid_until=expiries,
-                basis=report_basis(db, run, market, records, copy['sources']),
+                basis=report_basis(db, run, market, records, copy['sources'], confirmations),
                 public_market=copy['market'], market_sources=copy['sources'],
                 seed_sources=sources)
     if public_seed is None:

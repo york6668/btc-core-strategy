@@ -118,6 +118,13 @@ OBJECT = {'type': 'object'}
 OBJECTS = {'type': 'array', 'items': OBJECT}
 STRINGS = {'type': 'array', 'items': TEXT}
 CONDITION_LOOKUP = obj({'target': OBJECT, 'condition_id': TEXT}, ['target', 'condition_id'])
+THESIS_TEST = obj({'outcome': {'type': 'string', 'enum': ['SUPPORTED', 'REFUTED', 'UNRESOLVED']}, 'reason': TEXT},
+                  ['outcome', 'reason'])
+USER_FEEDBACK = obj({
+    'target': OBJECT,
+    'type': {'type': 'string', 'enum': ['ACCEPTED', 'DECLINED', 'NOT_EXECUTED', 'PARTIALLY_EXECUTED', 'EXECUTED']},
+    'confirmed_at': TIME, 'fact_ref': obj({'file': TEXT, 'quote': TEXT}, ['file', 'quote']),
+}, ['target', 'type', 'confirmed_at', 'fact_ref'])
 DECISION_RESULT = {
     'type': 'object',
     'description': 'Decision with conditions [{id,criterion,review_at}]. For a bounded forecast supply '
@@ -128,7 +135,8 @@ MARKET_RESULT = {
     **DECISION_RESULT,
     'description': DECISION_RESULT['description'] + ' Mark named current-price assessments in valuations. '
                    'Each entry may specify a value_zone and condition_ids. Spot decisions cite the applicable '
-                   'valuation/<name> or overall value.',
+                   'valuation/<name> or overall value. Propose substantive changes to named independent '
+                   'cycle judgements in theses; unchanged judgements retain their exact references.',
 }
 PERSONAL_RESULT = {
     **DECISION_RESULT,
@@ -145,10 +153,13 @@ PERSONAL_DECISION_FIELDS = (
 )
 TRADING_FIELDS = {
     'open': ({'market': OBJECT}, ['market']),
-    'public': ({'condition': CONDITION_LOOKUP}, []),
+    'public': ({'condition': CONDITION_LOOKUP, 'thesis_history': obj(
+        {'key': TEXT, 'version': VERSION, 'as_of': TIME, 'after': VERSION,
+         'stream': {'type': 'string', 'enum': ['THESES', 'REVIEWS', 'RECAPS']},
+         'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, ['key'])}, []),
     'personal_ready': ({}, []),
     'review_public_baseline': ({'base_report_id': TEXT, 'items': OBJECT, 'previous_review_id': TEXT}, ['base_report_id', 'items']),
-    'personal': ({'condition': CONDITION_LOOKUP}, []),
+    'personal': ({'condition': CONDITION_LOOKUP, 'followup': OBJECT}, []),
     'seed_policy': ({}, []),
     'policy': ({'subject':TEXT, 'kind':TEXT, 'fields':OBJECT, 'refs':OBJECTS, 'expected_version':VERSION,
                 'active':{'type':'boolean'}}, ['subject','kind','fields','refs','expected_version']),
@@ -165,24 +176,35 @@ TRADING_FIELDS = {
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
     'market': ({'evidence': OBJECTS, 'result': MARKET_RESULT, 'expected_version': VERSION,
-                'market': OBJECT, 'reason': TEXT, 'notification': OBJECT, 'public_copy': OBJECT}, ['evidence']),
+                'market': OBJECT, 'reason': TEXT, 'thesis_reviews': OBJECT,
+                'notification': OBJECT, 'public_copy': OBJECT}, ['evidence']),
+    'thesis_recap': ({'target': OBJECT, 'expected_version': VERSION, 'direction': THESIS_TEST,
+                      'mechanism': THESIS_TEST, 'timing': THESIS_TEST, 'lesson': TEXT, 'evidence': OBJECTS},
+                     ['target', 'expected_version', 'direction', 'mechanism', 'timing', 'lesson', 'evidence']),
     'personal_decision': PERSONAL_DECISION_FIELDS,
     'portfolio_decision': (
         {'expected_version': VERSION, 'market': OBJECT, 'primary': TEXT, 'alternatives': STRINGS,
          'interactions': {'type': 'array', 'items': obj(
              {'subject': TEXT, 'depends_on': TEXT, 'reason': TEXT}, ['subject', 'depends_on', 'reason'])},
          'member_reviews': {'type': 'object', 'additionalProperties': obj({
-             'relation': {'type': 'string', 'enum': ['CONTINUE', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED']},
-             'reason': TEXT}, ['relation', 'reason'])},
+             'relation': {'type': 'string', 'enum': ['CONTINUE', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED',
+                                                    'READY', 'ADDITIONAL']},
+             'reason': TEXT, 'user_feedback': {'type': 'array', 'items': USER_FEEDBACK},
+             'prior_retrospective': obj({'review': OBJECT, 'applicability': TEXT}, ['review', 'applicability']),
+             'retrospective': obj({'target': OBJECT, 'scope': {'type': 'string', 'enum': ['PLAN_ONLY', 'CONFIRMED_EXECUTION']},
+                                   'position_result': TEXT, 'application': TEXT, 'evidence': OBJECTS},
+                                  ['target', 'scope', 'position_result', 'application', 'evidence'])},
+             ['relation', 'reason'])},
          'decisions': {'type': 'array', 'items': obj(*PERSONAL_DECISION_FIELDS)}, 'reuse': OBJECT},
         ['expected_version', 'market', 'primary', 'alternatives', 'interactions', 'decisions', 'reuse'],
     ),
     'review': ({'target': OBJECT, 'condition_id': TEXT, 'outcome': TEXT, 'explanation': TEXT, 'evidence': OBJECTS,
-                'impact': TEXT, 'next_review_at': TIME}, ['target', 'condition_id', 'outcome', 'explanation', 'evidence']),
+                'impact': TEXT, 'next_review_at': TIME, 'notification': OBJECT},
+               ['target', 'condition_id', 'outcome', 'explanation', 'evidence']),
     'research': ({'scope': SCOPE, 'subject': TEXT, 'question': TEXT, 'evidence': OBJECTS,
                   'expected_version': VERSION, 'outcome': OBJECT},
                  ['scope', 'subject', 'question', 'evidence', 'expected_version']),
-    'report': ({'purpose': TEXT, 'event_ref': TEXT,
+    'report': ({'purpose': TEXT, 'event_ref': TEXT, 'change': OBJECT,
                 'base_report_id': {'type': ['string', 'null'], 'description': 'The structured baseline from trading.feedback, or null on first use.'},
                 'assessed_at': TIME, 'public_copy_id': TEXT,
                 'changes': {'type': 'object', 'description': 'Regular reports edit allocation only. For existing-position '

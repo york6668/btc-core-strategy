@@ -84,7 +84,7 @@ def request(config, run_id, arguments, stdin):
         prepared = call(method, {'market': market}, 'trading-open:' + key)
         return call('trading.public', {}) if prepared['ok'] else prepared
 
-    if method == 'trading.personal' and 'condition' in params:
+    if method == 'trading.personal' and ('condition' in params or 'followup' in params):
         # Exact historical reads use the service's phase check and need no policy import.
         return call(method, params)
     public_risk = method == 'trading.report' and params.get('purpose') == 'RISK' and params.get('decisions') == []

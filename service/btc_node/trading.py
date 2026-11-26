@@ -7,19 +7,19 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from . import deep_gate, fact_views, trading_archive, trading_policy, trading_portfolio, trading_public_report, trading_report
+from . import deep_gate, fact_views, trading_archive, trading_policy, trading_portfolio, trading_public_report, trading_report, trading_theses
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp
 from .entities import Entities
 
 MARKET = 'allocation'
 SET_ENTRY_REFERENCE = 'trading.set_entry_reference'
 SERVICE_SOURCES = ('api.py', 'contracts.py', 'execution.py', 'mcp.py', 'trading.py', 'trading_decisions.py',
-                   'trading_delivery.py', 'trading_policy.py', 'trading_archive.py', 'trading_portfolio.py',
+                   'trading_delivery.py', 'trading_policy.py', 'trading_archive.py', 'trading_portfolio.py', 'trading_theses.py',
                    'trading_report.py', 'trading_report_inputs.py', 'trading_public_report.py', 'trading_risk_seed.py')
 READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.source',
          'trading.research_archive', 'trading.research_result', 'trading.preview_report'}
 WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision', 'trading.portfolio_decision',
-          'trading.review', 'trading.review_public_baseline', 'trading.research', 'trading.report', 'trading.begin_delivery',
+          'trading.review', 'trading.thesis_recap', 'trading.review_public_baseline', 'trading.research', 'trading.report', 'trading.begin_delivery',
           'trading.record_delivery', 'trading.assess_feedback', 'trading.inherit_feedback',
           'trading.policy', 'trading.seed_policy', SET_ENTRY_REFERENCE}
 
@@ -90,9 +90,10 @@ def open_run(db, run, release, *, market):
            for receipt in market['retrievals'].values()):
         raise ValueError('market retrieval occurs after the actual knowledge time')
     market_digest = db.put_blob(encode(market))
-    db.metadata('trading.public.' + market_digest,
-                {'digest': market_digest, 'observed_at': market['cutoff'], 'known_at': run['known_at'],
-                 'provider': 'ANONYMOUS_MARKET_COLLECTION'}, write=True)
+    if db.metadata('trading.public.' + market_digest) is None:
+        db.metadata('trading.public.' + market_digest,
+                    {'digest': market_digest, 'observed_at': market['cutoff'], 'known_at': run['known_at'],
+                     'provider': 'ANONYMOUS_MARKET_COLLECTION'}, write=True)
     value = {'release': run['method_version'], 'market': market_digest,
              'public_known_at': run['known_at'], 'public_cutoff': market['cutoff']}
     from .reader_store import observations
@@ -103,8 +104,9 @@ def open_run(db, run, release, *, market):
         auxiliary = {'status': 'UNAVAILABLE', 'reason': 'reader source unavailable'}
     auxiliary_digest = db.put_blob(encode(auxiliary))
     value['auxiliary'] = auxiliary_digest
-    db.metadata('trading.public.' + auxiliary_digest, {'digest': auxiliary_digest, 'provider': 'AUXILIARY_READER',
-                'observed_at': None, 'known_at': run['known_at']}, write=True)
+    if db.metadata('trading.public.' + auxiliary_digest) is None:
+        db.metadata('trading.public.' + auxiliary_digest, {'digest': auxiliary_digest, 'provider': 'AUXILIARY_READER',
+                    'observed_at': None, 'known_at': run['known_at']}, write=True)
     db.metadata(identity_key, value, write=True)
     trading_archive.capture(db, release=release, as_of=run['known_at'])
     return {'prepared': True, **value}
@@ -114,7 +116,13 @@ def public_context(db, run):
     from . import trading_decisions as decisions
     snapshot = material(db, run)
     market = db.value(snapshot['market'])
-    current = decisions.current_market(db, MARKET)
+    binding = snapshot.get('market_binding')
+    as_of = snapshot.get('thesis_recap_at') or snapshot['public_known_at']
+    if binding:
+        current = Entities(db).get(binding['kind'], binding['object_id'], version=binding['version'])
+        as_of = snapshot.get('market_review', {}).get('assessed_at') or run['known_at']
+    else:
+        current = decisions.current_market(db, MARKET, as_of=as_of)
     review = decisions.decision_state(db, current, at=run['known_at']) if current else None
     archive = trading_archive.context(db, scope='PUBLIC', at=run['known_at'])
     targets = archive.pop('review_targets', [])
@@ -125,7 +133,7 @@ def public_context(db, run):
             'windows': market['windows'], 'gaps': market['gaps'], 'retrievals': market['retrievals'],
             'limitations': market['limitations'], 'current_market': current,
             'auxiliary': db.value(snapshot['auxiliary']), 'auxiliary_evidence': {'type': 'BLOB', 'digest': snapshot['auxiliary']},
-            'review': review, 'review_targets': targets, 'archive': archive,
+            'review': review, 'review_targets': targets, 'theses': trading_theses.context(db, current, as_of), 'archive': archive,
             'research': research_records(db, 'PUBLIC')}
 
 
@@ -166,19 +174,27 @@ def public_evidence(db, refs, *, required=True):
 
 
 def market_ready(db, run, *, evidence, market=None, expected_version=None, result=None, reason=None, notification=None,
-                 public_copy=None):
+                 public_copy=None, thesis_reviews=None):
     from . import trading_decisions as decisions
     snapshot = material(db, run)
     independent = not snapshot.get('market_binding')
     refs = public_evidence(db, evidence)
     if not deep_gate.check_scope(db, scope='btc/market')['allowed']:
         raise Conflict('known market defect limits new market conclusions')
+    current = decisions.current_market(db, MARKET)
+    original = trading_theses.bindings(current)
+    checks = {} if thesis_reviews is None else thesis_reviews
+    if not isinstance(checks, dict):
+        raise ValueError('hourly reviews must be keyed by their stable cycle subjects')
+    if not independent and (checks or result is not None):
+        raise Conflict('only the independent public market assessment may adopt or review a cycle thesis')
     if result is not None:
+        updated = trading_theses.revisions(db, current, result.get('theses', {}), checks, refs, run)
         record = decisions.adopt_market(db, subject=MARKET, expected_version=expected_version,
-                                       result=result, evidence=refs, run=run)
+                                       result=result, evidence=refs, run=run, theses=updated)
     else:
         plain(reason, 'why current market judgment still applies')
-        record = decisions.current_market(db, MARKET)
+        record = current
         if not record or reference(record) != market:
             raise Conflict('reuse requires the exact current market judgment')
         if decisions.decision_state(db, record, at=run['known_at'])['status'] != 'CURRENT':
@@ -187,6 +203,8 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
     review = {'reason': reason, 'evidence': refs}
     if independent:
         review.update(public_market=bound, assessed_at=run['known_at'], mode='ADOPT' if result is not None else 'REUSE')
+        trading_theses.hourly(db, original, trading_theses.bindings(record), checks, refs, run,
+                              opened_at=snapshot['public_known_at'])
     elif snapshot.get('market_review', {}).get('public_market') == bound:
         # A later portfolio-side copy request cannot replace the independent assessment for its public author.
         review = snapshot['market_review']
@@ -194,11 +212,12 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
     copy_id = None
     if public_copy is not None:
         copy_id = trading_public_report.freeze(db, run, destination(db), record, public_copy, independent=independent)
+    notice = {}
     if notification is not None:
-        if result is None:
+        if result is None and not notification.get('change'):
             raise ValueError('a new decision obligation must reference the adopted change')
-        register_notification(db, record, notification)
-    return {'market': record, 'market_binding': bound, **({'public_copy_id': copy_id} if copy_id else {})}
+        notice['notification_status'] = register_notification(db, record, notification)
+    return {'market': record, 'market_binding': bound, **notice, **({'public_copy_id': copy_id} if copy_id else {})}
 
 
 def frozen_market(db, run):
@@ -263,6 +282,7 @@ def personal_context(db, run, release):
             'market_inputs': inputs,
             'policy_status': status, 'policies': scope,
             'current': records, 'portfolio': portfolio,
+            'arrangement_followups': trading_portfolio.followup_context(db, portfolio),
             'scenario_review': trading_portfolio.scenario_review(db, portfolio, market),
             'review': review,
             'review_targets': [{'subject': subject, **condition}
@@ -352,7 +372,7 @@ def adopt_personal(db, run, market, scope, files, *, subject, expected_version, 
                                     result=result, evidence=refs, run=run, fact_refs=fact_refs, market_refs=market_refs,
                                     fact_history=fact_history if policy['kind'] == 'POSITION' and not opening_price else None)
     if notification is not None:
-        register_notification(db, record, notification)
+        record = {**record, 'notification_status': register_notification(db, record, notification)}
     return record
 
 
@@ -403,18 +423,23 @@ def portfolio_decision(db, run, release, *, expected_version, market, primary, a
     if affected:
         detail = ', '.join(f'{subject} ({", ".join(changed[subject])})' for subject in sorted(affected))
         raise Conflict('reassess decisions whose linked portfolio inputs changed: ' + detail)
-    compared = trading_portfolio.compare_members(db, prior_refs, records, reuse,
-                                                 {} if member_reviews is None else member_reviews)
+    reviews = {} if member_reviews is None else member_reviews
+    compared = trading_portfolio.compare_members(db, prior_refs, records, reuse, reviews)
+    trading_portfolio.apply_followups(db, compared, reviews, records,
+                                      previous_payload.get('member_reviews', {}), files, run)
     for edge in interactions:
         subject, source = edge['subject'], edge['depends_on']
-        if (subject in reuse and compared[source].get('relation') in ('NEW', 'REVISE', 'REPRICE')
-                and compared[subject].get('relation') != 'CONTINUE'):
+        if (subject in reuse and compared[source].get('relation') in ('NEW', 'REVISE', 'REPRICE', 'ADDITIONAL')
+                and compared[subject].get('relation') not in ('CONTINUE', 'READY')):
             raise Conflict('explain the continued choice or reassess it after its linked arrangement changed: ' + subject)
-    assessed.update(member_reviews=compared, policy_status=policy_status,
-                    unavailable_members={subject: ref for subject, ref in prior_refs.items()
-                                         if subject not in scope and subject not in ended})
-    return trading_portfolio.save(db, market=frozen, records=records, assessed=assessed,
-                                  run=run, expected_version=expected_version)
+    unavailable = {subject: ref for subject, ref in prior_refs.items() if subject not in scope and subject not in ended}
+    previous_reviews = previous_payload.get('member_reviews', {})
+    compared.update({subject: previous_reviews[subject] for subject in unavailable if subject in previous_reviews})
+    assessed.update(member_reviews=compared, policy_status=policy_status, unavailable_members=unavailable)
+    portfolio = trading_portfolio.save(db, market=frozen, records=records, assessed=assessed,
+                                      run=run, expected_version=expected_version)
+    notices = {s: r['notification_status'] for s, r in records.items() if 'notification_status' in r}
+    return {**portfolio, 'notification_status': notices} if notices else portfolio
 
 
 def research_records(db, scope):
@@ -476,7 +501,42 @@ def research(db, run, *, scope, subject, question, evidence, expected_version, o
     return entities.get('RESEARCH', issue)
 
 
-def review(db, run, *, target, condition_id, outcome, explanation, evidence, **updates):
+def confirmed_plan_condition(db, record, at):
+    """A model recommendation and the arrangement actually accepted by the user may differ."""
+    subject = record['payload']['subject']
+    portfolio = trading_portfolio.current(db)
+    plan = portfolio['payload'] if portfolio else {}
+    row = plan.get('member_reviews', {}).get(subject, {})
+    accepted = row.get('accepted_arrangement')
+    target = reference(record)
+    followup = trading_portfolio.followup(db, target, as_of=at)
+    if followup['execution'] == 'EXECUTED' or followup['adoption'] == 'DECLINED':
+        raise Conflict('the original arrangement was already completed or declined')
+    if accepted != target or followup['adoption'] != 'ACCEPTED':
+        raise Conflict('verify the condition of the exact user-accepted arrangement, which may predate the latest advice')
+
+
+def execution_note(db, notice, at):
+    """Present a verified condition against the user's plan, even while newer advice is outstanding."""
+    change, ref = notice['change'], notice['decision']
+    record = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
+    followup = trading_portfolio.followup(db, ref, as_of=at)
+    state = followup['execution']
+    try:
+        confirmed_plan_condition(db, record, at)
+    except Conflict:
+        outcome = ('该安排已确认执行完毕，无需重复操作。' if state == 'EXECUTED' else
+                   '当前已确认的安排已有变化，这次条件兑现只作原计划复核。')
+    else:
+        outcome = {'UNKNOWN': '实际执行情况尚未确认，仅在原步骤尚未完成时适用。',
+                   'PARTIALLY_EXECUTED': '已确认部分执行，本次仅适用于原步骤尚未完成的部分。',
+                   'NOT_EXECUTED': '该步骤已确认尚未执行，可按此前采纳的安排办理。'}[state]
+    return {'obligation_id': notice['obligation_id'], 'decision': ref, 'subject': notice['subject'],
+            'formed_at': stamp(datetime.fromtimestamp(record['known_ms'] / 1000, timezone.utc)),
+            'judgement': change['after'], 'execution': outcome}
+
+
+def review(db, run, *, target, condition_id, outcome, explanation, evidence, notification=None, **updates):
     from . import trading_decisions as decisions
     snapshot = material(db, run)
     record = Entities(db).get(target['kind'], target['object_id'], version=target['version'])
@@ -484,6 +544,12 @@ def review(db, run, *, target, condition_id, outcome, explanation, evidence, **u
         raise Conflict('review requires the original condition and decision')
     if record['scope'] == 'PERSONAL':
         frozen_market(db, run)
+    if notification is not None:
+        change = notification.get('change') if isinstance(notification, dict) else None
+        if (record['scope'] != 'PERSONAL' or outcome not in {'SUPPORTED', 'REFUTED'}
+                or not isinstance(change, dict) or change.get('impact') != 'PLAN_READY'):
+            raise ValueError('an execution notice must verify an original personal plan condition')
+        confirmed_plan_condition(db, record, run['known_at'])
     checked = decisions.record_review(db, target=target, condition_id=condition_id, outcome=outcome,
                                      explanation=explanation, evidence=public_evidence(db, evidence, required=outcome != 'UNKNOWN'),
                                      run=run, **updates)
@@ -492,6 +558,17 @@ def review(db, run, *, target, condition_id, outcome, explanation, evidence, **u
         ref = reference(checked)
         if ref not in checks:
             db.metadata(material_key(run['ref']), {**snapshot, 'independent_condition_reviews': [*checks, ref]}, write=True)
+    if notification is not None:
+        # A confirming observation on the next hour is still the same execution opportunity.
+        transition = checked
+        while transition['version'] > 1:
+            previous = Entities(db).get('REVIEW', checked['object_id'], version=transition['version'] - 1)
+            if not previous or previous['payload']['outcome'] != outcome:
+                break
+            transition = previous
+        notice = register_notification(db, record, notification, condition_review=checked,
+                                       trigger_ref=transition['digest'])
+        return {**checked, 'notification_status': notice}
     return checked
 
 
@@ -511,7 +588,24 @@ def invoke(db, method, params):
             material(db, run)
         return condition_detail(db, **params['condition'], scope=action.upper(), at=run['known_at'])
     if action == 'public':
+        if 'thesis_history' in params:
+            snapshot = material(db, run)
+            cutoff = (snapshot.get('market_review', {}).get('assessed_at') or snapshot.get('thesis_recap_at')
+                      or snapshot['public_known_at'])
+            query = dict(params['thesis_history'])
+            at = query.pop('as_of', cutoff)
+            maximum = cutoff if snapshot.get('market_binding') else run['known_at']
+            if millis(at) > millis(maximum):
+                raise ValueError('public retrospective lookup exceeds the knowledge time of this assessment')
+            return trading_theses.history(db, at, **query)
         return public_context(db, run)
+    if action == 'thesis_recap':
+        snapshot = material(db, run)
+        if snapshot.get('market_binding'):
+            raise Conflict('record the public retrospective before personal materials become available')
+        result = trading_theses.recap(db, run, **params)
+        db.metadata(material_key(run['ref']), {**snapshot, 'thesis_recap_at': run['known_at']}, write=True)
+        return result
     if action == 'source':
         material(db, run)
         digest = params['digest'].removeprefix('sha256:')
@@ -535,6 +629,9 @@ def invoke(db, method, params):
             raise ValueError('the independent research has no confirmed result yet')
         return {**outcome, 'body': db.blobs.get(outcome['artifact_digest']).decode()}
     if action == 'personal':
+        if 'followup' in params:
+            frozen_market(db, run)
+            return trading_portfolio.followup(db, params['followup'], as_of=run['known_at'])
         return personal_context(db, run, release)
     if action == 'personal_ready':
         return {'market': reference(frozen_market(db, run))}
@@ -562,12 +659,77 @@ def invoke(db, method, params):
     return feedback(db, run, release, action, params)
 
 
-def register_notification(db, record, notification):
+def checked_change(db, target, base, record, change, condition_review=None):
+    if not isinstance(change, dict) or set(change) != {'base_report_id', 'path', 'before', 'after', 'impact'}:
+        raise ValueError('identify the prior display, affected item, original and revised judgement and investment impact')
+    if not base or change['base_report_id'] != base['report_id']:
+        raise Conflict('compare the investment change against the last actual display at this destination')
+    path = plain(change['path'], 'affected report item')
+    before, after = (plain(change[k], k + ' investment judgement').strip() for k in ('before', 'after'))
+    if record['scope'] == 'PUBLIC':
+        if change['impact'] not in {'CYCLE', 'RISK', 'VALUE'}:
+            raise ValueError('identify a material change in cycle, investment risk or participation value')
+        trading_public_report.changed_judgement(db, target, base, record, path, before, after)
+    else:
+        subject = record['payload']['subject']
+        if path != 'allocation.' + subject or change['impact'] not in {'PLAN', 'RISK', 'VALUE', 'PLAN_READY'}:
+            raise ValueError('use the affected portfolio member and its actual investment impact')
+        shown = trading_report.displayed_modules(base)['allocation'].get(subject, '')
+        quotes = [shown, *(lead['quote'] for lead in trading_report.lead_excerpts(base.get('presentation', {}))
+                           if lead['path'] == path)]
+        if not any(before in text for text in quotes) or any(after in text for text in quotes):
+            raise Conflict('compare against the actual prior arrangement displayed for this member')
+        result = record['payload']['result']
+        active = result.get('conditional_actions', {}).get('PRESENT', result)
+        sources = [active.get(k, '') for k in ('reason', 'risk', 'opportunity_cost', 'amount_basis')]
+        sources.extend(result.get('direction_comparison', {}).values())
+        if change['impact'] == 'PLAN_READY':
+            if not condition_review:
+                raise ValueError('register the execution event when verifying the original plan condition')
+            sources = [condition_review['payload']['explanation']]
+        if not any(isinstance(text, str) and after in text for text in sources):
+            raise Conflict('cite the revised adopted member judgement or its verified execution condition')
+    return {**change, 'before': before, 'after': after}
+
+
+def register_notification(db, record, notification, *, condition_review=None, trigger_ref=None):
     from . import trading_delivery as delivery
     if (not isinstance(notification, dict) or 'reason' not in notification
-            or set(notification) - {'reason', 'kind', 'due_at', 'scope'}):
+            or set(notification) - {'reason', 'kind', 'due_at', 'scope', 'change'}):
         raise ValueError('provide the actual reason for a material feedback obligation')
+    notification = dict(notification)
     subject = record['payload']['subject']
+    change = notification.pop('change', None)
+    target = None
+    if notification.get('kind', 'UPDATE') == 'UPDATE':
+        try:
+            target = destination(db)
+        except Conflict:
+            if change is not None:
+                raise
+        base = delivery.report_base(db, target) if target else None
+        if change is not None:
+            if condition_review is not None:
+                key = delivery._obligation_id({'subject': subject, 'kind': 'UPDATE', 'trigger_ref': trigger_ref,
+                                               'change': change, 'destination': target})
+                previous = Entities(db).get('DELIVERY', key)
+                if previous:
+                    return previous['payload']['status']
+            change = checked_change(db, target, base, record, change, condition_review)
+            if condition_review is not None:
+                change['condition_id'] = condition_review['payload']['condition_id']
+        elif base and base.get('seeded'):
+            # A valuation or time-horizon refresh can legitimately acquire a new decision version.
+            if record['scope'] == 'PUBLIC':
+                return 'ASSESSMENT_ONLY'
+            previous = delivery.previous_display(db, destination=target, decision_id=record['object_id'], at=stamp())
+            if previous:
+                ref = previous['decision']
+                prior = Entities(db).get(ref['kind'], ref['object_id'], version=ref['version'])
+                if prior and reference(prior) == ref and trading_portfolio._choice(prior) == trading_portfolio._choice(record):
+                    return 'ASSESSMENT_ONLY'
+    elif change is not None:
+        raise ValueError('a decision comparison is for an ordinary intraday update')
     if (subject == trading_policy.POSITION_SUBJECT and record['kind'] == 'PLAN'
             and notification.get('kind', 'UPDATE') == 'UPDATE' and 'scope' not in notification):
         notification = {**notification, 'scope': 'DIRECTION'}
@@ -577,14 +739,11 @@ def register_notification(db, record, notification):
             raise ValueError('DIRECTION is the ordinary direction update of the original short')
         plain(notification['reason'], 'why the direction requires feedback')
         if notification.get('due_at') is None:
-            try:
-                target = destination(db)
-            except Conflict:
-                target = None  # An unavailable destination must preserve the obligation.
-            if target and delivery.position_already_displayed(db, target, record, stamp()):
-                return
-    delivery.require_report(db, subject=subject, trigger_ref=record['digest'], decision=reference(record),
-                            **notification)
+            if not change and target and delivery.position_already_displayed(db, target, record, stamp()):
+                return 'ALREADY_DISPLAYED'
+    notice = delivery.require_report(db, subject=subject, trigger_ref=trigger_ref or record['digest'], decision=reference(record),
+                                     legacy_destination=target, change=change, **notification)
+    return notice['status']
 
 
 def validate_report_decisions(db, run, release, refs, *, complete=False, whole_layout=False):
@@ -672,13 +831,14 @@ def report_allocation(records, status, base, edits):
     return members, terms
 
 
-def report_basis(db, run, market, records, selected):
+def report_basis(db, run, market, records, selected, confirmations=None):
     """Track adopted inputs with a direct counterpart in the displayed edition."""
     public = market['payload']['result']
     basis = {'outlook.primary': public['primary'], 'outlook.alternative': public['alternatives'],
              'opportunities.comparison': public['value'], 'risks.conditions': public['conditions']}
     from . import trading_decisions
     inputs = trading_decisions.market_inputs(db, market, at=run['known_at'])
+    inputs.update(trading_public_report._thesis_sources(db, market))
     inputs['evidence'] = market['dependencies']
     scoped = ('market.BTC', 'market.SPX', 'market.NDX', 'crosschecks.evidence', 'opportunities.comparison')
     if selected.keys() - set(scoped):
@@ -700,16 +860,20 @@ def report_basis(db, run, market, records, selected):
             basis['allocation.' + subject] = {key: result[key] for key in
                 ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone')
                 if key in result}
+            if (confirmations or {}).get(subject):
+                basis['allocation.' + subject]['confirmations'] = confirmations[subject]
     return {entry: fingerprint(encode(value)) for entry, value in basis.items()}
 
 
-def report_judgement_times(market, records, portfolio):
+def report_judgement_times(market, records, portfolio, confirmations=None):
     """Resolve the adoption times of the exact decisions supporting each report entry."""
     market_at = stamp(datetime.fromtimestamp(market['known_ms'] / 1000, timezone.utc))
     times = {section + '.' + item: market_at for section, (_, items) in trading_report.SECTIONS.items()
              for item in items}
     for subject, record in records.items():
-        times['allocation.' + subject] = stamp(datetime.fromtimestamp(record['known_ms'] / 1000, timezone.utc))
+        events = (confirmations or {}).get(subject, ())
+        known = max([record['known_ms'], *(millis(e['confirmed_at']) for e in events)])
+        times['allocation.' + subject] = stamp(datetime.fromtimestamp(known / 1000, timezone.utc))
     if portfolio:
         times['allocation.cash'] = stamp(datetime.fromtimestamp(portfolio['known_ms'] / 1000, timezone.utc))
     return times
@@ -779,7 +943,8 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         for path in public_copy['edited']:
             name, item = path.split('.', 1)
             changes.setdefault(name, {})[item] = public_copy['sections'][name][item]
-        source_times = report_judgement_times(market, records, portfolio)
+        confirmations = trading_portfolio.arrangement_confirmations(db, portfolio)
+        source_times = report_judgement_times(market, records, portfolio, confirmations)
         allocation_edits = changes.get('allocation', {})
         if not isinstance(allocation_edits, dict):
             raise ValueError('allocation changes must be keyed by subject')
@@ -790,7 +955,7 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
             raise ValueError('a position explanation needs the adopted member and its bound reasoning')
         position_edit = allocation_edits.pop(position_key, None)
         members, terms = report_allocation(records, status, base, allocation_edits)
-        basis = report_basis(db, run, market, records, chosen)
+        basis = report_basis(db, run, market, records, chosen, confirmations)
         if 'allocation' in changes:
             from .trading_report_inputs import allocation_changes
             changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
@@ -807,7 +972,8 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
             if position_edit is not None or delivery.position_action(position) != 'NO_POSITION':
                 from .trading_report_inputs import position_explanation, prior_position
                 previous = prior_position(db, target, position, run['known_at'])
-                explanation = position_explanation(position, previous, base, position_edit)
+                member_review = portfolio['payload'].get('member_reviews', {}).get(position_key) if portfolio else None
+                explanation = position_explanation(position, previous, base, position_edit, member_review)
             line = delivery.explained_position(position, explanation)
             marked = (base or {}).get('pending_review', {}).get('allocation.' + trading_policy.POSITION_SUBJECT)
             position_reviewed = bool(marked and position['known_ms'] > millis(marked))
@@ -936,7 +1102,8 @@ def feedback(db, run, release, action, params):
             position = records.get(trading_policy.POSITION_SUBJECT)
             return {**edition, 'previous_display': previous_display(base), 'writing_inputs': writing_inputs(
                 market, portfolio, records, delivery.position_line(position) if position else None,
-                prior_position(db, target, position, run['known_at']) if position else None)}
+                prior_position(db, target, position, run['known_at']) if position else None,
+                confirmations=trading_portfolio.arrangement_confirmations(db, portfolio))}
         before = {**delivery.context(db, destination=target, at=run['known_at']), **edition}
         if 'decision_id' in params:
             before['previous_display'] = delivery.previous_display(db, destination=target, at=run['known_at'], **params)
@@ -949,6 +1116,9 @@ def feedback(db, run, release, action, params):
         return before
     if action in ('report', 'preview_report'):
         purpose = params.pop('purpose')
+        change = params.pop('change', None)
+        if change is not None and purpose != 'UPDATE':
+            raise ValueError('a decision comparison is for an ordinary intraday update')
         if purpose not in ('DAILY', 'UPDATE', 'RISK', 'CORRECTION'):
             raise ValueError('report purpose must describe the actual feedback responsibility')
         refs = params['decisions']
@@ -1015,13 +1185,53 @@ def feedback(db, run, release, action, params):
                 from .trading_report_inputs import check_shortened_correction
                 original = base if base['report_id'] == event else delivery.get(db, report_id=event).get('document')
                 check_shortened_correction(document, base, original)
-        if purpose == 'UPDATE' and not params.get('obligation_ids') and base and base['seeded']:
-            from .trading_report_inputs import newly_displayed_content
-            if (document['pending_review'] == base['pending_review'] and document['risk_updates'] == base['risk_updates']
-                    and trading_report.expired_risks(base, base['assessed_at'])
-                    == trading_report.expired_risks(document, document['assessed_at'])
-                    and not newly_displayed_content(document, base)):
-                raise Conflict('the destination has already received these conclusions; check for a material change')
+        obligations = set(params.pop('obligation_ids', []))
+        daily_update = False
+        direct_notice = None
+        open_notices = {}
+        if purpose == 'UPDATE':
+            status = delivery.context(db, destination=target, at=run['known_at'])
+            daily_update = complete and status['daily_due']
+            open_notices = {item['obligation_id']: item for item in status['obligations']}
+            if obligations - open_notices.keys():
+                raise Conflict('use the outstanding feedback for this destination')
+            if not obligations:
+                # Existing callers may already name the original source with event_ref.
+                obligations.update(key for key, item in open_notices.items() if event and event == item['trigger_ref'])
+            if change is not None and not obligations:
+                source = next((ref for ref in refs if ref['digest'] == event and
+                               ref['object_id'] != trading_portfolio.OBJECT_ID), None)
+                if source is None:
+                    raise ValueError('bind the intraday change to its adopted market or member decision')
+                record = Entities(db).get(source['kind'], source['object_id'], version=source['version'])
+                change = checked_change(db, target, base, record, change)
+                direct_notice = {'decision': source, 'subject': record['payload']['subject'],
+                                 'trigger_ref': event, 'change': change}
+                if record['payload']['subject'] == trading_policy.POSITION_SUBJECT:
+                    direct_notice['scope'] = 'DIRECTION'
+            if not obligations and direct_notice is None and not daily_update:
+                raise Conflict('no material feedback is due; an ordinary update needs the changed judgement '
+                               'or the original verified plan execution obligation')
+            changed_notices = [open_notices[key] for key in obligations if open_notices[key].get('change')]
+            if direct_notice:
+                notice_id = delivery._obligation_id({**direct_notice, 'kind': purpose, 'destination': target})
+                changed_notices.append({**direct_notice, 'obligation_id': notice_id})
+            for notice in changed_notices:
+                if notice['change']['impact'] == 'PLAN_READY':
+                    continue
+                coverage = (params.get('decision_coverage') or {}).get(notice['obligation_id'])
+                delivery._check_decision_coverage(db, notice, refs, body, coverage, position_line, document)
+        if obligations and not support:
+            updates = []
+            for identifier in sorted(obligations):
+                entry = open_notices.get(identifier) or delivery._by_id(db, identifier, delivery.OBLIGATION)['payload']
+                if (entry.get('change') or {}).get('impact') == 'PLAN_READY':
+                    if entry.get('destination') != target:
+                        raise Conflict('the original plan condition belongs to another destination')
+                    updates.append(execution_note(db, entry, run['known_at']))
+            if updates:
+                document['execution_updates'] = updates
+                body = trading_report.render(document)
         if action == 'preview_report':
             if support:
                 return {'base_report_id': document['base_report_id'], 'assessed_at': document['assessed_at'],
@@ -1029,14 +1239,17 @@ def feedback(db, run, release, action, params):
                                             if entry['event_ref'] == support['event_ref'])}
             return {'body': body, 'base_report_id': document['base_report_id'], 'public_copy_id': document['public_copy_id'],
                     **trading_public_report.shared_sentence_context(trading_report.displayed_modules(document))}
-        context = delivery.context(db, destination=target, at=run['known_at'])
-        obligations = set(params.pop('obligation_ids', []))
-        if purpose == 'DAILY':
+        if purpose == 'DAILY' or daily_update:
+            context = delivery.context(db, destination=target, at=run['known_at'])
             if not context['daily_due']:
                 raise Conflict('the daily feedback has a confirmed receipt already')
             obligation = delivery.require_report(db, subject='daily-feedback', trigger_ref=context['day'],
-                                                 reason=params['reason'], kind=purpose, legacy_destination=target)
-        else:
+                                                 reason=params['reason'], kind='DAILY', legacy_destination=target)
+            obligations.add(obligation['obligation_id'])
+        if direct_notice is not None:
+            obligation = delivery.require_report(db, reason=params['reason'], legacy_destination=target, **direct_notice)
+            obligations.add(obligation['obligation_id'])
+        if purpose not in {'UPDATE', 'DAILY'}:
             event = plain(params['event_ref'], 'original material event reference')
             if not (displayed_correction or event in {item['digest'] for item in refs}
                     or db.metadata('trading.public.' + event.removeprefix('sha256:'))):
@@ -1045,8 +1258,8 @@ def feedback(db, run, release, action, params):
                 trigger_ref=event if displayed_correction else identity(sorted(refs, key=encode), event),
                 reason=params['reason'], kind=purpose,
                 legacy_destination=target)
+            obligations.add(obligation['obligation_id'])
         params.pop('event_ref', None)
-        obligations.add(obligation['obligation_id'])
         report = delivery.prepare(db, destination=target, run_ref=run['ref'], complete=complete, body=body,
                                   obligation_ids=sorted(obligations), support=support, position_line=position_line,
                                   document=document, **params)
