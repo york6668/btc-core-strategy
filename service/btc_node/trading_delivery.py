@@ -71,7 +71,9 @@ def _put(db, key, original, payload, reason, *, active=True, dependencies=()):
 
 
 def _body_dependency(value):
-    return ({'type': 'BLOB', 'digest': value['body_hash'], 'relation': 'FROZEN_REPORT'},)
+    evidence = value.get('feedback_assessment', {}).get('evidence', [])
+    return [{'type': 'BLOB', 'digest': value['body_hash'], 'relation': 'FROZEN_REPORT'},
+            *({**ref, 'relation': 'FEEDBACK_BASIS'} for ref in evidence)]
 
 
 def _body(db, value):
@@ -104,7 +106,10 @@ def report_base(db, destination, *, identity_only=False):
     if identity_only:
         return {'report_id': displayed['report_id']}
     record = _by_id(db, displayed['report_id'], REPORT)['payload']
-    return {**record['document'], **displayed, 'decisions': record['decisions']}
+    base = {**record['document'], **displayed, 'decisions': record['decisions']}
+    if 'feedback_assessment' in record:
+        base['feedback_assessment'] = record['feedback_assessment']
+    return base
 
 
 def _check_report_base(db, destination, expected):
@@ -689,7 +694,8 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
 
 
 def prepare(db, *, destination, body, document, decisions, obligation_ids, reason, run_ref, complete,
-            supersedes=None, support=None, legacy_coverage=None, decision_coverage=None, position_line=None):
+            supersedes=None, support=None, legacy_coverage=None, decision_coverage=None, position_line=None,
+            feedback_assessment=None):
     destination = validate_destination(destination)
     for value, name in ((body, 'frozen report body'), (reason, 'report reason'), (run_ref, 'original run')):
         _text(value, name)
@@ -787,6 +793,8 @@ def prepare(db, *, destination, body, document, decisions, obligation_ids, reaso
                'decisions': decisions, 'obligation_ids': obligation_ids, 'reason': reason,
                'run_ref': run_ref, 'complete': complete, 'status': 'PENDING', 'created_at': stamp(), 'attempt': None,
                'attempt_count': 0, 'supersedes': supersedes}
+    if feedback_assessment is not None:
+        payload['feedback_assessment'] = {**feedback_assessment, 'report_id': key}
     if support is not None:
         payload['support'] = support
     if legacy_coverage:

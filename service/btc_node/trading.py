@@ -1039,6 +1039,26 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
     return body, document, line, base
 
 
+def report_feedback_assessment(db, run, snapshot, *, reason, purpose, support, base, event, obligations, decisions):
+    """Bind the author's reason for sending to the reviewed sources available at freeze time."""
+    earlier = snapshot.get('feedback_assessment') or {}
+    if earlier.get('outcome') == 'REPORT_REQUIRED' and 'report_id' not in earlier:
+        chosen = {**earlier, 'recorded_by': 'ASSESS_FEEDBACK'}
+    else:
+        evidence = ([{'type': 'BLOB', 'digest': support['event_ref']}] if support else
+                    snapshot.get('market_review', {}).get('evidence') or [{'type': 'ENTITY', **snapshot['market_binding']}])
+        chosen = {'outcome': 'REPORT_REQUIRED', 'reason': plain(reason, 'why this report is due'),
+                  'evidence': public_evidence(db, evidence), 'decided_at': run['known_at'], 'recorded_by': 'REPORT_FREEZE'}
+    if event:
+        chosen['event_ref'] = event
+        digest = event.removeprefix('sha256:')
+        if (db.metadata('trading.public.' + digest) and not any(
+                ref['type'] == 'BLOB' and ref['digest'].removeprefix('sha256:') == digest for ref in chosen['evidence'])):
+            chosen['evidence'] = [*chosen['evidence'], {'type': 'BLOB', 'digest': digest}]
+    return {**chosen, 'purpose': purpose, 'base_report_id': (base or {}).get('report_id'),
+            'obligation_ids': sorted(obligations), 'decisions': decisions}
+
+
 def feedback(db, run, release, action, params):
     from . import trading_delivery as delivery, trading_risk_seed
     target = destination(db)
@@ -1094,6 +1114,7 @@ def feedback(db, run, release, action, params):
         market = frozen_market(db, run)
         base = delivery.report_base(db, target)
         edition = {'base_report_id': base['report_id'] if base else None, 'report_base': base,
+                   'feedback_assessment': material(db, run).get('feedback_assessment'),
                    'legacy_public_digests': trading_public_report.legacy_digests(base)}
         if params.pop('writing_inputs', False):
             if params:
@@ -1267,10 +1288,18 @@ def feedback(db, run, release, action, params):
                 reason=params['reason'], kind=purpose,
                 legacy_destination=target)
             obligations.add(obligation['obligation_id'])
-        params.pop('event_ref', None)
+        event = params.pop('event_ref', None)
+        snapshot = material(db, run)
+        assessment = report_feedback_assessment(db, run, snapshot, reason=params['reason'], purpose=purpose,
+                                                support=support, base=base, event=event, obligations=obligations, decisions=refs)
         report = delivery.prepare(db, destination=target, run_ref=run['ref'], complete=complete, body=body,
                                   obligation_ids=sorted(obligations), support=support, position_line=position_line,
-                                  document=document, **params)
+                                  document=document, feedback_assessment=assessment, **params)
+        saved = report.get('feedback_assessment')
+        current = snapshot.get('feedback_assessment') or {}
+        if (saved and report['run_ref'] == run['ref'] and current != saved
+                and (not current or millis(current['decided_at']) <= millis(saved['decided_at']))):
+            db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': saved}, write=True)
         if support is not None:
             return {k: report[k] for k in ('report_id', 'destination', 'body_hash', 'status', 'obligation_ids')}
         return report
@@ -1374,7 +1403,7 @@ def assess_feedback(db, run, release, *, outcome, reason, evidence, scenario_con
     elif scenario_continuity is not None:
         raise ValueError('scenario continuity belongs to the review of an unchanged portfolio before silence')
     result = {'outcome': outcome, 'reason': plain(reason, 'actual feedback basis'), 'evidence': refs,
-              'decided_at': run['known_at']}
+              'decided_at': run['known_at'], 'recorded_by': 'ASSESS_FEEDBACK'}
     if scenario_continuity is not None:
         result['scenario_continuity'] = scenario_continuity
     db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': result}, write=True)
