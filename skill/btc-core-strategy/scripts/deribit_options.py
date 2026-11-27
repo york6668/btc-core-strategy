@@ -9,13 +9,14 @@ from datetime import date, datetime, timezone
 from statistics import NormalDist
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from btc_node.market_events import get
+from btc_node.market_events import get, utc
 
 BASE = 'https://www.deribit.com/api/v2/public/'
 
 
 def snapshot_id(sources):
-    members = sorted((s['url'], s['retrieved_at'], sha256(s['content'].encode()).hexdigest()) for s in sources)
+    members = sorted((s['url'], utc(s.get('retrieved_at') or s['known_at']).isoformat(),
+                      sha256(s['content'].encode()).hexdigest()) for s in sources)
     return sha256(json.dumps(members).encode()).hexdigest()
 
 
