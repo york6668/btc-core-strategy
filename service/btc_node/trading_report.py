@@ -126,44 +126,23 @@ def sentences(source):
     return [unit for unit in units if any(c.isalnum() for c in _REFERENCES.sub('', unit))]
 
 
-def _check_quotes(source, quotes):
-    """Select complete sentences or paragraphs in source order, outside links."""
-    if not isinstance(quotes, list) or not quotes:
-        raise ValueError('select one or more exact sentences from this report item')
-    spans = list(_sentence_spans(source))
-    starts = [start for start, _ in spans]
-    ends = {end for _, end in spans}
-    cursor = 0
-    for i, quote in enumerate(quotes):
-        if not isinstance(quote, str) or not any(c.isalnum() for c in _REFERENCES.sub('', quote)):
-            raise ValueError('a presentation excerpt needs substantive report text')
-        hits = [(start, start + len(quote)) for start in starts
-                if start >= cursor and start + len(quote) in ends and source.startswith(quote, start)]
-        if len(hits) != 1:
-            raise Conflict('select unambiguous complete original sentences in order, including their Markdown')
-        start, cursor = hits[0]
-        if i == 0:
-            first_start = start
-    return first_start
-
-
-def _allocation_excerpt(document, item, text, includes_opening):
-    # The opening decision and all adopted planning amounts must be readable in the short item itself.
-    terms = document.get('allocation_terms', {}).get(item) or {}
-    if not includes_opening or not terms or terms.get('unavailable') or item == POSITION_SUBJECT:
-        raise Conflict('keep the full allocation decision when its opening, scope or direction cannot be retained')
+def check_allocation_amounts(item, text, terms):
+    """Check the actual final copy against the amounts known for this allocation."""
+    if terms.get('unavailable') or item == POSITION_SUBJECT:
+        return
     if item == 'cash':
         required = terms.items()
     else:
-        required = [(terms.get('currency'), terms[key]) for key in ('amount', 'budget') if key in terms]
+        keys = ('amount', 'budget') if terms.get('kind') == 'MONTHLY' else ('amount',)
+        required = [(terms.get('currency'), terms[key]) for key in keys if key in terms]
     prose = _REFERENCES.sub(' ', text)
     for currency, amount in required:
-        if not currency or amount is None:
-            raise Conflict('keep the full entry while a planning amount is unresolved')
+        if amount is None or not currency:
+            continue
         pattern = r'(?<![\d.,−-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*' + re.escape(currency) + r'(?![A-Za-z])'
         if not any(Decimal(number.replace(',', '')) == Decimal(str(amount))
                    for number in re.findall(pattern, prose, flags=re.IGNORECASE)):
-            raise Conflict('the short allocation entry must show the adopted amount, budget and currency')
+            raise Conflict('show the adopted amount and its currency in the allocation item: ' + item)
 
 
 def _report_item(document, path):
@@ -184,18 +163,8 @@ def present(document, presentation):
     """Bind this edition's display to exact excerpts without modifying its complete authored copy."""
     if presentation is None:
         return document
-    if not isinstance(presentation, dict) or presentation.keys() - {'lead', 'additional_lead', 'shorten'}:
-        raise ValueError('presentation accepts a lead and per-item excerpts')
-    shorten = presentation.get('shorten', {})
-    if not isinstance(shorten, dict):
-        raise ValueError('key short excerpts by report item')
-    if document['limited'] and shorten:
-        raise ValueError('a public risk update cannot reselect excerpts from inherited judgements')
-    for path, quotes in shorten.items():
-        section, item, source = _report_item(document, path)
-        start = _check_quotes(source, quotes)
-        if section == 'allocation' and quotes != [source]:
-            _allocation_excerpt(document, item, '\n\n'.join(quotes), not source[:start].strip())
+    if not isinstance(presentation, dict) or presentation.keys() - {'lead', 'additional_lead'}:
+        raise ValueError('write the final wording in its report item; presentation selects only the lead')
     additional = presentation.get('additional_lead', [])
     if not isinstance(additional, list) or len(additional) > 2:
         raise ValueError('select up to two additional lead excerpts')
@@ -220,12 +189,15 @@ def present(document, presentation):
                 raise Conflict('this judgement must stay with its status in the original report item')
             if section == 'allocation' and item == POSITION_SUBJECT:
                 explanation = document.get('position_explanation')
-                if (not explanation or not isinstance(lead['quote'], str) or not source.startswith(lead['quote'])
-                        or (explanation.get('comparison') and lead['quote'] != source)):
-                    raise Conflict('lead with the bound position direction and retain any comparison with the last display')
-        _check_quotes(source, [lead['quote']])
-    if document['limited'] and document.get('presentation', {}).get('shorten'):
-        presentation = {**presentation, 'shorten': document['presentation']['shorten']}
+                if not explanation or not isinstance(lead['quote'], str) or not source.startswith(lead['quote']):
+                    raise Conflict('lead with the bound position direction and its applicable premise')
+        quote = lead['quote']
+        if not isinstance(quote, str) or not any(c.isalnum() for c in _REFERENCES.sub('', quote)):
+            raise ValueError('select a substantive lead from the adopted item')
+        spans = list(_sentence_spans(source))
+        ends = {end for _, end in spans}
+        if sum(source.startswith(quote, start) and start + len(quote) in ends for start, _ in spans) != 1:
+            raise Conflict('select unambiguous complete sentences from the adopted item')
     return {**document, 'presentation': presentation}
 
 
@@ -396,9 +368,6 @@ def compose(base, changes, assessed_at, position_line=None, limited=False, *, me
                 'assessed_at': assessed_at, 'reviewed_at': (base or {}).get('reviewed_at') if limited else assessed_at,
                 'limited': limited, 'seeded': seeded or not limited, 'member_order': order,
                 'pending_review': pending, 'risk_updates': updates, 'judgement_times': judgement_times}
-    # A public risk author adds its event without widening the preceding edition's disclosure.
-    if limited and base.get('presentation', {}).get('shorten'):
-        document['presentation'] = {'shorten': base['presentation']['shorten']}
     body = render(document)
     if '{{existing_position}}' in body or (position_line and body.count(position_line) != 1):
         raise ValueError('the adopted original position belongs only in its allocation item')

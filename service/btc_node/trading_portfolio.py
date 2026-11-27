@@ -44,6 +44,8 @@ def _choice(record):
     payload = record['payload']
     result = payload['result']
     choice = {key: result[key] for key in ('decision', 'amount', 'month') if key in result}
+    if result.get('plan_steps'):
+        choice['plan_steps'] = result['plan_steps']
     if 'amount' in choice and 'currency' in payload['policy']:
         choice['currency'] = payload['policy']['currency']
     if 'conditional_actions' in result:
@@ -74,8 +76,10 @@ def compare_members(database, prior_refs, records, reuse, reviews):
         if subject in reviews:
             review = reviews[subject]
             if not isinstance(review, dict) or not {'relation', 'reason'} <= review.keys() <= {
-                    'relation', 'reason', 'user_feedback', 'retrospective', 'prior_retrospective'}:
+                    'relation', 'reason', 'review_basis', 'user_feedback', 'retrospective', 'prior_retrospective'}:
                 raise ValueError('a member review needs its relation and decisive reason')
+            if 'review_basis' in review and subject not in reuse:
+                raise ValueError('a fresh member already binds its current market inputs')
             relation, reason = review['relation'], review['reason']
             if (relation not in ('CONTINUE', 'READY', 'ADDITIONAL', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED')
                     or not isinstance(reason, str) or not reason.strip()):
@@ -87,7 +91,7 @@ def compare_members(database, prior_refs, records, reuse, reviews):
             if relation in ('CONTINUE', 'READY') and prior_choice != current_choice:
                 raise ValueError('changed action, amount, month or established price terms need a revised assessment')
             if relation == 'REPRICE' and any(prior_choice.get(k) != current_choice.get(k)
-                                             for k in ('decision', 'amount', 'currency', 'month', 'conditional_actions')):
+                                             for k in ('decision', 'amount', 'currency', 'month', 'conditional_actions', 'plan_steps')):
                 raise ValueError('repricing the same arrangement must preserve its action and size')
             if relation == 'ADDITIONAL' and decisions.binding(current_record) == previous:
                 raise ValueError('an additional action must be a separately assessed choice')
@@ -380,7 +384,7 @@ def _selection(record):
     zone = result.get('value_zone', {})
     entry = policy.get('entry_reference') if policy.get('position_status') == 'PRESENT' else None
     return (policy['basis'], result['decision'], result.get('amount'), entry['price'] if entry else None,
-            actions, tuple(zone.get(key) for key in ('lower', 'upper', 'quote_unit')),
+            actions, result.get('plan_steps', {}), tuple(zone.get(key) for key in ('lower', 'upper', 'quote_unit')),
             {(ref['file'], ref['quote']) for ref in payload['fact_refs']})
 
 

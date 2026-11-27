@@ -32,7 +32,7 @@ def _edition_key(target, market, base_id):
 def read(db, target, market, base):
     copy = db.metadata(_edition_key(target, trading_decisions.binding(market), (base or {}).get('report_id')))
     # Older unsent candidates permitted wholesale rewrites without reviewing the original items.
-    if not copy or 'original_items' not in copy:
+    if not copy or 'original_items' not in copy or (base and base.get('_excerpted_items') and not copy.get('used_displayed_base')):
         return None
     if copy.get('legacy_review_id') != (_legacy_review(db, target, base) or {}).get('review_id'):
         return None
@@ -55,7 +55,9 @@ def _review_key(target, base):
 
 def _legacy_review(db, target, base):
     if base and base.get('seeded') and not base.get('public_market'):
-        return db.metadata(_review_key(target, base))
+        review = db.metadata(_review_key(target, base))
+        if review and (not base.get('_excerpted_items') or review.get('used_displayed_base')):
+            return review
     return None
 
 
@@ -107,6 +109,8 @@ def review_baseline(db, target, base_report_id, items, previous_review_id=None):
         sections[name][key] = '\n\n'.join(retained) or None
         reviewed[path] = fingerprint(item['reason'].encode())
     candidate = {'sections': sections, 'reviewed': reviewed}
+    if base.get('_excerpted_items'):
+        candidate['used_displayed_base'] = True
     candidate['review_id'] = identity(base_report_id, candidate)
     existing = _legacy_review(db, target, base)
     if candidate != existing:
@@ -237,6 +241,11 @@ def _sources(db, market):
     sources = {k: result[k] for k in ('conclusion', 'primary', 'value')}
     sources.update({'alternative/' + str(i): value for i, value in enumerate(result['alternatives'])})
     sources.update({'assessment/' + name: value for name, value in result['assessments'].items()})
+    for name, terms in trading_decisions.product_valuations(result).items():
+        sources['valuation/' + name] = terms['assessment']
+        if 'basis' in terms:
+            sources['valuation/' + name + '/basis'] = terms['basis']
+        sources.setdefault('assessment/' + name, terms['assessment'])
     sources.update({'condition/' + c['id']: c['criterion'] for c in result['conditions']})
     sources.update(_thesis_sources(db, market))
     return sources
@@ -402,6 +411,8 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
     copy = {'market': trading_decisions.binding(market), 'base_report_id': (base or {}).get('report_id'),
             'sections': sections, 'basis': basis, 'sources': chosen, 'edited': sorted(edited), 'original_items': originally,
             'reviewed': sorted((reviewed - edited) & still_changed)}
+    if (base or {}).get('_excerpted_items'):
+        copy['used_displayed_base'] = True
     if legacy:
         copy['legacy_review_id'] = legacy['review_id']
     bindings = list((previous or {}).get('review_sources', []))

@@ -214,11 +214,12 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run, 
         judgement['theses'] = theses
         evidence = [*evidence, *({'type': 'ENTITY', **ref} for ref in theses.values())]
     valuations = result.get('valuations', {})
-    if not isinstance(valuations, dict) or not valuations.keys() <= assessments.keys():
-        raise ValueError('each valuation must name its public assessment at current prices')
+    if not isinstance(valuations, dict) or valuations.keys() & assessments.keys():
+        raise ValueError('write each product valuation once, separately from other market assessments')
     if valuations:
         condition_ids = {condition['id'] for condition in judgement['conditions']}
-        judgement['valuations'] = {name: _valuation(terms, condition_ids) for name, terms in valuations.items()}
+        judgement['valuations'] = {_text(name, 'valuation subject'): _valuation(name, terms, condition_ids, evidence)
+                                   for name, terms in valuations.items()}
     return _save(Entities(database), kind='DECISION', object_id=_object_id(MARKET_PREFIX, subject), scope='PUBLIC',
                  payload={'subject': subject, 'result': judgement}, evidence=_evidence(evidence), run=run,
                  expected_version=expected_version, reason=judgement['conclusion'])
@@ -298,17 +299,47 @@ def _value_zone(zone):
             'basis': _text(zone.get('basis'), 'value zone evidence basis')}
 
 
-def _valuation(terms, condition_ids):
-    if not isinstance(terms, dict) or not terms.keys() <= {'value_zone', 'condition_ids'}:
-        raise ValueError('use a supported price zone or named market conditions for the valuation')
+def _valuation(name, terms, condition_ids, evidence):
+    if not isinstance(terms, dict) or terms.keys() - {'assessment', 'basis', 'evidence', 'assets', 'value_zone', 'condition_ids'}:
+        raise ValueError('a scoped valuation needs its assessment and supporting public evidence')
+    sources = _evidence(terms.get('evidence'))
+    if any(source not in evidence for source in sources):
+        raise ValueError('cite valuation evidence from this frozen market judgement')
+    assets = terms.get('assets', [name])
+    if not isinstance(assets, list) or not assets or any(not isinstance(a, str) or not a.strip() for a in assets):
+        raise ValueError('identify the products covered by this valuation')
     refs = terms.get('condition_ids', [])
     if (not isinstance(refs, list) or any(not isinstance(key, str) or key not in condition_ids for key in refs)
             or len(refs) != len(set(refs))):
         raise ValueError('a valuation must cite distinct conditions of this market judgement')
-    item = {'condition_ids': sorted(refs)} if refs else {}
+    item = {'assessment': _text(terms.get('assessment'), 'price attractiveness over the investment horizon'),
+            'basis': _text(terms.get('basis'), 'the independent value comparison that supports this price judgement'),
+            'evidence': sources, 'assets': sorted(set(a.strip() for a in assets))}
+    if refs:
+        item['condition_ids'] = sorted(refs)
     if 'value_zone' in terms:
         item['value_zone'] = _value_zone(terms['value_zone'])
     return item
+
+
+def product_valuations(result):
+    """Expose a single judgement per product, including historical split-format assessments."""
+    return {name: terms if 'assessment' in terms else {**terms, 'assessment': result['assessments'][name]}
+            for name, terms in result.get('valuations', {}).items()}
+
+
+def covers_spot_policy(subject, policy, selected):
+    covered = {asset for key, value in selected.items() if key.startswith('valuation/') and value
+               and value.get('evidence') for asset in value.get('assets', ())}
+    fields = policy.get('inputs', {})
+    required = set(fields.get('weights', {}))
+    asset = fields.get('asset') or fields.get('product')
+    if asset:
+        required.add(asset)
+    elif policy['kind'] == 'OPPORTUNITY' and subject == 'independent-opportunity':
+        # The original separately budgeted BTC policy predates an explicit asset field.
+        required.add('BTC')
+    return bool(covered) and required <= covered
 
 
 def market_inputs(database, record, *, at, state=None):
@@ -316,7 +347,7 @@ def market_inputs(database, record, *, at, state=None):
     inputs = {**{key: result[key] for key in ('conclusion', 'primary', 'alternatives', 'value')},
               **{'assessment/' + key: val for key, val in result['assessments'].items()},
               **{'thesis/' + key: ref for key, ref in result.get('theses', {}).items()}}
-    valuations = result.get('valuations', {})
+    valuations = product_valuations(result)
     checks = {}
     if any(terms.get('condition_ids') for terms in valuations.values()):
         if state is None:
@@ -325,14 +356,15 @@ def market_inputs(database, record, *, at, state=None):
             if not condition.get('from_prior_version'):
                 check = {key: condition[key] for key in ('criterion', 'observation_end') if key in condition}
                 check['outcome'] = (condition['review'] or {}).get('outcome')
-                checks[condition['id']] = check
+                checks[condition['id']] = (check, condition.get('review_ref'))
     for name, terms in valuations.items():
-        value = {'assessment': result['assessments'][name]}
-        if 'value_zone' in terms:
-            value['value_zone'] = terms['value_zone']
+        value = {key: terms[key] for key in ('assessment', 'basis', 'assets', 'evidence', 'value_zone') if key in terms}
         if 'condition_ids' in terms:
-            value['conditions'] = {key: checks[key] for key in terms['condition_ids']}
+            value['conditions'] = {key: {**checks[key][0], 'review_ref': checks[key][1]}
+                                   if 'evidence' in terms else checks[key][0] for key in terms['condition_ids']}
         inputs['valuation/' + name] = value
+        # Previously adopted report items can still cite the old assessment path.
+        inputs.setdefault('assessment/' + name, value['assessment'])
     return inputs
 
 
@@ -412,9 +444,9 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
             or any(field not in inputs for field in market_refs)):
         raise ValueError('select the exact parts of the market judgement this decision depends on')
     kind = policy.get('kind')
-    if kind in {'MONTHLY', 'OPPORTUNITY'}:
-        if not any(ref == 'value' or ref.startswith('valuation/') for ref in market_refs):
-            raise ValueError('select the applicable current-price valuation for the spot decision')
+    selected = {field: inputs[field] for field in market_refs}
+    if kind in {'MONTHLY', 'OPPORTUNITY'} and not covers_spot_policy(subject, policy, selected):
+        raise ValueError('select sourced current-price valuations covering the products in this spot decision')
     choice = result.get('decision')
     if kind not in CHOICES or choice not in CHOICES[kind]:
         raise ValueError('the choice must match its investment purpose')
@@ -423,6 +455,15 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
                  'risk': _text(result.get('risk'), 'principal risk'),
                  'opportunity_cost': _text(result.get('opportunity_cost'), 'forgone opportunity'),
                  **_horizon(result, run)}
+    steps = result.get('plan_steps', {})
+    if not isinstance(steps, dict) or steps.keys() - {c['id'] for c in judgement['conditions']}:
+        raise ValueError('a prearranged action must refer to a condition in this plan')
+    judgement['plan_steps'] = {}
+    for condition_id, step in steps.items():
+        if (not isinstance(step, dict) or set(step) != {'outcome', 'action'}
+                or step['outcome'] not in {'SUPPORTED', 'REFUTED'}):
+            raise ValueError('identify the factual outcome and the action already agreed in the plan')
+        judgement['plan_steps'][condition_id] = {'outcome': step['outcome'], 'action': _text(step['action'], 'planned action')}
     if millis(judgement['valid_until']) > millis(public['payload']['result']['valid_until']):
         raise ValueError('the personal decision cannot outlive its frozen market judgement')
     if choice == 'UNRESOLVED':
@@ -449,7 +490,7 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
     evidence_required = choice != 'UNRESOLVED' or (in_position is not None and in_position['decision'] != 'UNRESOLVED')
     return _save(objects, kind='PLAN', object_id=_object_id(PERSONAL_PREFIX, subject), scope='PERSONAL',
                  payload={'subject': subject, 'market': binding(public), 'policy': applied_policy,
-                          'market_inputs': {field: inputs[field] for field in market_refs},
+                          'market_inputs': selected,
                           'fact_refs': list(fact_refs), 'fact_history': fact_history or {}, 'result': judgement},
                  evidence=[{'type': 'BLOB', 'digest': public['digest'], 'relation': 'FROZEN_MARKET_BASIS'},
                            *_evidence(evidence, required=evidence_required)], run=run,

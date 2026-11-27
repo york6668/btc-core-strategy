@@ -133,14 +133,16 @@ DECISION_RESULT = {
 }
 MARKET_RESULT = {
     **DECISION_RESULT,
-    'description': DECISION_RESULT['description'] + ' Mark named current-price assessments in valuations. '
-                   'Each entry may specify a value_zone and condition_ids. Spot decisions cite the applicable '
-                   'valuation/<name> or overall value. Propose substantive changes to named independent '
+    'description': DECISION_RESULT['description'] + ' Write each product valuation once in valuations[name] with '
+                   'assessment (current-price judgement), basis (independent value comparison and downside), '
+                   'evidence (exact references from this market), optional assets (defaults to name), value_zone '
+                   'and condition_ids. Spot decisions cite valuations covering their products. Propose substantive changes to named independent '
                    'cycle judgements in theses; unchanged judgements retain their exact references.',
 }
 PERSONAL_RESULT = {
     **DECISION_RESULT,
-    'description': DECISION_RESULT['description'] + ' For an existing-position short that may still be open, '
+    'description': DECISION_RESULT['description'] + ' Only actionable contingencies have plan_steps[condition_id] '
+                   '{outcome: SUPPORTED or REFUTED, action}; other conditions are for reassessment. For an existing-position short that may still be open, '
                    'give the economic basis for REDUCE, KEEP and INCREASE in direction_comparison.',
 }
 PERSONAL_DECISION_FIELDS = (
@@ -166,9 +168,7 @@ TRADING_FIELDS = {
     'feedback': ({'decision_id': TEXT, 'before_report_id': TEXT, 'writing_inputs': {'type': 'boolean'},
                   'risk_seed_inputs': {'type': 'boolean'}, 'public_writing_inputs': {'type': 'boolean'}}, []),
     'inherit_feedback': ({'retain': OBJECTS}, []),
-    'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS,
-                         'scenario_continuity': obj({'portfolio': OBJECT, 'market': OBJECT, 'reason': TEXT},
-                                                    ['portfolio', 'market', 'reason'])}, ['outcome','reason','evidence']),
+    'assess_feedback': ({'outcome': TEXT, 'reason': TEXT, 'evidence': OBJECTS}, ['outcome','reason','evidence']),
     'source': ({'digest': TEXT}, ['digest']),
     'research_archive': ({'scope': SCOPE, 'request_id': TEXT, 'phase': TEXT, 'evidence_id':TEXT},
                          ['scope','request_id','phase']),
@@ -189,7 +189,7 @@ TRADING_FIELDS = {
          'member_reviews': {'type': 'object', 'additionalProperties': obj({
              'relation': {'type': 'string', 'enum': ['CONTINUE', 'REPRICE', 'REVISE', 'NEW', 'UNRESOLVED',
                                                     'READY', 'ADDITIONAL']},
-             'reason': TEXT, 'user_feedback': {'type': 'array', 'items': USER_FEEDBACK},
+             'reason': TEXT, 'review_basis': TEXT, 'user_feedback': {'type': 'array', 'items': USER_FEEDBACK},
              'prior_retrospective': obj({'review': OBJECT, 'applicability': TEXT}, ['review', 'applicability']),
              'retrospective': obj({'target': OBJECT, 'scope': {'type': 'string', 'enum': ['PLAN_ONLY', 'CONFIRMED_EXECUTION']},
                                    'position_result': TEXT, 'application': TEXT, 'evidence': OBJECTS},
@@ -199,7 +199,7 @@ TRADING_FIELDS = {
         ['expected_version', 'market', 'primary', 'alternatives', 'interactions', 'decisions', 'reuse'],
     ),
     'review': ({'target': OBJECT, 'condition_id': TEXT, 'outcome': TEXT, 'explanation': TEXT, 'evidence': OBJECTS,
-                'impact': TEXT, 'next_review_at': TIME, 'notification': OBJECT},
+                'impact': TEXT, 'next_review_at': TIME, 'notification': OBJECT, 'legacy_action': TEXT},
                ['target', 'condition_id', 'outcome', 'explanation', 'evidence']),
     'research': ({'scope': SCOPE, 'subject': TEXT, 'question': TEXT, 'evidence': OBJECTS,
                   'expected_version': VERSION, 'outcome': OBJECT},
@@ -214,8 +214,7 @@ TRADING_FIELDS = {
                             'Public items are frozen by trading.market public_copy. Limited reports submit '
                             'only their public risk note.'},
                 'presentation': obj({'lead': LEAD_EXCERPT,
-                                     'additional_lead': {'type': 'array', 'items': LEAD_EXCERPT, 'maxItems': 2},
-                                     'shorten': {'type': 'object', 'additionalProperties': STRINGS}}, ['lead']),
+                                     'additional_lead': {'type': 'array', 'items': LEAD_EXCERPT, 'maxItems': 2}}, ['lead']),
                 'pending_review': STRINGS,
                 'reviewed_unchanged': STRINGS,
                 'market_sources': OBJECT,

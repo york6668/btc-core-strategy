@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .codec import Conflict, millis
-from .trading_decisions import binding
+from .trading_decisions import binding, product_valuations
 from .trading_policy import POSITION_SUBJECT
 
 
@@ -52,7 +52,7 @@ def allocation_changes(base, edits, terms, basis, records, portfolio, *, correct
                      and isinstance(explanation.get('reason'), str) and bool(explanation['reason'].strip()))
         expiry = base.get('valid_until', {}).get(path)
         due = path in base.get('pending_review', {}) or (expiry and millis(expiry) <= millis(assessed_at))
-        correcting_item = explained and (correction or due)
+        correcting_item = explained and (correction or due or path in base.get('_excerpted_items', ()))
         if not changed and not correcting_item:
             raise Conflict('retain the confirmed wording for unchanged allocation inputs: ' + subject)
         if whole and not (explained and (replaced or correcting_item)):
@@ -84,51 +84,12 @@ def previous_display(base):
     return display
 
 
-def _shown_sentences(document):
-    from .trading_report import lead_excerpts, sentences
-    display = previous_display(document)
-    by_path = {section + '.' + item: set(sentences(text)) for section, items in display['modules'].items()
-               for item, text in items.items()}
-    for lead in lead_excerpts(display):
-        by_path.setdefault(lead['path'], set()).update(sentences(lead['quote']))
-    return by_path
-
-
-def check_shortened_correction(document, base, original):
-    from .trading_report import sentences
-    if not original:
-        raise Conflict('use the complete wording when correcting an older display without item boundaries')
-    current_shown = _shown_sentences(document)
-    last_shown = _shown_sentences(base)
-    for path in document['presentation'].get('shorten', {}):
-        section, item = path.split('.', 1)
-        before = original['modules'].get(section, {}).get(item, '')
-        after = document['modules'][section][item]
-        if after == before:
-            continue
-        original_sentences = set(sentences(before))
-        remaining = set(sentences(after))
-        new_sentences = remaining - original_sentences
-        visible = current_shown.get(path, set())
-        seen = last_shown.get(path, set())
-        if new_sentences:
-            # A received edition that still displayed the removed wording cannot settle its correction.
-            if seen & (original_sentences - remaining):
-                seen = set()
-            if new_sentences <= visible | seen:
-                continue
-        elif remaining <= visible or (base['modules'].get(section, {}).get(item) == after and remaining <= seen):
-            # When the edit only removes text, an abbreviated view may look unchanged.
-            continue
-        raise Conflict('show the correction in the affected report item: ' + path)
-
-
 def public_inputs(market):
     if market['kind'] != 'DECISION' or market['scope'] != 'PUBLIC':
         raise Conflict('report writing needs the frozen public market judgement')
     result = market['payload']['result']
     public = _fields(result, ('conclusion', 'primary', 'alternatives', 'value', 'assessments', 'valid_until'))
-    public.update(decision=binding(market), known_ms=market['known_ms'], valuations=result.get('valuations', {}),
+    public.update(decision=binding(market), known_ms=market['known_ms'], valuations=product_valuations(result),
                   theses=result.get('theses', {}),
                   conditions=_conditions(result),
                   evidence=evidence_refs(market['dependencies']))
@@ -274,9 +235,11 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'comparisons', 'amount_basis', 'gap', 'value_zone', 'valid_until')))
+                                       'comparisons', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         previous = plan.get('member_reviews', {}).get(subject, {})
+        if previous.get('input_review'):
+            member['input_review'] = previous['input_review']
         if 'relation' in previous:
             member['previous_choice_review'] = _fields(previous, ('previous', 'relation', 'reason'))
         if 'arrangement' in previous:

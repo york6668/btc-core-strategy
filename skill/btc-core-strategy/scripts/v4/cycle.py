@@ -126,7 +126,7 @@ def method_references(stage, project=None):
     result['momentum_transition'] = str(references / 'core-strategy.md') + '#动量枯竭与反向趋势'
     result['report_boundary'] = str(references / 'mobile-report.md') + '#研判与报告的职责边界'
     if stage in ('research', 'mapping', 'observe'):
-        result['opportunity_cost'] = str(references / 'core-strategy.md') + '#美债机会成本与风险补偿'
+        result['opportunity_cost'] = str(references / 'core-strategy.md') + '#现货估值与风险补偿'
         result['evidence_reasoning'] = str(references / 'core-strategy.md') + '#事实、判断与规划前提'
     if project is not None and stage in ('research', 'observe'):
         from node_config import factor_guide

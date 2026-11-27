@@ -195,7 +195,8 @@ def build(db, run, release, assessed_at, public_seed, previous):
     # This is an adopted source edition. Only a native receipt advances the destination baseline.
     seed.update(report_id=(previous or {}).get('report_id'), reviewed_at=times['allocation.cash'],
                 pending_review={p: assessed_at for p in pending}, allocation_terms=terms, valid_until=expiries,
-                basis=report_basis(db, run, market, records, copy['sources'], confirmations),
+                basis=report_basis(db, run, market, records, copy['sources'], confirmations,
+                                   portfolio['payload'].get('member_reviews') if portfolio else None),
                 public_market=copy['market'], market_sources=copy['sources'],
                 seed_sources=sources)
     if public_seed is None:

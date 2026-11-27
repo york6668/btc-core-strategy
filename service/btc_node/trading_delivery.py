@@ -98,7 +98,7 @@ def _edition_key(destination):
     return 'trading.report.edition.' + _channel(destination)
 
 
-def report_base(db, destination, *, identity_only=False):
+def report_base(db, destination, *, identity_only=False, stored=False):
     """The last modular edition actually displayed at this destination."""
     displayed = db.metadata(_edition_key(destination))
     if displayed is None:
@@ -107,6 +107,10 @@ def report_base(db, destination, *, identity_only=False):
         return {'report_id': displayed['report_id']}
     record = _by_id(db, displayed['report_id'], REPORT)['payload']
     base = {**record['document'], **displayed, 'decisions': record['decisions']}
+    if not stored and base.get('presentation', {}).get('shorten'):
+        base['modules'] = trading_report.displayed_modules(base)
+        base['_excerpted_items'] = list(base['presentation']['shorten'])
+        base['presentation'] = {k: v for k, v in base['presentation'].items() if k != 'shorten'}
     if 'feedback_assessment' in record:
         base['feedback_assessment'] = record['feedback_assessment']
     return base
@@ -594,25 +598,6 @@ def check_displayed_correction(db, destination, original, event):
                 raise Conflict('replace the outstanding draft of this correction')
 
 
-def _abridged_decision_text(document, origin, subject):
-    """Return the words shown for an owed decision if this edition shortened its subject."""
-    presentation = (document or {}).get('presentation', {})
-    shortened = presentation.get('shorten', {})
-    if not shortened or not origin:
-        return None
-    personal = origin['kind'] == 'PLAN'
-    def relevant(path):
-        return path == 'allocation.' + subject if personal else not path.startswith('allocation.')
-
-    if not any(relevant(path) for path in shortened):
-        return None
-    visible = trading_report.displayed_modules(document)
-    passages = [text for section, items in visible.items() for item, text in items.items()
-                if relevant(section + '.' + item)]
-    passages.extend(lead['quote'] for lead in trading_report.lead_excerpts(presentation) if relevant(lead['path']))
-    return '\n\n'.join(passages)
-
-
 def _check_decision_coverage(db, obligation, decisions, body, coverage, position_line=None, document=None):
     # Event and daily notifications also have trigger references. Only an actual
     # decision version under the original subject establishes a decision binding.
@@ -668,12 +653,6 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
         elif ref != origin:
             raise Conflict('identify the successor direction displayed in the original position allocation item')
         return
-    shown = _abridged_decision_text(document, origin, subject)
-    if shown is not None and ref == origin:
-        _exact(coverage, 'excerpt', 'displayed coverage of the abridged decision')
-        if _text(coverage['excerpt'], 'the displayed material meaning') not in shown:
-            raise Conflict('the shortened report must show the specific point owed for this decision')
-        return
     if coverage is None:
         if origin and ref != origin:
             raise Conflict('cite the original decision or explain its successor in the report: ' + subject)
@@ -683,8 +662,16 @@ def _check_decision_coverage(db, obligation, decisions, body, coverage, position
     if 'policy' not in coverage:
         _exact(coverage, 'excerpt', 'successor decision coverage')
         excerpt = _text(coverage['excerpt'], 'displayed explanation of the decision')
-        if not ref or ref['version'] <= origin['version'] or excerpt not in (body if shown is None else shown):
-            raise Conflict('the cited decision and its actual owed explanation must appear in this report')
+        shown = body
+        if document and document.get('modules'):
+            modules = trading_report.displayed_modules(document)
+            if origin['kind'] == 'PLAN':
+                shown = modules['allocation'].get(subject, '')
+            else:
+                shown = '\n\n'.join(text for section, items in modules.items() if section != 'allocation'
+                                      for text in items.values())
+        if not ref or ref['version'] < origin['version'] or (ref['version'] == origin['version'] and ref != origin) or excerpt not in shown:
+            raise Conflict('the cited decision and its owed explanation must appear in the appropriate report item')
         return
     _exact(coverage, 'policy excerpt', 'retired decision coverage')
     excerpt = _text(coverage['excerpt'], 'displayed explanation of the retired decision')
