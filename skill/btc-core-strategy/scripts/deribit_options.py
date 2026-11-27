@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from hashlib import sha256
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from statistics import NormalDist
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from btc_node.market_events import get, utc
@@ -24,6 +25,8 @@ def fetch(method, params):
     url = BASE + method + '?' + urlencode(params)
     raw, fetched = get(url)
     data = json.loads(raw)
+    if (data.get('error') or {}).get('code') == 10028:
+        raise ConnectionError('Deribit rate limit (10028) for ' + method)
     if 'result' not in data:
         raise ValueError('Deribit did not return a result for ' + method)
     observed = datetime.fromtimestamp(data['usOut'] / 1e6, timezone.utc).isoformat()
@@ -54,6 +57,29 @@ def interpolate(tickers, option_type):
             'legs': [{'instrument': t['instrument_name'], 'timestamp_ms': t['timestamp'],
                       'delta': t['greeks']['delta'], 'bid_iv': t['bid_iv'], 'ask_iv': t['ask_iv']}
                      for t in (lower[1], upper[1])]}
+
+
+def quoted_tickers(candidates):
+    ranked = {typ: [name for _, name in sorted(rows)] for typ, rows in candidates.items()}
+    responses, gaps = [], []
+    for rank in range(max(map(len, ranked.values()))):
+        ticks = [tick for tick, _ in responses]
+        needed = [names[rank] for typ, names in ranked.items() if rank < len(names) and interpolate(ticks, typ) is None]
+        if not needed:
+            break
+        for name in needed:
+            # Alternate sides and space the few requests needed to bracket the published delta.
+            time.sleep(1)
+            try:
+                responses.append(fetch('ticker', {'instrument_name': name}))
+            except (OSError, KeyError, ValueError) as error:
+                gap = {'instrument': name, 'reason': str(error)}
+                if isinstance(error, HTTPError) and error.headers and 'Retry-After' in error.headers:
+                    gap['retry_after'] = error.headers['Retry-After']
+                gaps.append(gap)
+                if isinstance(error, OSError) and not (isinstance(error, HTTPError) and error.code in (400, 404)):
+                    return responses, gaps
+    return responses, gaps
 
 
 def compare_previous(current, receipts):
@@ -103,11 +129,8 @@ def compare_previous(current, receipts):
 def collect(expiry):
     day = date.fromisoformat(expiry)
     params = {'currency': 'BTC', 'kind': 'option'}
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        instruments = pool.submit(fetch, 'get_instruments', {**params, 'expired': 'false'})
-        summaries = pool.submit(fetch, 'get_book_summary_by_currency', params)
-        instruments, spec_source = instruments.result()
-        summaries, chain_source = summaries.result()
+    instruments, spec_source = fetch('get_instruments', {**params, 'expired': 'false'})
+    summaries, chain_source = fetch('get_book_summary_by_currency', params)
     specs = {s['instrument_name']: s for s in instruments if s.get('settlement_currency') == 'BTC'
              and s['instrument_name'].startswith('BTC-')
              and datetime.fromtimestamp(s['expiration_timestamp'] / 1000, timezone.utc).date() == day}
@@ -134,27 +157,7 @@ def collect(expiry):
         c = NormalDist().cdf(math.log(row['underlying_price'] / k) / sigma + sigma / 2)
         typ = name.rsplit('-', 1)[1]
         candidates[typ].append((abs((c if typ == 'C' else 1-c) - 0.25), name))
-    ranked = {typ: [name for _, name in sorted(rows)] for typ, rows in candidates.items()}
-    responses, gaps = [], []
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        while True:
-            tickers = [t for t, _ in responses]
-            names = []
-            for typ, remaining in ranked.items():
-                if remaining and interpolate(tickers, typ) is None:
-                    names.extend(remaining[:4])
-                    del remaining[:4]
-            if not names:
-                break
-            requests = {name: pool.submit(fetch, 'ticker', {'instrument_name': name}) for name in names}
-            before = len(responses)
-            for name, request in requests.items():
-                try:
-                    responses.append(request.result())
-                except (OSError, KeyError, ValueError) as error:
-                    gaps.append({'instrument': name, 'reason': str(error)})
-            if len(responses) == before:
-                break
+    responses, gaps = quoted_tickers(candidates)
     tickers = [tick for tick, _ in responses]
     put, call = interpolate(tickers, 'P'), interpolate(tickers, 'C')
     spread = [round(put['bid_iv'] - call['ask_iv'], 5), round(put['ask_iv'] - call['bid_iv'], 5)] if put and call else None
