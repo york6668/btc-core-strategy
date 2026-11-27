@@ -20,7 +20,12 @@ def note_exposure(db, url, content, at):
         body = json.loads(content)
     except ValueError:
         return
-    rows = body if isinstance(body, list) else [body]
+    if isinstance(body, dict):
+        rows = [body] if 'conditionId' in body or 'markets' in body else body.get('events')
+    else:
+        rows = body
+    if not isinstance(rows, list):
+        return
     for item in rows:
         if not isinstance(item, dict):
             continue
