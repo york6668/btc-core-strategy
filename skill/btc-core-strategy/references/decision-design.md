@@ -27,6 +27,14 @@
 
 原市场、factor、forward 和区域接口继续承载底层事实及历史消费者兼容信息；其含义必须与主对象一致，不得反过来强迫新研究继承旧周期或围绕旧模块组织。程序核引用、时间及身份；模型核实论证、定价与选择是否成立。字段齐全不证明业务通过。
 
+## 标的估值来源
+
+股票基金以发行方组合特征、指数盈利或覆盖主要权重的企业财报为起点。核对报告日期、盈利口径、估值水平与可比对象的差别，再判断现价要求的兑现程度。跟踪同一指数的两只基金只能验证口径。经济资料可以沿用到下一次披露，期间的价格变动要按原盈利和份额口径解释。Nasdaq 最新一期 Global Markets Dashboard 也提供指数预期盈利倍数与同口径十年均值。当前产品的入口见 [Vanguard VOO 基金资料及组合特征](https://workplace.vanguard.com/assets/corp/fund_communications/pdf_publish/us-products/fact-sheet/F0968.pdf)、[Invesco QQQ 发行人资料](https://www.invesco.com/us/en/financial-products/etfs/invesco-qqq-trust-series-1.html)、[Nasdaq-100 盈利与估值历史](https://indexes.nasdaq.com/docs/NDX%20Extended%20Presentation.pdf)、[Schwab SCHD 基金特征与收益](https://www.schwabassetmanagement.com/products/schd)。
+
+BTC 的链上已实现市值与供应量可估计持有人上次转移的成本基准；结合相近市场阶段、持续需求与潜在卖压解释现价的溢价或折价。BNB 比较已产生的实际使用、费用需求、流通或销毁与价格。仅有开发计划时，按未来情景评价。方法与原始资料可从 [Coin Metrics BTC 日度价格、MVRV 与供应量](https://community-api.coinmetrics.io/v4/timeseries/asset-metrics?assets=btc&metrics=PriceUSD%2CCapMVRVCur%2CSplyCur&frequency=1d&page_size=1&paging_from=end)、[BNB 网络统计](https://bscscan.com/charts) 核验。
+
+黄金的实际利率、持有需求及可比时期金价解释底层的吸引力；载体价格与每份黄金权益及同时点金价比较。场所间报价一致只验证报价。GLD 的每份含金量、金价和净值由[信托历史资料](https://www.spdrgoldshares.com/usa/gld/)提供。
+
 ## 再完成个人决定
 
 市场冻结后，由 `trading.portfolio_decision` 采纳同一情景下各组投入、独立机会、留存现金和存量仓位的取舍。以本人已采纳的计划为基线，从本轮价格和风险比较执行原安排、调整和等待各会得到什么、放弃什么。原安排的适用前提仍成立且改变规模缺乏足够收益时，明确沿用；只有净补偿、风险或资金用途的实质变化足以改变取舍，才提出新安排。现货拟投入额变动时，复核现有保护还值得保留多少下行补偿、会牺牲多少反弹收益及承担什么成本。已确认执行的部分与尚待决定的余量分开判断。跨轮即使方向相同，也要分清重新评价原安排和建议再次调整。只有实际改变另一项选择的关系进入 `interactions`。原空单有确认开单价时，依该基准给出方向，账户实际状态单独表达。

@@ -9,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .codec import Conflict, identity, millis, utc
+from .codec import Conflict, encode, identity, millis, utc
 from .entities import Entities
 from .trading_policy import POSITION_SUBJECT
 
@@ -218,7 +218,7 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run, 
         raise ValueError('write each product valuation once, separately from other market assessments')
     if valuations:
         condition_ids = {condition['id'] for condition in judgement['conditions']}
-        judgement['valuations'] = {_text(name, 'valuation subject'): _valuation(name, terms, condition_ids, evidence)
+        judgement['valuations'] = {_text(name, 'valuation subject'): _valuation(database, name, terms, condition_ids, evidence)
                                    for name, terms in valuations.items()}
     return _save(Entities(database), kind='DECISION', object_id=_object_id(MARKET_PREFIX, subject), scope='PUBLIC',
                  payload={'subject': subject, 'result': judgement}, evidence=_evidence(evidence), run=run,
@@ -299,11 +299,52 @@ def _value_zone(zone):
             'basis': _text(zone.get('basis'), 'value zone evidence basis')}
 
 
-def _valuation(name, terms, condition_ids, evidence):
-    if not isinstance(terms, dict) or terms.keys() - {'assessment', 'basis', 'evidence', 'assets', 'value_zone', 'condition_ids'}:
-        raise ValueError('a scoped valuation needs its assessment and supporting public evidence')
-    sources = _evidence(terms.get('evidence'))
-    if any(source not in evidence for source in sources):
+def _valuation_observation(database, source, quote, basis):
+    """Bind the economic datum used by the author to the original frozen observation."""
+    if source['type'] == 'ENTITY':
+        record = Entities(database).get(source['kind'], source['object_id'], version=source['version'])
+        if not record or record['scope'] != 'PUBLIC' or record['digest'] != source['digest']:
+            raise ValueError('use the exact public research or observation for the valuation')
+        value = record['payload']
+    elif source['type'] == 'OBSERVATION':
+        row = database.one('SELECT digest FROM observations WHERE product=%s AND series=%s '
+                           'AND item_key=%s AND observation_key=%s',
+                           tuple(source[k] for k in ('product', 'series', 'item_key', 'observation_key')))
+        if not row:
+            raise ValueError('the cited valuation observation is unavailable')
+        value = database.value(row['digest'])
+    elif 'sample' in source:
+        from .trading_theses import packet_observation
+        meta = database.metadata('trading.public.' + source['digest'].removeprefix('sha256:'))
+        _, value, _ = packet_observation(database, source, meta)
+    else:
+        value = database.value(source['digest'].removeprefix('sha256:'))
+    if isinstance(value, dict) and 'content' in value:
+        value = value['content']
+    original = value if isinstance(value, str) else encode(value).decode('utf-8')
+    if quote not in original or quote not in basis:
+        raise ValueError('use the same observed number or short source phrase in the economic basis and its original evidence')
+
+
+def _valuation(database, name, terms, condition_ids, evidence):
+    allowed = {'assessment', 'basis', 'reference', 'evidence', 'assets', 'value_zone', 'condition_ids'}
+    if not isinstance(terms, dict) or terms.keys() - allowed or 'reference' not in terms:
+        raise ValueError('identify the factual value comparison for this product, or explicitly record reference=null')
+    basis = _text(terms.get('basis'), 'the independent value comparison that supports this price judgement')
+    sources = list(_evidence(terms.get('evidence', []), required=False))
+    reference = terms['reference']
+    if reference is not None:
+        if not isinstance(reference, dict) or set(reference) != {'source', 'quote'}:
+            raise ValueError('a valuation reference identifies its decisive observation with source and quote')
+        source = _evidence([reference['source']])[0]
+        if source not in evidence:
+            raise ValueError('cite valuation evidence from this frozen market judgement')
+        quote = _text(reference['quote'], 'the observed value used in the price comparison')
+        _valuation_observation(database, source, quote, basis)
+        reference = {'source': source, 'quote': quote}
+        if source not in sources:
+            sources.append(source)
+    if not sources or any(source not in evidence for source in sources):
         raise ValueError('cite valuation evidence from this frozen market judgement')
     assets = terms.get('assets', [name])
     if not isinstance(assets, list) or not assets or any(not isinstance(a, str) or not a.strip() for a in assets):
@@ -313,7 +354,7 @@ def _valuation(name, terms, condition_ids, evidence):
             or len(refs) != len(set(refs))):
         raise ValueError('a valuation must cite distinct conditions of this market judgement')
     item = {'assessment': _text(terms.get('assessment'), 'price attractiveness over the investment horizon'),
-            'basis': _text(terms.get('basis'), 'the independent value comparison that supports this price judgement'),
+            'basis': basis, 'reference': reference,
             'evidence': sources, 'assets': sorted(set(a.strip() for a in assets))}
     if refs:
         item['condition_ids'] = sorted(refs)
@@ -328,9 +369,14 @@ def product_valuations(result):
             for name, terms in result.get('valuations', {}).items()}
 
 
-def covers_spot_policy(subject, policy, selected):
-    covered = {asset for key, value in selected.items() if key.startswith('valuation/') and value
-               and value.get('evidence') for asset in value.get('assets', ())}
+def legacy_valuation_names(record):
+    return [name for name, value in record['payload']['result'].get('valuations', {}).items() if 'reference' not in value]
+
+
+def covers_spot_policy(subject, policy, selected, *, adding=False):
+    scoped = [value for key, value in selected.items() if key.startswith('valuation/') and value
+              and value.get('evidence') and 'reference' in value]
+    covered = {asset for value in scoped for asset in value['assets']}
     fields = policy.get('inputs', {})
     required = set(fields.get('weights', {}))
     asset = fields.get('asset') or fields.get('product')
@@ -339,6 +385,10 @@ def covers_spot_policy(subject, policy, selected):
     elif policy['kind'] == 'OPPORTUNITY' and subject == 'independent-opportunity':
         # The original separately budgeted BTC policy predates an explicit asset field.
         required.add('BTC')
+    if adding:
+        measured = {asset for value in scoped if value['reference'] for asset in value['assets']}
+        if not measured.intersection(required or covered):
+            return False
     return bool(covered) and required <= covered
 
 
@@ -358,7 +408,7 @@ def market_inputs(database, record, *, at, state=None):
                 check['outcome'] = (condition['review'] or {}).get('outcome')
                 checks[condition['id']] = (check, condition.get('review_ref'))
     for name, terms in valuations.items():
-        value = {key: terms[key] for key in ('assessment', 'basis', 'assets', 'evidence', 'value_zone') if key in terms}
+        value = {key: terms[key] for key in ('assessment', 'basis', 'reference', 'assets', 'evidence', 'value_zone') if key in terms}
         if 'condition_ids' in terms:
             value['conditions'] = {key: {**checks[key][0], 'review_ref': checks[key][1]}
                                    if 'evidence' in terms else checks[key][0] for key in terms['condition_ids']}
@@ -445,9 +495,10 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         raise ValueError('select the exact parts of the market judgement this decision depends on')
     kind = policy.get('kind')
     selected = {field: inputs[field] for field in market_refs}
-    if kind in {'MONTHLY', 'OPPORTUNITY'} and not covers_spot_policy(subject, policy, selected):
-        raise ValueError('select sourced current-price valuations covering the products in this spot decision')
     choice = result.get('decision')
+    if kind in {'MONTHLY', 'OPPORTUNITY'} and not covers_spot_policy(
+            subject, policy, selected, adding=choice in {'CONTINUE', 'PARTICIPATE'}):
+        raise ValueError('select valuations covering the products, with a directly supported comparison for new money')
     if kind not in CHOICES or choice not in CHOICES[kind]:
         raise ValueError('the choice must match its investment purpose')
     applied_policy = {'kind': kind, 'basis': _text(policy.get('basis'), 'applicable policy and facts')}

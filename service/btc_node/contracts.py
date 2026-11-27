@@ -136,7 +136,8 @@ MARKET_RESULT = {
     'description': DECISION_RESULT['description'] + ' Write each product valuation once in valuations[name] with '
                    'assessment (current-price judgement), basis (independent value comparison and downside), '
                    'evidence (exact references from this market), optional assets (defaults to name), value_zone '
-                   'and condition_ids. Spot decisions cite valuations covering their products. Propose substantive changes to named independent '
+                   'and condition_ids. Include reference={source,quote}, with the observed datum in both the frozen source and basis. '
+                   'Use reference=null when a product comparison cannot be established. Spot decisions cite valuations covering their products. Propose substantive changes to named independent '
                    'cycle judgements in theses; unchanged judgements retain their exact references.',
 }
 PERSONAL_RESULT = {

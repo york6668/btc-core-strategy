@@ -52,7 +52,7 @@ def put(db, kind, object_id, payload, refs, reason, run, version):
     return objects.get(kind, object_id, version=saved['version'])
 
 
-def packet_sample(db, ref, meta):
+def packet_observation(db, ref, meta):
     selector = ref.get('sample')
     if (meta['provider'] != 'ANONYMOUS_MARKET_COLLECTION' or not isinstance(selector, dict)
             or set(selector) != {'dataset', 'time'}):
@@ -69,7 +69,12 @@ def packet_sample(db, ref, meta):
     if receipt['status'] != 'RECEIVED' or not observed <= known <= millis(meta['known_at']):
         raise ValueError('the named packet observation lacks a dated completed public retrieval')
     unit = (dataset['source'], dataset['instrument'], dataset['kind'], dataset['interval_seconds'], start)
-    return unit, fingerprint(encode(row)), {'observed_ms': observed, 'known_ms': known}
+    return unit, row, {'observed_ms': observed, 'known_ms': known}
+
+
+def packet_sample(db, ref, meta):
+    unit, row, timing = packet_observation(db, ref, meta)
+    return unit, fingerprint(encode(row)), timing
 
 
 def source_index(db, refs, at, *, individual=False):

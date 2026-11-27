@@ -128,6 +128,9 @@ def public_context(db, run):
     archive = trading_archive.context(db, scope='PUBLIC', at=run['known_at'])
     targets = archive.pop('review_targets', [])
     if current:
+        missing = decisions.legacy_valuation_names(current)
+        if missing:
+            review['valuations_to_compare'] = missing
         targets.extend({'subject': current['payload']['subject'], **condition} for condition in review['conditions'])
     return {'as_of': snapshot['public_known_at'], 'market_cutoff': snapshot['public_cutoff'],
             'market_evidence': {'type': 'BLOB', 'digest': snapshot['market']},
@@ -187,6 +190,9 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
     checks = {} if thesis_reviews is None else thesis_reviews
     if not isinstance(checks, dict):
         raise ValueError('hourly reviews must be keyed by their stable cycle subjects')
+    if independent and result is None and current and decisions.legacy_valuation_names(current):
+        raise Conflict('compare the legacy spot valuations against observed economic inputs before freezing this new run; '
+                       'use reference=null for a comparison that remains unestablished')
     if not independent and (checks or result is not None):
         raise Conflict('only the independent public market assessment may adopt or review a cycle thesis')
     if result is not None:
@@ -313,8 +319,9 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
     before = payload['market_inputs']
     live_conditions = any(key.startswith('valuation/') and value.get('conditions') for key, value in before.items())
     spot = policy['kind'] in {'MONTHLY', 'OPPORTUNITY'}
+    adding = payload['result']['decision'] in {'CONTINUE', 'PARTICIPATE'}
     if not state.get('market_changed') and not live_conditions:
-        if spot and not frozen_display and not decisions.covers_spot_policy(payload['subject'], policy, before):
+        if spot and not frozen_display and not decisions.covers_spot_policy(payload['subject'], policy, before, adding=adding):
             return {**state, 'status': 'NEEDS_REVIEW', 'missing_valuation_binding': True}
         return state
     if market_inputs is None:
@@ -322,8 +329,8 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
         market_inputs = decisions.market_inputs(db, market, at=run['known_at'])
     selected = {key: market_inputs[key] for key in before if key in market_inputs}
     subject = payload['subject']
-    if spot and (state.get('market_changed') or not frozen_display):
-        if not decisions.covers_spot_policy(subject, policy, selected):
+    if spot and not frozen_display:
+        if not decisions.covers_spot_policy(subject, policy, selected, adding=adding):
             return {**state, 'status': 'NEEDS_REVIEW', 'missing_valuation_binding': True}
     missing = before.keys() - selected.keys()
     if missing:
@@ -723,15 +730,33 @@ def checked_change(db, target, base, record, change, condition_review=None):
                            if lead['path'] == path)]
         if not any(before in text for text in quotes) or any(after in text for text in quotes):
             raise Conflict('compare against the actual prior arrangement displayed for this member')
+        continuation = None
         if change['impact'] != 'PLAN_READY':
-            from .trading_delivery import previous_display
+            from .trading_delivery import get, previous_display
             prior = previous_display(db, destination=target, decision_id=record['object_id'], at=stamp())
             if prior and prior['decision'] == reference(record):
-                raise Conflict('the same adopted member cannot become a new recommendation through wording changes')
+                joint = trading_portfolio.current(db)
+                plan = (joint or {}).get('payload', {})
+                review = plan.get('member_reviews', {}).get(subject, {}).get('input_review', {})
+                if (change['impact'] not in {'RISK', 'VALUE'} or plan.get('decisions', {}).get(subject) != prior['decision']
+                        or after not in review.get('reason', '')):
+                    raise Conflict('a continued choice needs a newly adopted change in risk or value for feedback')
+                shown = get(db, report_id=prior['report_id'])
+                previous = next((ref for ref in shown['decisions'] if ref['object_id'] == trading_portfolio.OBJECT_ID), None)
+                if previous:
+                    owner = Entities(db).get('PLAN', previous['object_id'], version=previous['version'])
+                    if not owner or reference(owner) != previous:
+                        raise Conflict('the portfolio behind the previous display cannot be verified')
+                    seen = owner['payload'].get('member_reviews', {}).get(subject, {}).get('input_review', {})
+                    if seen.get('basis') == review['basis']:
+                        raise Conflict('this valuation review was already covered by the displayed portfolio')
+                continuation = review['reason']
         result = record['payload']['result']
         active = result.get('conditional_actions', {}).get('PRESENT', result)
         sources = [active.get(k, '') for k in ('reason', 'risk', 'opportunity_cost', 'amount_basis')]
         sources.extend(result.get('direction_comparison', {}).values())
+        if continuation:
+            sources = [continuation]
         if change['impact'] == 'PLAN_READY':
             if not condition_review:
                 raise ValueError('register the execution event when verifying the original plan condition')
