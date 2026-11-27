@@ -13,7 +13,13 @@ GAMMA = 'https://gamma-api.polymarket.com'
 
 
 def utc(value):
-    instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    # Python 3.9 needs three or six fractional digits; Gamma emits variable precision.
+    normalized = re.sub(
+        r'(\d{2}:\d{2}:\d{2}\.)(\d+)',
+        lambda match: match[1] + match[2].ljust(6, '0')[:6],
+        value.replace('Z', '+00:00'),
+    )
+    instant = datetime.fromisoformat(normalized)
     if instant.tzinfo is None:
         raise ValueError('source time needs a timezone')
     return instant.astimezone(timezone.utc)
