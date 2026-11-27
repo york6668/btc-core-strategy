@@ -6,10 +6,94 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 from native_usage import require_admission
 from node_bridge import decode_node_response, sync_facts
+
+
+def event_request(release, method, params, operation, call, run_key):
+    # The host owns public HTTP. The service records clocks, identities and market decisions.
+    service = str(release / 'service')
+    if service not in sys.path:
+        sys.path.insert(0, service)
+    from btc_node import market_events as events
+    if method == 'trading.public':
+        if len(params) != 1 and set(params) != {'options_expiry', 'previous_options'}:
+            raise ValueError('request one source at a time')
+        ready = call('trading.public', {})
+        if not ready['ok']:
+            return ready
+        if 'options_expiry' in params:
+            import deribit_options
+            try:
+                result, sources = deribit_options.collect(params['options_expiry'])
+            except (OSError, ValueError, KeyError) as error:
+                return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Deribit',
+                                                'expiry': params['options_expiry'], 'reason': str(error)}}
+            result['evidence'] = []
+            for source in sources:
+                identity = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+                saved = call('trading.evidence', source, 'option:' + run_key + ':' + identity)
+                if not saved['ok']:
+                    return saved
+                result['evidence'].append({'url': source['url'], 'source': saved['result']})
+            if 'previous_options' in params:
+                earlier = []
+                for ref in params['previous_options']:
+                    original = call('trading.source', {'digest': ref['source']['digest']})
+                    if not original['ok']:
+                        return original
+                    if ref['url'] != original['result'].get('url'):
+                        raise ValueError('the earlier reference names a different source')
+                    earlier.append(original['result'])
+                result['previous'] = {**deribit_options.compare_previous(result, earlier),
+                                      'evidence': params['previous_options']}
+        else:
+            try:
+                result = events.discover(search=params.get('event_search'), event=params.get('event_slug'))
+            except (OSError, ValueError, KeyError) as error:
+                return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Polymarket Gamma',
+                                                'reason': str(error)}}
+        return {'ok': True, 'result': result}
+    if not operation:
+        raise ValueError('supply the original operation identity')
+    if method == 'trading.forecast':
+        if 'terms' in params:
+            raise ValueError('the host reads the published terms using market_slug')
+        market_slug = params['market_slug']
+        raw = json.loads(events.receipt(market_slug)['content'])
+        if raw.get('closed') or not raw.get('active') or not raw.get('acceptingOrders'):
+            raise ValueError('the market is not accepting a prospective comparison')
+        return call(method, {**{k: v for k, v in params.items() if k != 'market_slug'}, 'terms': events.terms(raw)}, operation)
+    if 'receipt' in params or 'official_receipt' in params:
+        raise ValueError('the host reads the original Gamma response')
+    detail = call('trading.public', {'forecast': params['forecast']})
+    if not detail['ok']:
+        return detail
+    data = detail['result']
+    if method == 'trading.forecast_quote' and data['this_run'].get('quote', {}).get('status') not in (None, 'UNAVAILABLE'):
+        return {'ok': True, 'result': data['this_run']}
+    if method == 'trading.forecast_settle' and data['settlement'] and data['settlement']['status'] != 'DISPUTED':
+        return {'ok': True, 'result': data['settlement']}
+    try:
+        source = events.receipt(data['terms']['slug'])
+    except (OSError, ValueError, KeyError) as error:
+        if method == 'trading.forecast_quote':
+            return call(method, {**params, 'failure': str(error)}, operation)
+        return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Polymarket Gamma', 'reason': str(error)}}
+    if method == 'trading.forecast_settle' and 'evidence' not in params:
+        official_url = events.binance_close_url(data['terms'])
+        raw = json.loads(source['content'])
+        if official_url and raw.get('umaResolutionStatus') == 'resolved' and raw.get('closed'):
+            try:
+                content, retrieved = events.get(official_url)
+            except OSError:
+                return call(method, {**params, 'receipt': source}, operation)
+            params = {**params, 'official_receipt': {'source': 'Binance BTCUSDT final 1m candle', 'url': official_url,
+                      'content': content, 'observed_at': data['terms']['end_at'], 'retrieved_at': retrieved}}
+    return call(method, {**params, 'receipt': source}, operation)
 
 
 def read_native_result(config, root, outcome):
@@ -69,6 +153,10 @@ def request(config, run_id, arguments, stdin):
             envelope['operation_id'] = operation
         response = subprocess.run(arguments, input=json.dumps(envelope).encode(), capture_output=True)
         return decode_node_response(response, operation)
+
+    if (method in {'trading.forecast', 'trading.forecast_quote', 'trading.forecast_settle'} or
+            method == 'trading.public' and params.keys() & {'event_search', 'event_slug', 'options_expiry'}):
+        return event_request(release, method, params, value.get('operation_id'), call, key)
 
     if method == 'trading.open':
         if params:

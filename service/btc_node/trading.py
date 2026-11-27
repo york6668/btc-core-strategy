@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 from . import deep_gate, fact_views, trading_archive, trading_policy, trading_portfolio, trading_public_report, trading_report, trading_theses
+from . import trading_forecasts
 from .codec import Conflict, encode, fingerprint, identity, millis, stamp
 from .entities import Entities
 
@@ -16,10 +17,12 @@ MARKET = 'allocation'
 SET_ENTRY_REFERENCE = 'trading.set_entry_reference'
 SERVICE_SOURCES = ('api.py', 'contracts.py', 'execution.py', 'mcp.py', 'trading.py', 'trading_decisions.py',
                    'trading_delivery.py', 'trading_policy.py', 'trading_archive.py', 'trading_portfolio.py', 'trading_theses.py',
-                   'trading_report.py', 'trading_report_inputs.py', 'trading_public_report.py', 'trading_risk_seed.py')
+                   'trading_report.py', 'trading_report_inputs.py', 'trading_public_report.py', 'trading_risk_seed.py',
+                   'market_events.py', 'trading_forecasts.py')
 READS = {'trading.public', 'trading.personal', 'trading.personal_ready', 'trading.feedback', 'trading.source',
          'trading.research_archive', 'trading.research_result', 'trading.preview_report'}
 WRITES = {'trading.open', 'trading.evidence', 'trading.market', 'trading.personal_decision', 'trading.portfolio_decision',
+          'trading.forecast', 'trading.forecast_quote', 'trading.forecast_settle',
           'trading.review', 'trading.thesis_recap', 'trading.review_public_baseline', 'trading.research', 'trading.report', 'trading.begin_delivery',
           'trading.record_delivery', 'trading.assess_feedback', 'trading.inherit_feedback',
           'trading.policy', 'trading.seed_policy', SET_ENTRY_REFERENCE}
@@ -138,7 +141,8 @@ def public_context(db, run):
             'limitations': market['limitations'], 'current_market': current,
             'auxiliary': db.value(snapshot['auxiliary']), 'auxiliary_evidence': {'type': 'BLOB', 'digest': snapshot['auxiliary']},
             'review': review, 'review_targets': targets, 'theses': trading_theses.context(db, current, as_of), 'archive': archive,
-            'research': research_records(db, 'PUBLIC')}
+            'research': research_records(db, 'PUBLIC'), 'pending_forecasts': trading_forecasts.pending(db),
+            'event_forecasts': snapshot.get('event_forecasts', {})}
 
 
 def register_evidence(db, run, *, source, url, observed_at, retrieved_at, content):
@@ -156,6 +160,7 @@ def register_evidence(db, run, *, source, url, observed_at, retrieved_at, conten
     evidence = {'source': plain(source, 'source name'), 'url': url, 'observed_at': stamp(observed_at),
                 'known_at': stamp(retrieved_at), 'content': content}
     digest = db.put_blob(encode(evidence))
+    trading_forecasts.note_exposure(db, url, content, evidence['known_at'])
     db.metadata('trading.public.' + digest, {'digest': digest, 'observed_at': evidence['observed_at'],
                  'known_at': evidence['known_at'], 'provider': 'PUBLIC_SOURCE_RETRIEVAL'}, write=True)
     return {'type': 'BLOB', 'digest': digest}
@@ -178,7 +183,7 @@ def public_evidence(db, refs, *, required=True):
 
 
 def market_ready(db, run, *, evidence, market=None, expected_version=None, result=None, reason=None, notification=None,
-                 public_copy=None, thesis_reviews=None):
+                 public_copy=None, thesis_reviews=None, forecast_comparisons=None):
     from . import trading_decisions as decisions
     snapshot = material(db, run)
     independent = not snapshot.get('market_binding')
@@ -195,10 +200,17 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
                        'use reference=null for a comparison that remains unestablished')
     if not independent and (checks or result is not None):
         raise Conflict('only the independent public market assessment may adopt or review a cycle thesis')
+    if forecast_comparisons is not None and not independent:
+        raise Conflict('event comparisons belong to the independent public decision')
+    comparisons, extra_refs = ({}, [])
+    if independent:
+        comparisons, extra_refs = trading_forecasts.adjudicate(db, run, snapshot, forecast_comparisons or {})
+        refs = [*refs, *(ref for ref in extra_refs if ref not in refs)]
     if result is not None:
         updated = trading_theses.revisions(db, current, result.get('theses', {}), checks, refs, run)
         record = decisions.adopt_market(db, subject=MARKET, expected_version=expected_version,
-                                       result=result, evidence=refs, run=run, theses=updated)
+                                       result=result, evidence=refs, run=run, theses=updated,
+                                       event_comparisons=comparisons)
     else:
         plain(reason, 'why current market judgment still applies')
         record = current
@@ -209,6 +221,9 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
     bound = reference(record)
     review = {'reason': reason, 'evidence': refs}
     if independent:
+        if comparisons:
+            trading_forecasts.save_first_decisions(db, run, bound, comparisons)
+            review['event_comparisons'] = comparisons
         review.update(public_market=bound, assessed_at=run['known_at'], mode='ADOPT' if result is not None else 'REUSE')
         trading_theses.hourly(db, original, trading_theses.bindings(record), checks, refs, run,
                               opened_at=snapshot['public_known_at'])
@@ -638,7 +653,16 @@ def invoke(db, method, params):
         else:
             material(db, run)
         return condition_detail(db, **params['condition'], scope=action.upper(), at=run['known_at'])
+    if action in {'forecast', 'forecast_quote', 'forecast_settle'}:
+        operation = {'forecast': trading_forecasts.register, 'forecast_quote': trading_forecasts.quote,
+                     'forecast_settle': trading_forecasts.settle}[action]
+        return operation(db, run, material(db, run), **params)
     if action == 'public':
+        if 'forecast_history' in params:
+            material(db, run)
+            return trading_forecasts.history(db, **params['forecast_history'])
+        if 'forecast' in params:
+            return trading_forecasts.detail(db, material(db, run), params['forecast'])
         if 'thesis_history' in params:
             snapshot = material(db, run)
             cutoff = (snapshot.get('market_review', {}).get('assessed_at') or snapshot.get('thesis_recap_at')
@@ -918,6 +942,8 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
     inputs.update({'valuation/' + name + '/basis': value for name, value in trading_decisions.product_valuations(public).items()
                    if 'basis' in value})
     inputs.update(trading_public_report._thesis_sources(db, market))
+    for name, text in trading_public_report.forecast_sources(public.get('event_comparisons', {})).items():
+        inputs.setdefault(name, text)
     inputs['evidence'] = market['dependencies']
     scoped = ('market.BTC', 'market.SPX', 'market.NDX', 'crosschecks.evidence', 'opportunities.comparison')
     if selected.keys() - set(scoped):

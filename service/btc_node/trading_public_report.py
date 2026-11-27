@@ -236,11 +236,20 @@ def _thesis_sources(db, market):
     return sources
 
 
+def forecast_sources(comparisons):
+    sources = {}
+    for slug, item in comparisons.items():
+        sources['forecast/' + slug] = item['conclusion']
+        sources['forecast/' + slug + '/reason'] = item['reason']
+    return sources
+
+
 def _sources(db, market):
     result = market['payload']['result']
     sources = {k: result[k] for k in ('conclusion', 'primary', 'value')}
     sources.update({'alternative/' + str(i): value for i, value in enumerate(result['alternatives'])})
     sources.update({'assessment/' + name: value for name, value in result['assessments'].items()})
+    sources.update(forecast_sources(result.get('event_comparisons', {})))
     for name, terms in trading_decisions.product_valuations(result).items():
         sources['valuation/' + name] = terms['assessment']
         if 'basis' in terms:
@@ -365,6 +374,9 @@ def prepare(db, run, target, market, base, draft, *, independent, previous=None)
     if review and review['mode'] == 'REUSE':
         sources['market_review'] = review['reason']
         review_sources['market_review'] = {'run_ref': run['ref'], 'market_review': review}
+        for name, text in forecast_sources(review.get('event_comparisons', {})).items():
+            sources['market_review/' + name] = text
+            review_sources['market_review/' + name] = review_sources['market_review']
     for check in _public_reviews(db, run, snapshot):
         key = 'review/' + check['review_ref']['digest']
         sources[key] = check['explanation']

@@ -193,7 +193,7 @@ def _save(objects, *, kind, object_id, scope, payload, evidence, run, expected_v
     return objects.get(kind, object_id)
 
 
-def adopt_market(database, *, subject, expected_version, result, evidence, run, theses=None):
+def adopt_market(database, *, subject, expected_version, result, evidence, run, theses=None, event_comparisons=None):
     primary = _text(result.get('primary'), 'primary market scenario')
     alternatives = result.get('alternatives')
     if not isinstance(alternatives, list) or not alternatives:
@@ -210,6 +210,8 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run, 
                  'primary': primary, 'alternatives': alternatives,
                  'value': _text(result.get('value'), 'risk and reward at current prices'),
                  'assessments': assessments, **_horizon(result, run)}
+    if event_comparisons:
+        judgement['event_comparisons'] = event_comparisons
     if theses:
         judgement['theses'] = theses
         evidence = [*evidence, *({'type': 'ENTITY', **ref} for ref in theses.values())]
@@ -302,6 +304,8 @@ def _value_zone(zone):
 def _valuation_observation(database, source, quote, basis):
     """Bind the economic datum used by the author to the original frozen observation."""
     if source['type'] == 'ENTITY':
+        if source['object_id'].startswith('trading/forecast/'):
+            raise ValueError('use the asset economic observation as the primary valuation reference')
         record = Entities(database).get(source['kind'], source['object_id'], version=source['version'])
         if not record or record['scope'] != 'PUBLIC' or record['digest'] != source['digest']:
             raise ValueError('use the exact public research or observation for the valuation')
@@ -320,6 +324,10 @@ def _valuation_observation(database, source, quote, basis):
     else:
         value = database.value(source['digest'].removeprefix('sha256:'))
     if isinstance(value, dict) and 'content' in value:
+        from urllib.parse import urlsplit
+        host = urlsplit(value.get('url', '')).hostname or ''
+        if host == 'polymarket.com' or host.endswith('.polymarket.com'):
+            raise ValueError('use the asset economic observation as the primary valuation reference')
         value = value['content']
     original = value if isinstance(value, str) else encode(value).decode('utf-8')
     if quote not in original or quote not in basis:
@@ -397,6 +405,8 @@ def market_inputs(database, record, *, at, state=None):
     inputs = {**{key: result[key] for key in ('conclusion', 'primary', 'alternatives', 'value')},
               **{'assessment/' + key: val for key, val in result['assessments'].items()},
               **{'thesis/' + key: ref for key, ref in result.get('theses', {}).items()}}
+    for name, comparison in result.get('event_comparisons', {}).items():
+        inputs['forecast/' + name] = {key: comparison[key] for key in ('conclusion', 'reason', 'probability')}
     valuations = product_valuations(result)
     checks = {}
     if any(terms.get('condition_ids') for terms in valuations.values()):

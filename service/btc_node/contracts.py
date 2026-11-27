@@ -156,7 +156,8 @@ PERSONAL_DECISION_FIELDS = (
 )
 TRADING_FIELDS = {
     'open': ({'market': OBJECT}, ['market']),
-    'public': ({'condition': CONDITION_LOOKUP, 'thesis_history': obj(
+    'public': ({'condition': CONDITION_LOOKUP, 'forecast': OBJECT, 'forecast_history': obj({'after': TEXT, 'limit': VERSION}),
+                'thesis_history': obj(
         {'key': TEXT, 'version': VERSION, 'as_of': TIME, 'after': VERSION,
          'stream': {'type': 'string', 'enum': ['THESES', 'REVIEWS', 'RECAPS']},
          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, ['key'])}, []),
@@ -177,8 +178,14 @@ TRADING_FIELDS = {
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
     'market': ({'evidence': OBJECTS, 'result': MARKET_RESULT, 'expected_version': VERSION,
-                'market': OBJECT, 'reason': TEXT, 'thesis_reviews': OBJECT,
+                'market': OBJECT, 'reason': TEXT, 'thesis_reviews': OBJECT, 'forecast_comparisons': OBJECT,
                 'notification': OBJECT, 'public_copy': OBJECT}, ['evidence']),
+    'forecast': ({'terms': OBJECT, 'outcome': TEXT, 'prediction': TEXT, 'basis': TEXT, 'invalidation': TEXT,
+                  'seen_odds': {'type': 'boolean'}, 'evidence': OBJECTS, 'cutoff': TIME, 'probability': {'type': 'array'}},
+                 ['terms', 'outcome', 'prediction', 'basis', 'invalidation', 'seen_odds', 'evidence']),
+    'forecast_quote': ({'forecast': OBJECT, 'receipt': OBJECT, 'failure': TEXT}, ['forecast']),
+    'forecast_settle': ({'forecast': OBJECT, 'receipt': OBJECT, 'official_receipt': OBJECT, 'evidence': OBJECT, 'observed_value': TEXT,
+                         'official_outcome': TEXT, 'reason': TEXT}, ['forecast', 'receipt']),
     'thesis_recap': ({'target': OBJECT, 'expected_version': VERSION, 'direction': THESIS_TEST,
                       'mechanism': THESIS_TEST, 'timing': THESIS_TEST, 'lesson': TEXT, 'evidence': OBJECTS},
                      ['target', 'expected_version', 'direction', 'mechanism', 'timing', 'lesson', 'evidence']),

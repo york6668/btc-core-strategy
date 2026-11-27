@@ -35,6 +35,17 @@ BTC 的链上已实现市值与供应量可估计持有人上次转移的成本�
 
 黄金的实际利率、持有需求及可比时期金价解释底层的吸引力；载体价格与每份黄金权益及同时点金价比较。场所间报价一致只验证报价。GLD 的每份含金量、金价和净值由[信托历史资料](https://www.spdrgoldshares.com/usa/gld/)提供。
 
+## 事前预测与市场定价
+
+优先选择会改变市场情景、现价投入价值或原有保护需求的问题。题目绑定标的、计价产品、时间、触及或收盘、区间边界及实际结算源。以当时可知的基本面、现货需求、供给、估值和适用的期权价格形成自己的预期，记录决定性理由和反证。有可复算的同口径基准才给概率，方向性判断也能支持具体资金安排。利率事件要再验证传导到资产的渠道。机构的成交意图需另有归属证据。[预测竞赛的同题检验](https://pubsonline.informs.org/doi/10.1287/mnsc.2015.2374)与[Cboe 的真实头寸复核](https://www.cboe.com/insights/posts/volatility-insights-evaluating-the-market-impact-of-spx-0-dte-options/)说明这两类比较所需的数据。
+
+- 经宿主 `btc-core trading` 使用 `trading.public {event_search:"…"}` 找相关事件，`trading.public {event_slug:"…"}` 只取原题与规则。BTC 日度价格事件通常可按美东日期查 `bitcoin-price-on-<英文月份>-<日>-<年>`。先从自己的现价判断选择值得比较的区间。不同日期、价格源、触价与终值各按自身命题核验。
+- 公开阶段按需取 `trading.public {options_expiry:"YYYY-MM-DD"}`。返回 Deribit BTC 反向期权每个到期日的持仓集中、25 Delta 看跌和看涨的双边隐含波动率、看跌减看涨的报价范围及原件引用。引用用每项 evidence 的 source。Delta 用实际 ticker，缺乏同侧包围报价时按已取得的范围判断。持仓观察对应源快照之前八小时。要量化变化，把上次同到期返回的整组 evidence 作为 previous_options 原样交回同一调用。程序按真实原件重算两次双边波动率差的变化范围及相同行权价的持仓变化，时间重叠的报价保留为单次观察。需要判断新增流向才读逐笔的主动方、大宗、组合标识和披露时点，限制对开平与身份的归因。[Deribit 口径](https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency)
+- `trading.forecast {market_slug,outcome,prediction,basis,invalidation,evidence,seen_odds}` 登记初判。outcome 是所评估的标签，可选 `probability:[下限,上限]`，点估计的两端相同。规则中的公告或结果可知时刻早于挂牌结束时传 `cutoff`。已看到同题赔率时如实给 seen_odds=true。原题原预测直接使用 pending_forecasts 中的 forecast 引用。宿主从 Gamma 提取题面；当轮来源、原预测及服务器登记时点保留在公开历史。
+- `trading.forecast_quote {forecast}` 在登记后从该具体合约读取并冻结原报价。公开阶段的 `trading.public {forecast}` 可读回本轮报价。接口的更新时间是源记录的更新时间。用买卖两侧、信息截止和规则判断可比性，盘口与系统区间重叠时只在新事实足以改变原判断的情况下修订。单边、宽价差、错期、已结算均按实际状态处理，跨资产的同一驱动只算一次。
+- 在同一次 `trading.market` 的顶层提交 `forecast_comparisons:{市场slug:{conclusion,reason,same_information,probability?}}`，覆盖本轮已开启的预测。写清分歧怎样影响原判断，缺报价时 same_information=false，仍给综合结论。新决定中的 `forecast/<市场slug>` 可供实际受影响的成员引用；估值继续引用标的自身的经济量。只核准沿用原市场时，比较留在这次独立复核。报告在原模块交代改变本人安排的原因。
+- 后续从 `pending_forecasts` 取原身份，调用 `trading.forecast_settle {forecast}`。币安美东正午 BTCUSDT 收盘区间按规则抓到期一分钟和平台正式结算，等于分界值归较高区间。其他合约须沿题面指定的一手来源用 `trading.evidence` 保存实际事后观测，再在 settle 传 `evidence,observed_value,official_outcome,reason`。未正式结算或两方不一致时继续追踪。原预测、第一份综合决定和结算分别可回读，同一题只计一次。只有信息可比且独立初判及终判都事前给过点概率，才用当时盘口中点和两项预测分别计算 Brier 误差。通过 trading.public {forecast_history:{limit,after?}} 分页读取已结算的原件与误差，同一事件的多个区间按其 event_ids 识别关联。单例用于核验该题结果，连续可比样本才用于评价预测表现。
+
 ## 再完成个人决定
 
 市场冻结后，由 `trading.portfolio_decision` 采纳同一情景下各组投入、独立机会、留存现金和存量仓位的取舍。以本人已采纳的计划为基线，从本轮价格和风险比较执行原安排、调整和等待各会得到什么、放弃什么。原安排的适用前提仍成立且改变规模缺乏足够收益时，明确沿用；只有净补偿、风险或资金用途的实质变化足以改变取舍，才提出新安排。现货拟投入额变动时，复核现有保护还值得保留多少下行补偿、会牺牲多少反弹收益及承担什么成本。已确认执行的部分与尚待决定的余量分开判断。跨轮即使方向相同，也要分清重新评价原安排和建议再次调整。只有实际改变另一项选择的关系进入 `interactions`。原空单有确认开单价时，依该基准给出方向，账户实际状态单独表达。
