@@ -97,6 +97,8 @@ def public_inputs(market):
         raise Conflict('report writing needs the frozen public market judgement')
     result = market['payload']['result']
     public = _fields(result, ('conclusion', 'primary', 'alternatives', 'value', 'assessments', 'valid_until'))
+    if result.get('rate_expectation'):
+        public['rate_expectation'] = result['rate_expectation']
     if result.get('event_comparisons'):
         public['event_comparisons'] = result['event_comparisons']
     public.update(decision=binding(market), known_ms=market['known_ms'], valuations=product_valuations(result),

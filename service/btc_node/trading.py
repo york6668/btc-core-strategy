@@ -142,6 +142,17 @@ def public_context(db, run):
                 'valuations': nav_review, 'reason': 'Check the fund NAV fixing against the market quote. Different times '
                 'measure different observations. Correct any inferred entry cost in assessment and price_implication. '
                 'Set nav_comparison to {market_at,nav_at}, or null when no comparable marks are used.'}
+        equity = sorted({a for name, value in valuations.items() for a in value.get('assets', [name]) if a in {'VOO', 'QQQ'}})
+        if equity and not current['payload']['result'].get('rate_expectation'):
+            review['rate_expectation_to_check'] = {
+                'assets': equity,
+                'question': 'At the dated US equity buy price, how much of the next Fed move was already priced? '
+                            'Reconstruct the relevant outcome price as_of the cash close. Use the last available '
+                            '30-Day Fed Funds futures price, EFFR and effective date, distinguish later confirmation, '
+                            'and freeze one rate_expectation for both equity valuations. State any actual source limitation.',
+                'sources': ['https://www.cmegroup.com/daily_bulletin/current/Section10_Interest_Rate_Futures_Continued.pdf',
+                            'https://markets.newyorkfed.org/api/rates/unsecured/effr/last/10.json',
+                            'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm']}
         targets.extend({'subject': current['payload']['subject'], **condition} for condition in review['conditions'])
     return {'as_of': snapshot['public_known_at'], 'market_cutoff': snapshot['public_cutoff'],
             'market_evidence': {'type': 'BLOB', 'digest': snapshot['market']},
@@ -367,6 +378,10 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
                      and not weights.isdisjoint(value.get('assets', ())) and value.get('price_implication')]
         if available:
             return {**state, 'status': 'NEEDS_REVIEW', 'available_valuations': available}
+    rate = (market_inputs or {}).get('rate_expectation')
+    if (not frozen_display and policy['kind'] == 'MONTHLY' and rate and 'rate_expectation' not in before
+            and set(policy.get('inputs', {}).get('weights', ())).intersection(rate['assets'])):
+        return {**state, 'status': 'NEEDS_REVIEW', 'new_market_input': 'rate_expectation'}
     if not frozen_display and policy['kind'] == 'MONTHLY' and choice != 'UNRESOLVED':
         try:
             decisions.monthly_price_bases(selected, payload['result'])

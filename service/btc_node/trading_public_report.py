@@ -247,6 +247,8 @@ def forecast_sources(comparisons):
 def _sources(db, market):
     result = market['payload']['result']
     sources = {k: result[k] for k in ('conclusion', 'primary', 'value')}
+    if result.get('rate_expectation'):
+        sources['rate_expectation'] = result['rate_expectation']['baseline']
     sources.update({'alternative/' + str(i): value for i, value in enumerate(result['alternatives'])})
     sources.update({'assessment/' + name: value for name, value in result['assessments'].items()})
     sources.update(forecast_sources(result.get('event_comparisons', {})))

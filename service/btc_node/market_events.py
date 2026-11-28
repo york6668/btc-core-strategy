@@ -145,6 +145,40 @@ def price(value):
     return result if result.is_finite() and 0 <= result <= 1 else None
 
 
+def historical_pricing(market, outcome, as_of):
+    """Look up the actual outcome token before an asset's valuation cutoff."""
+    if not isinstance(as_of, str):
+        raise ValueError('use a timezone-qualified historical cutoff')
+    at = utc(as_of)
+    if at > datetime.now(timezone.utc):
+        raise ValueError('historical pricing needs a cutoff already observed')
+    labels = items(market['outcomes'])
+    tokens = items(market['clobTokenIds'])
+    if len(tokens) != len(labels) or outcome not in labels:
+        raise ValueError('match the published outcome to its own historical token')
+    token = str(tokens[labels.index(outcome)])
+    if not re.fullmatch('[0-9]+', token):
+        raise ValueError('invalid outcome token')
+    end = int(min(at, utc(market['endDate'])).timestamp())
+    start = end - 3600
+    url = 'https://clob.polymarket.com/prices-history?' + urlencode(
+        {'market': token, 'startTs': start, 'endTs': end, 'fidelity': 1})
+    raw, retrieved = get(url)
+    observations = []
+    for row in json.loads(raw)['history']:
+        when, observed = row.get('t'), price(row.get('p'))
+        if type(when) is int and start <= when <= end and observed is not None:
+            observations.append((when, observed))
+    result = {'requested_at': at.isoformat(), 'status': 'NO_HISTORICAL_QUOTE'}
+    observed_at = datetime.fromtimestamp(end, timezone.utc).isoformat()
+    if observations:
+        when, observed = max(observations, key=lambda item: item[0])
+        observed_at = datetime.fromtimestamp(when, timezone.utc).isoformat()
+        result.update(status='HISTORICAL_PRICE', price=str(observed), observed_at=observed_at)
+    return result, {'url': url, 'source': 'Polymarket CLOB price history', 'content': raw,
+                    'observed_at': observed_at, 'retrieved_at': retrieved}
+
+
 def pricing(market, label, at):
     labels = items(market['outcomes'])
     index = labels.index(label)

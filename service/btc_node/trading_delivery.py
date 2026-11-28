@@ -129,6 +129,7 @@ def missing_monthly_comparison(db, base, portfolio, market):
     objects = Entities(db)
     displayed = {r['object_id']: r for r in base.get('decisions', ())}
     affected = []
+    rate_update = False
     for subject, ref in portfolio['payload']['decisions'].items():
         terms = base.get('allocation_terms', {}).get(subject, {})
         before = displayed.get(ref['object_id'])
@@ -144,6 +145,11 @@ def missing_monthly_comparison(db, base, portfolio, market):
         prior = objects.get(before['kind'], before['object_id'], version=before['version'])
         if not prior or prior['digest'] != before['digest']:
             continue
+        if ('rate_expectation' in current['payload'].get('market_inputs', {})
+                and 'rate_expectation' not in prior['payload'].get('market_inputs', {})):
+            affected.append(subject)
+            rate_update = True
+            continue
         leads = [lead['quote'] for lead in trading_report.lead_excerpts(base.get('presentation') or {})
                  if lead['path'] == 'allocation.' + subject]
         shown = '\n'.join([*leads, base['modules']['allocation'].get(subject, '')])
@@ -156,8 +162,9 @@ def missing_monthly_comparison(db, base, portfolio, market):
         else:
             affected.append(subject)
     if affected:
-        return {'report_id': base['report_id'], 'subjects': affected,
-                'reason': '上份实收的月度段落缺少已核定的分批与留存取舍或本月安排，需要向原目的地交付更正。'}
+        reason = ('上份实收缺少当时的政策定价对现买与留存排序的影响。' if rate_update else
+                  '上份实收的月度段落缺少已核定的分批与留存取舍或本月安排。')
+        return {'report_id': base['report_id'], 'subjects': affected, 'reason': reason + '请向原目的地交付更正。'}
 
 
 def _later_display(displayed, previous):

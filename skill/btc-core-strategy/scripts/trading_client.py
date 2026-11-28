@@ -27,22 +27,35 @@ def event_request(release, method, params, operation, call, run_key):
             return ready
         if 'expectation_quote' in params:
             request = params['expectation_quote']
-            if not isinstance(request, dict) or set(request) != {'market_slug', 'outcome'}:
-                raise ValueError('expectation_quote needs the exact market_slug and outcome')
+            if not isinstance(request, dict) or set(request) not in ({'market_slug', 'outcome'}, {'market_slug', 'outcome', 'as_of'}):
+                raise ValueError('expectation_quote needs the exact market_slug and outcome, with an optional historical as_of')
+            provider = 'Polymarket Gamma'
             try:
                 source = events.receipt(request['market_slug'])
                 raw = json.loads(source['content'])
                 terms = events.terms(raw)
+                if 'as_of' in request:
+                    provider = 'Polymarket CLOB price history'
+                    quote, historical = events.historical_pricing(raw, request['outcome'], request['as_of'])
+                else:
+                    historical = None
+                    quote = events.pricing(raw, request['outcome'], source['retrieved_at'])
             except (OSError, ValueError, KeyError) as error:
-                return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Polymarket Gamma',
+                return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': provider,
                                                 'reason': str(error)}}
-            quote = events.pricing(raw, request['outcome'], source['retrieved_at'])
             identity = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
             saved = call('trading.evidence', source, 'expectation:' + run_key + ':' + identity)
             if not saved['ok']:
                 return saved
             result = {**quote, 'terms': terms, 'outcome': request['outcome'], 'updated_at': source['observed_at'],
                       'retrieved_at': source['retrieved_at'], 'evidence': saved['result']}
+            if historical:
+                identity = hashlib.sha256(json.dumps(historical, sort_keys=True).encode()).hexdigest()
+                stored = call('trading.evidence', historical, 'expectation-history:' + run_key + ':' + identity)
+                if not stored['ok']:
+                    return stored
+                result.update(terms_evidence=saved['result'], terms_retrieved_at=source['retrieved_at'],
+                              evidence=stored['result'], updated_at=historical['observed_at'], retrieved_at=historical['retrieved_at'])
         elif 'options_expiry' in params:
             import deribit_options
             try:

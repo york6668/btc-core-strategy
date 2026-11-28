@@ -5,7 +5,8 @@ the applicable policy and evidence. This module owns decision applicability.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from calendar import monthrange
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -193,6 +194,36 @@ def _save(objects, *, kind, object_id, scope, payload, evidence, run, expected_v
     return objects.get(kind, object_id)
 
 
+def _rate_expectation(terms, evidence, at):
+    """Keep a shared discount-rate baseline with the prices for which it was known."""
+    if not isinstance(terms, dict):
+        raise ValueError('rate_expectation needs the asset valuation cutoff and its public basis')
+    cutoff = _time(terms.get('as_of'), 'asset valuation cutoff')
+    sources = _evidence(terms.get('evidence'))
+    assets = terms.get('assets')
+    if (cutoff > millis(at) or any(ref not in evidence for ref in sources) or not isinstance(assets, list)
+            or not assets or not all(isinstance(a, str) and a.strip() for a in assets)):
+        raise ValueError('bind the affected assets and their actual public rate evidence at the valuation cutoff')
+    result = {'assets': sorted(set(assets)), 'as_of': terms['as_of'], 'evidence': sources,
+              'baseline': _text(terms.get('baseline'), 'what policy is priced and which incremental risk remains')}
+    future = terms.get('fed_funds')
+    if future is not None:
+        if not isinstance(future, dict):
+            raise ValueError('identify the monthly Fed funds contract used before the cutoff')
+        effective = date.fromisoformat(_text(future.get('effective_on'), 'first date at the expected new rate'))
+        if (future.get('contract_month') != effective.strftime('%Y-%m')
+                or _time(future.get('known_at'), 'known futures price time') > cutoff):
+            raise ValueError('use a contract covering the change and a futures price already available at the asset cutoff')
+        quote = _decimal(future.get('price'), 'Fed funds contract price')
+        prior = _return_percent(future.get('effr_pct'))
+        days = monthrange(effective.year, effective.month)[1]
+        change = (100 - quote - prior) * 100 * days / (days - effective.day + 1)
+        result['fed_funds'] = {'price': _amount_text(quote), 'effr_pct': _amount_text(prior),
+                               'effective_on': effective.isoformat(), 'contract_month': future['contract_month'],
+                               'known_at': future['known_at'], 'implied_change_bp': _amount_text(change.quantize(Decimal('.01')))}
+    return result
+
+
 def adopt_market(database, *, subject, expected_version, result, evidence, run, theses=None, event_comparisons=None):
     primary = _text(result.get('primary'), 'primary market scenario')
     alternatives = result.get('alternatives')
@@ -212,6 +243,8 @@ def adopt_market(database, *, subject, expected_version, result, evidence, run, 
                  'assessments': assessments, **_horizon(result, run)}
     if event_comparisons:
         judgement['event_comparisons'] = event_comparisons
+    if result.get('rate_expectation') is not None:
+        judgement['rate_expectation'] = _rate_expectation(result['rate_expectation'], evidence, run['known_at'])
     if theses:
         judgement['theses'] = theses
         evidence = [*evidence, *({'type': 'ENTITY', **ref} for ref in theses.values())]
@@ -517,6 +550,8 @@ def market_inputs(database, record, *, at, state=None):
               **{'thesis/' + key: ref for key, ref in result.get('theses', {}).items()}}
     for name, comparison in result.get('event_comparisons', {}).items():
         inputs['forecast/' + name] = {key: comparison[key] for key in ('conclusion', 'reason', 'probability')}
+    if result.get('rate_expectation'):
+        inputs['rate_expectation'] = result['rate_expectation']
     valuations = product_valuations(result)
     checks = {}
     if any(terms.get('condition_ids') for terms in valuations.values()):
@@ -618,6 +653,9 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         raise ValueError('select the exact parts of the market judgement this decision depends on')
     kind = policy.get('kind')
     selected = {field: inputs[field] for field in market_refs}
+    rate = inputs.get('rate_expectation')
+    if kind == 'MONTHLY' and rate and set(policy.get('inputs', {}).get('weights', ())).intersection(rate['assets']):
+        selected['rate_expectation'] = rate
     choice = result.get('decision')
     if kind in {'MONTHLY', 'OPPORTUNITY'} and not covers_spot_policy(
             subject, policy, selected, choice=choice):
