@@ -138,14 +138,18 @@ MARKET_RESULT = {
                    'Write each product valuation once in valuations[name] with '
                    'assessment (current-price judgement), basis (independent value comparison and downside), '
                    'evidence (exact references from this market), optional assets (defaults to name), value_zone '
-                   'and condition_ids. Include reference={source,quote}, with the observed datum in both the frozen source and basis. '
+                   'and condition_ids. For valuations used to rank a monthly basket, write price_implication: what the dated buy price '
+                   'requires, the remaining upside or downside, and what changes that comparison. '
+                   'Include reference={source,quote}, with the observed datum in both the frozen source and basis. '
                    'Use reference=null when a product comparison cannot be established. Spot decisions cite valuations covering their products. Propose substantive changes to named independent '
                    'cycle judgements in theses; unchanged judgements retain their exact references.',
 }
 PERSONAL_RESULT = {
     **DECISION_RESULT,
     'description': DECISION_RESULT['description'] + ' Monthly baskets compare zero, the budget and feasible tranches. '
-                   'Give runner_up_amount and why the selected amount beats it. For a monthly choice select price_basis by its bound valuation/key or {valuation,quote}. '
+                   'Give runner_up_amount. Explain in reason why the weighted basket at this price beats that amount, '
+                   'what waiting costs and what would reverse the ranking. For resolved monthly choices, price_basis '
+                   'selects one or more bound valuation keys with price_implication. An explicit {valuation,quote} cites that exact judgement. '
                    'DEFER selects zero with a review later in the same month; SKIP closes this month. '
                    'Only actionable contingencies have plan_steps[condition_id] '
                    '{outcome: SUPPORTED or REFUTED, action}; other conditions are for reassessment. For an existing-position short that may still be open, '

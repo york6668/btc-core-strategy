@@ -44,15 +44,15 @@ def allocation_changes(base, edits, terms, basis, records, portfolio, *, correct
             changed = was != now or base.get('basis', {}).get(path) != basis.get(path)
             replaced = any(was.get(key) != now.get(key) for key in ('kind', 'decision', 'currency', 'unavailable'))
             record = records.get(subject) or portfolio
-        # A correction to a displayed fact can be necessary even when its formal source stayed the same.
-        # Bind this exception to the item being corrected, not to the purpose of the entire report.
+        # A bound local edit can also retire wording that no longer explains the choice.
+        # Replacing the entire item still requires a change of scope or an actual item correction.
         whole = isinstance(change, dict) and 'replace_all' in change
         explanation = change if whole else (change.get('correction') if isinstance(change, dict) else None)
         explained = (isinstance(explanation, dict) and record is not None and explanation.get('source') == binding(record)
                      and isinstance(explanation.get('reason'), str) and bool(explanation['reason'].strip()))
         expiry = base.get('valid_until', {}).get(path)
         due = path in base.get('pending_review', {}) or (expiry and millis(expiry) <= millis(assessed_at))
-        correcting_item = explained and (correction or due or path in base.get('_excerpted_items', ()))
+        correcting_item = explained and (not whole or correction or due or path in base.get('_excerpted_items', ()))
         if not changed and not correcting_item:
             raise Conflict('retain the confirmed wording for unchanged allocation inputs: ' + subject)
         if whole and not (explained and (replaced or correcting_item)):
@@ -60,32 +60,6 @@ def allocation_changes(base, edits, terms, basis, records, portfolio, *, correct
         if correcting_item and not whole:
             change = {key: value for key, value in change.items() if key != 'correction'}
         output[subject] = edit_item(prior, change, allow_full=whole)
-    return output
-
-
-def monthly_price_edits(base, edits, terms):
-    """Carry the chosen price evidence into the displayed decision; retire the previous stand-alone sentence."""
-    previous = (base or {}).get('modules', {}).get('allocation', {})
-    prior_terms = (base or {}).get('allocation_terms', {})
-    output = {}
-    for subject, term in terms.items():
-        anchor = term.get('price_basis') if term.get('kind') == 'MONTHLY' else None
-        text = edits.get(subject, previous.get(subject))
-        if not anchor or not isinstance(text, str):
-            continue
-        quote = anchor['quote']
-        old = prior_terms.get(subject, {}).get('price_basis', {}).get('quote')
-        paragraphs = text.split('\n\n')
-        if old and old != quote:
-            if old in paragraphs:
-                paragraphs.remove(old)
-            elif quote not in text and text.count(old) == 1:
-                paragraphs = text.replace(old, quote, 1).split('\n\n')
-        if quote not in '\n\n'.join(paragraphs):
-            paragraphs.insert(1 if paragraphs[0].startswith('**') else 0, quote)
-        amended = '\n\n'.join(paragraphs)
-        if amended != text:
-            output[subject] = amended
     return output
 
 
@@ -263,7 +237,8 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'comparisons', 'runner_up_amount', 'price_basis', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
+                                       'comparisons', 'runner_up_amount', 'price_basis', 'supporting_price_bases',
+                                       'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         previous = plan.get('member_reviews', {}).get(subject, {})
         if previous.get('input_review'):

@@ -269,30 +269,33 @@ def _monthly(result, judgement, budget):
         judgement['amount_basis'] = _text(result.get('amount_basis'), 'why a partial amount beats the full plan')
 
 
-def monthly_price_basis(selected, choice):
-    """Select the decisive economics from the product valuations actually adopted by this basket."""
-    valuations = {k: v for k, v in selected.items() if k.startswith('valuation/')}
-    source = choice.get('price_basis')
-    if isinstance(source, dict):
-        if set(source) != {'valuation', 'quote'}:
-            raise ValueError('price_basis cites the bound valuation and its economic sentence')
-        name, quote = source['valuation'], _text(source['quote'], 'economic sentence from the frozen valuation')
-    else:
-        name, quote = source, None
-        if name is None:
-            written = [k for k, v in valuations.items() if v.get('price_implication')]
-            if len(written) == 1:
-                name = written[0]
-            elif len(valuations) == 1:
-                name = next(iter(valuations))
-    if not isinstance(name, str) or name not in valuations:
-        raise ValueError('select the decisive bound valuation in price_basis, or cite {valuation,quote} from its basis')
-    value = valuations[name]
-    if quote is None:
-        quote = value.get('price_implication') or value['basis']
-    if quote not in (value.get('price_implication'), value.get('assessment')) and quote not in value['basis']:
-        raise ValueError('use the economic sentence from the selected frozen product valuation')
-    return {'valuation': name, 'quote': quote}
+def monthly_price_bases(selected, choice):
+    """Bind the current-price judgements used to rank the basket. Raw observations stay in basis."""
+    valuations = {key: v for key, v in selected.items() if key.startswith('valuation/')}
+    sources = choice.get('price_basis')
+    if sources is None:
+        sources = [key for key, value in valuations.items() if value.get('price_implication')]
+    elif not isinstance(sources, list):
+        sources = [sources]
+    supporting = choice.get('supporting_price_bases', [])
+    if not isinstance(supporting, list):
+        raise ValueError('supporting_price_bases must list the other bound price judgements')
+    sources = [*sources, *supporting]
+    if not sources:
+        raise ValueError('a ranked basket needs a frozen judgement about the value at the compared price')
+    anchors = {}
+    for source in sources:
+        name = source.get('valuation') if isinstance(source, dict) else source
+        if not isinstance(name, str) or name not in valuations or name in anchors:
+            raise ValueError('cite each decisive bound valuation once in price_basis')
+        implication = valuations[name].get('price_implication')
+        if not implication:
+            raise ValueError('complete the current-price judgement for ' + name + ' before ranking the basket')
+        anchor = {'valuation': name, 'quote': implication}
+        if isinstance(source, dict) and source != anchor:
+            raise ValueError('price_basis must cite the current frozen price implication for ' + name)
+        anchors[name] = anchor
+    return list(anchors.values())
 
 
 def _monthly_window(policy, judgement, run):
@@ -423,7 +426,10 @@ def legacy_valuation_names(record):
     return [name for name, value in record['payload']['result'].get('valuations', {}).items() if 'reference' not in value]
 
 
-def covers_spot_policy(subject, policy, selected, *, adding=False):
+def covers_spot_policy(subject, policy, selected, *, choice):
+    if policy['kind'] == 'MONTHLY' and choice == 'UNRESOLVED':
+        # The gap and available inputs are saved on this member. No amount is ranked.
+        return True
     scoped = [value for key, value in selected.items() if key.startswith('valuation/') and value
               and value.get('evidence') and 'reference' in value]
     covered = {asset for value in scoped for asset in value['assets']}
@@ -435,7 +441,7 @@ def covers_spot_policy(subject, policy, selected, *, adding=False):
     elif policy['kind'] == 'OPPORTUNITY' and subject == 'independent-opportunity':
         # The original separately budgeted BTC policy predates an explicit asset field.
         required.add('BTC')
-    if adding:
+    if choice == 'PARTICIPATE' or policy['kind'] == 'MONTHLY':
         measured = {asset for value in scoped if value['reference'] for asset in value['assets']}
         if not measured.intersection(required or covered):
             return False
@@ -551,8 +557,8 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
     selected = {field: inputs[field] for field in market_refs}
     choice = result.get('decision')
     if kind in {'MONTHLY', 'OPPORTUNITY'} and not covers_spot_policy(
-            subject, policy, selected, adding=choice in {'CONTINUE', 'PARTICIPATE'}):
-        raise ValueError('select valuations covering the products, with a directly supported comparison for new money')
+            subject, policy, selected, choice=choice):
+        raise ValueError('cover the products and cite a supported price comparison when ranking monthly capital or adding exposure')
     if kind not in CHOICES or choice not in CHOICES[kind]:
         raise ValueError('the choice must match its investment purpose')
     applied_policy = {'kind': kind, 'basis': _text(policy.get('basis'), 'applicable policy and facts')}
@@ -583,7 +589,11 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         if kind == 'MONTHLY':
             _monthly(result, judgement, budget)
             if choice != 'UNRESOLVED':
-                judgement['price_basis'] = monthly_price_basis(selected, result)
+                primary, *supporting = monthly_price_bases(selected, result)
+                # Existing readers consume this single binding, including during recovery.
+                judgement['price_basis'] = primary
+                if supporting:
+                    judgement['supporting_price_bases'] = supporting
         else:
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':

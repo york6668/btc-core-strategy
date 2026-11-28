@@ -82,19 +82,19 @@ def _choice_text(subject, record, scope):
     period = choice.get('month', '')
     parts = ['**' + ' '.join(value for value in (name, period, selection) if value) + '。**']
     unit = policy.get('currency', '')
-    if 'budget' in policy:
-        parts.append('规划预算 ' + policy['budget'] + ' ' + unit + '。')
     if 'amount' in choice:
         amount = choice['amount']
         parts.append(('本次计划 ' + amount + ' ' + unit + '。') if amount is not None else '本次金额待核定。')
+    if 'budget' in policy:
+        parts.append('规划预算 ' + policy['budget'] + ' ' + unit + '。')
+    if choice.get('reason'):
+        parts.append(choice['reason'])
     if choice.get('runner_up_amount') is not None:
         for candidate in choice['comparisons']:
             if candidate['amount'] == choice['runner_up_amount']:
                 parts.append('备选 ' + candidate['amount'] + ' ' + unit + '。' + candidate['reason'])
                 break
-    if choice.get('price_basis') and choice['price_basis']['quote'] not in choice['reason']:
-        parts.append(choice['price_basis']['quote'])
-    for field in ('reason', 'amount_basis', 'opportunity_cost', 'gap'):
+    for field in ('amount_basis', 'opportunity_cost', 'gap'):
         if choice.get(field) and choice[field] not in parts:
             parts.append(choice[field])
     return ' '.join(parts)
