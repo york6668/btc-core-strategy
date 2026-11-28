@@ -1125,10 +1125,10 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
             if subject not in changes.get('allocation', {}):
                 raise Conflict('review the allocation entry for the changed adopted terms: ' + subject)
             # A new month can legitimately keep the exact same wording and amounts.
-            fields = ('amount', 'budget', 'currency')
-            different_money = subject == 'cash' or any(prior.get(k) != terms[subject].get(k) for k in fields)
-            if different_money and before.get(subject) == after.get(subject):
-                raise Conflict('the changed monetary terms need an updated allocation entry: ' + subject)
+            fields = ('decision', 'amount', 'budget', 'currency')
+            different_terms = subject == 'cash' or any(prior.get(k) != terms[subject].get(k) for k in fields)
+            if different_terms and before.get(subject) == after.get(subject):
+                raise Conflict('the changed action or monetary terms need an updated allocation entry: ' + subject)
     elif reviewed:
         raise ValueError('reviewed_unchanged applies only when reviewing an existing regular edition')
     if support is None:

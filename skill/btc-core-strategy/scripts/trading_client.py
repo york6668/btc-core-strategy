@@ -93,7 +93,7 @@ def event_request(release, method, params, operation, call, run_key):
     data = detail['result']
     if method == 'trading.forecast_quote' and data['this_run'].get('quote', {}).get('status') not in (None, 'UNAVAILABLE'):
         return {'ok': True, 'result': data['this_run']}
-    if method == 'trading.forecast_settle' and data['settlement'] and data['settlement']['status'] != 'DISPUTED':
+    if method == 'trading.forecast_settle' and data['settlement'] and data['settlement']['status'] in events.FINAL_SETTLEMENTS:
         return {'ok': True, 'result': data['settlement']}
     try:
         source = events.receipt(data['terms']['slug'])
@@ -103,8 +103,7 @@ def event_request(release, method, params, operation, call, run_key):
         return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Polymarket Gamma', 'reason': str(error)}}
     if method == 'trading.forecast_settle' and 'evidence' not in params:
         official_url = events.binance_close_url(data['terms'])
-        raw = json.loads(source['content'])
-        if official_url and raw.get('umaResolutionStatus') == 'resolved' and raw.get('closed'):
+        if official_url and events.utc(source['retrieved_at']) >= events.utc(data['terms']['end_at']):
             try:
                 content, retrieved = events.get(official_url)
             except OSError:

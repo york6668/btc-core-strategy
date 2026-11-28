@@ -82,9 +82,11 @@ def pending(db, at=None):
     for item in rows:
         row = Entities(db).get('HYPOTHESIS', item['object_id'])
         data = row['payload']
-        last = comparison_at(db, row, at=at)
+        result = result_of(db, row, at=at)
+        last = result['last_decision'] if result else comparison_at(db, row, at=at)
         items.append({'forecast': theses.reference(row), 'slug': data['terms']['slug'], 'outcome': data['outcome'],
                       'cutoff': data['cutoff'], 'prediction': data['prediction'], 'basis_mode': data['basis_mode'],
+                      'settlement_status': result['status'] if result else None,
                       'latest_decision': last and {'review': last['review'], **{
                           k: last['comparison'][k] for k in ('assessed_at', 'conclusion', 'probability')}}})
     return items
@@ -170,7 +172,8 @@ def detail(db, snapshot, ref, at, comparison_version=None):
 def result_of(db, row, *, at=None):
     objects = Entities(db)
     review = (objects.get('REVIEW', row['object_id'] + '/settlement', as_of=at)
-              or objects.get('REVIEW', row['object_id'] + '/dispute', as_of=at))
+              or objects.get('REVIEW', row['object_id'] + '/dispute', as_of=at)
+              or objects.get('REVIEW', row['object_id'] + '/resolution', as_of=at))
     if review:
         result = dict(review['payload'])
         # Earlier releases stored just the first comparison. Keep its actual clock and provenance.
@@ -226,7 +229,7 @@ def from_receipt(db, run, row, receipt):
         if old != new and not (isinstance(old, str) and isinstance(new, str) and old.split() == new.split()):
             changes[key] = {'original': old, 'current': new}
     if changes:
-        return {'status': 'TERMS_CHANGED', 'source': source, 'changes': changes}
+        return {'status': 'TERMS_CHANGED', 'source': source, 'updated_at': receipt['observed_at'], 'changes': changes}
     quote = events.pricing(raw, row['payload']['outcome'], receipt['retrieved_at'])
     return {**quote, 'source': source, 'updated_at': receipt['observed_at'], 'retrieved_at': receipt['retrieved_at']}
 
@@ -244,6 +247,8 @@ def quote(db, run, snapshot, *, forecast, receipt=None, failure=None):
     if not isinstance(receipt, dict) or failure:
         raise ValueError('supply the actual quote receipt or its retrieval failure')
     data = from_receipt(db, run, row, receipt)
+    if data['status'] in {'RESOLVED', 'TERMS_CHANGED'}:
+        record_resolution(db, run, row, data)
     if millis(run['known_at']) >= millis(row['payload']['cutoff']) and data['status'] in ('QUOTED', 'WIDE'):
         data['status'] = 'AFTER_CUTOFF'
     return save_run(db, run, snapshot, row, {**entry, 'quote': data})
@@ -338,63 +343,101 @@ def comparison_score(decision, actual, *, initial=None):
     return {**scores, 'market_midpoint': str((midpoint - actual) ** 2)}
 
 
+def official_observation(db, run, row, evidence, observed_value, official_outcome, reason):
+    from .trading import plain
+    terms = row['payload']['terms']
+    if evidence.get('type') != 'BLOB' or official_outcome not in terms['outcomes']:
+        raise ValueError('cite the observed settlement source and its corresponding outcome label')
+    theses.source_index(db, [evidence], run['known_at'])
+    source = db.value(evidence['digest'].removeprefix('sha256:'))
+    if events.binance_close_url(terms) and events.binance_result(terms, source) != (observed_value, official_outcome):
+        raise ValueError('settlement differs from the exact terminal candle and bracket')
+    host = urlsplit(source.get('url', '')).hostname
+    hosts = {urlsplit(url).hostname for url in [terms['resolution_source'], *re.findall(r'https?://[^\s)]+', terms['rules'])]}
+    hosts.discard(None)
+    if hosts & {'www.binance.com', 'binance.com', 'api.binance.com'}:
+        hosts.update({'data-api.binance.vision', 'api.binance.com'})
+    if (not host or host not in hosts or not source.get('observed_at') or millis(source['observed_at']) < row['known_ms']
+            or plain(observed_value, 'actual settlement observation') not in source.get('content', '')):
+        raise ValueError('use a later original observation from the resolution source named in the contract')
+    return {'official_source': evidence, 'observed_value': observed_value, 'official_outcome': official_outcome,
+            'official_observed_at': source['observed_at'], 'reason': plain(reason, 'how the terms apply to this observation')}
+
+
 def settle(db, run, snapshot, *, forecast, receipt, evidence=None, observed_value=None, official_outcome=None, reason=None,
            official_receipt=None):
-    from .trading import plain, register_evidence
     if snapshot.get('market_binding'):
         raise Conflict('settle the original public question before adopting the next market decision')
     row = forecast_record(db, forecast)
     prior = result_of(db, row)
-    if prior and prior['status'] != 'DISPUTED':
+    if prior and prior['status'] in events.FINAL_SETTLEMENTS:
         return prior
     state = from_receipt(db, run, row, receipt)
-    if state['status'] not in ('RESOLVED', 'TERMS_CHANGED'):
-        return state
+    return record_resolution(db, run, row, state, evidence=evidence, observed_value=observed_value,
+                             official_outcome=official_outcome, reason=reason, official_receipt=official_receipt)
+
+
+def record_resolution(db, run, row, state, *, evidence=None, observed_value=None, official_outcome=None,
+                      reason=None, official_receipt=None):
+    from .trading import register_evidence
+    prior = result_of(db, row)
+    if prior and prior['status'] in events.FINAL_SETTLEMENTS:
+        return prior
     terms = row['payload']['terms']
-    status = 'VOID' if state['status'] == 'RESOLVED' and state.get('winner') is None else state['status']
+    status = state['status']
     end = millis(row['payload']['cutoff'])
-    if status in {'TERMS_CHANGED', 'VOID'}:
-        end = min(end, millis(receipt['observed_at']))
-    first, last = prospective_decisions(db, row, end)
-    result = {'forecast': forecast, 'status': status, 'platform': state, 'first_decision': first, 'last_decision': last}
-    refs = [theses.dependency(forecast), state['source']]
-    if status == 'RESOLVED':
+    if prior and prior.get('outcome_cutoff'):
+        end = min(end, millis(prior['outcome_cutoff']))
+    if status in {'RESOLVED', 'TERMS_CHANGED'}:
+        end = min(end, millis(state['updated_at']))
+    observation = {}
+    if status == 'RESOLVED' and state.get('winner') is None:
+        status = 'VOID'
+    if status not in {'VOID', 'TERMS_CHANGED'}:
         if official_receipt is not None:
             observed_value, official_outcome = events.binance_result(terms, official_receipt)
             evidence = register_evidence(db, run, **official_receipt)
             reason = 'Binance BTCUSDT terminal minute close and the published higher-bracket boundary rule.'
-        if evidence is None:
-            return {**result, 'status': 'AWAITING_OFFICIAL_SOURCE'}
-        if evidence.get('type') != 'BLOB' or official_outcome not in terms['outcomes']:
-            raise ValueError('cite the observed settlement source and its corresponding outcome label')
-        theses.source_index(db, [evidence], run['known_at'])
-        source = db.value(evidence['digest'].removeprefix('sha256:'))
-        if events.binance_close_url(terms) and events.binance_result(terms, source) != (observed_value, official_outcome):
-            raise ValueError('settlement differs from the exact terminal candle and bracket')
-        host = urlsplit(source.get('url', '')).hostname
-        hosts = {urlsplit(url).hostname for url in [terms['resolution_source'], *re.findall(r'https?://[^\s)]+', terms['rules'])]}
-        hosts.discard(None)
-        if hosts & {'www.binance.com', 'binance.com', 'api.binance.com'}:
-            hosts.update({'data-api.binance.vision', 'api.binance.com'})
-        if (not host or host not in hosts or not source.get('observed_at') or millis(source['observed_at']) < row['known_ms']
-                or plain(observed_value, 'actual settlement observation') not in source.get('content', '')):
-            raise ValueError('use a later original observation from the resolution source named in the contract')
-        result.update(official_source=evidence, observed_value=observed_value, official_outcome=official_outcome,
-                      reason=plain(reason, 'how the terms apply to this observation'),
-                      status='CONFIRMED' if official_outcome == state['winner'] else 'DISPUTED')
-        refs.append(evidence)
-        first, last = prospective_decisions(db, row, min(end, millis(source['observed_at'])))
-        result.update(first_decision=first, last_decision=last)
-        if result['status'] == 'CONFIRMED':
-            actual = int(official_outcome == row['payload']['outcome'])
-            result['last_brier'] = comparison_score(last, actual)
-            if (first and row['payload']['basis_mode'] == 'PRE_QUOTE'
-                    and Entities(db).get('REVIEW', first['review']['object_id'], version=1)['source_ref'] == row['source_ref']):
-                result['brier'] = comparison_score(first, actual, initial=row['payload']['probability'])
+        if evidence is not None:
+            observation = official_observation(db, run, row, evidence, observed_value, official_outcome, reason)
+        elif prior and prior.get('official_source'):
+            observation = official_observation(db, run, row, prior['official_source'], prior['observed_value'],
+                                               prior['official_outcome'], prior['reason'])
+        if observation:
+            end = min(end, millis(observation['official_observed_at']))
+        if status == 'RESOLVED':
+            if not observation:
+                status = 'AWAITING_OFFICIAL_SOURCE'
+            else:
+                status = 'CONFIRMED' if observation['official_outcome'] == state['winner'] else 'DISPUTED'
+        elif prior and prior['status'] == 'DISPUTED':
+            return prior
+        elif observation:
+            status = 'AWAITING_PLATFORM'
+        else:
+            return prior or state
+    if (prior and prior['status'] == status and prior.get('official_source') == observation.get('official_source')
+            and prior['platform'].get('winner') == state.get('winner')
+            and prior.get('outcome_cutoff') and millis(prior['outcome_cutoff']) == end):
+        return prior
+    first, last = prospective_decisions(db, row, end)
+    forecast = theses.reference(row)
+    result = {'forecast': forecast, 'status': status, 'platform': state, 'first_decision': first, 'last_decision': last,
+              'outcome_cutoff': stamp(datetime.fromtimestamp(end / 1000, timezone.utc)), **observation}
+    refs = [theses.dependency(forecast), state['source']]
+    if observation:
+        refs.append(observation['official_source'])
+    if status == 'CONFIRMED':
+        actual = int(observation['official_outcome'] == row['payload']['outcome'])
+        result['last_brier'] = comparison_score(last, actual)
+        if (first and row['payload']['basis_mode'] == 'PRE_QUOTE'
+                and Entities(db).get('REVIEW', first['review']['object_id'], version=1)['source_ref'] == row['source_ref']):
+            result['brier'] = comparison_score(first, actual, initial=row['payload']['probability'])
     for decision in (first, last):
         if decision and theses.dependency(decision['review']) not in refs:
             refs.append(theses.dependency(decision['review']))
-    disputed = result['status'] == 'DISPUTED'
-    review = theses.put(db, 'REVIEW', row['object_id'] + ('/dispute' if disputed else '/settlement'), result, refs,
-                        'Event settlement review', run, prior['review']['version'] if prior and disputed else 0)
+    suffix = '/settlement' if status in events.FINAL_SETTLEMENTS else '/dispute' if status == 'DISPUTED' else '/resolution'
+    object_id = row['object_id'] + suffix
+    version = prior['review']['version'] if prior and prior['review']['object_id'] == object_id else 0
+    review = theses.put(db, 'REVIEW', object_id, result, refs, 'Event settlement review', run, version)
     return {'review': theses.reference(review), **result}

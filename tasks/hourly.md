@@ -25,7 +25,7 @@
 
 使用 `{"method":"trading.<操作>","params":{...},"operation_id":"<原身份>"}` 提交写操作。读操作只需 method 及必要 params。服务端从原运行解析发布与权限绑定。角色提示、报告和业务方法采用实际职责描述。
 
-从 `pending_forecasts` 复核仍相关的原预测，结果到期后按原条款结算。与当下资产估值相关的政策、监管、经济、地缘或价格事件，可直接以 `trading.public {expectation_quote:{market_slug,outcome}}` 读市场双边报价并记录来源。检验系统预测能力时，从无赔率的题面先独立登记，再取同题报价。新证据出现时沿原 forecast 引用更新，说明哪一段预期变了、剩余影响和期限；在沿用公开市场或金额时也保存实质复核。详见[事前预测与市场定价](../skill/btc-core-strategy/references/decision-design.md#事前预测与市场定价)。
+从 `pending_forecasts` 复核仍相关的原预测，出现正式结果时按原条款登记，保留原期限。指定来源与平台先后公布时，先结束已知事件的预测，待另一方到齐再核结果，其他传导和价格判断继续复核。与当下资产估值相关的政策、监管、经济、地缘或价格事件，可直接以 `trading.public {expectation_quote:{market_slug,outcome}}` 读市场双边报价并记录来源。检验系统预测能力时，从无赔率的题面先独立登记，再取同题报价。新证据出现时沿原 forecast 引用更新，说明哪一段预期变了、剩余影响和期限；在沿用公开市场或金额时也保存实质复核。详见[事前预测与市场定价](../skill/btc-core-strategy/references/decision-design.md#事前预测与市场定价)。
 
 ## 研判与个人决定
 

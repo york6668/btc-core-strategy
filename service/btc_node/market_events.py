@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 GAMMA = 'https://gamma-api.polymarket.com'
+FINAL_SETTLEMENTS = {'CONFIRMED', 'VOID', 'TERMS_CHANGED'}
 
 
 def utc(value):
