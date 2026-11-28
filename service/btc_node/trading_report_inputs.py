@@ -63,6 +63,32 @@ def allocation_changes(base, edits, terms, basis, records, portfolio, *, correct
     return output
 
 
+def monthly_price_edits(base, edits, terms):
+    """Carry the chosen price evidence into the displayed decision; retire the previous stand-alone sentence."""
+    previous = (base or {}).get('modules', {}).get('allocation', {})
+    prior_terms = (base or {}).get('allocation_terms', {})
+    output = {}
+    for subject, term in terms.items():
+        anchor = term.get('price_basis') if term.get('kind') == 'MONTHLY' else None
+        text = edits.get(subject, previous.get(subject))
+        if not anchor or not isinstance(text, str):
+            continue
+        quote = anchor['quote']
+        old = prior_terms.get(subject, {}).get('price_basis', {}).get('quote')
+        paragraphs = text.split('\n\n')
+        if old and old != quote:
+            if old in paragraphs:
+                paragraphs.remove(old)
+            elif quote not in text and text.count(old) == 1:
+                paragraphs = text.replace(old, quote, 1).split('\n\n')
+        if quote not in '\n\n'.join(paragraphs):
+            paragraphs.insert(1 if paragraphs[0].startswith('**') else 0, quote)
+        amended = '\n\n'.join(paragraphs)
+        if amended != text:
+            output[subject] = amended
+    return output
+
+
 def _fields(source, names):
     return {name: source[name] for name in names if name in source}
 
@@ -237,7 +263,7 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'comparisons', 'runner_up_amount', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
+                                       'comparisons', 'runner_up_amount', 'price_basis', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         previous = plan.get('member_reviews', {}).get(subject, {})
         if previous.get('input_review'):

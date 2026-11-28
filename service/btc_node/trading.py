@@ -332,7 +332,7 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
     if absent:
         return {**state, 'status': 'NEEDS_REVIEW', 'changed_fact_sources': sorted(set(absent))}
     if (not frozen_display and policy['kind'] == 'MONTHLY' and payload['result']['decision'] != 'UNRESOLVED'
-            and 'runner_up_amount' not in payload['result']):
+            and not {'runner_up_amount', 'price_basis'} <= payload['result'].keys()):
         return {**state, 'status': 'NEEDS_REVIEW', 'review_monthly_alternatives': True}
     before = payload['market_inputs']
     live_conditions = any(key.startswith('valuation/') and value.get('conditions') for key, value in before.items())
@@ -353,6 +353,12 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
     missing = before.keys() - selected.keys()
     if missing:
         return {**state, 'status': 'NEEDS_REVIEW', 'missing_market_inputs': sorted(missing)}
+    anchor = payload['result'].get('price_basis') if policy['kind'] == 'MONTHLY' else None
+    if anchor and not frozen_display:
+        value = selected[anchor['valuation']]
+        if (anchor['quote'] not in (value.get('price_implication'), value.get('assessment'))
+                and anchor['quote'] not in value['basis']):
+            return {**state, 'status': 'NEEDS_REVIEW', 'changed_price_basis': anchor['valuation']}
     if selected != before:
         basis = fingerprint(encode(selected))
         if portfolio is None:
@@ -911,7 +917,7 @@ def report_allocation(records, status, base, edits):
     for subject, record in records.items():
         payload = record['payload']
         policy, choice = payload['policy'], payload['result']
-        terms[subject] = {key: choice[key] for key in ('decision', 'amount', 'month', 'runner_up_amount') if key in choice}
+        terms[subject] = {key: choice[key] for key in ('decision', 'amount', 'month', 'runner_up_amount', 'price_basis') if key in choice}
         terms[subject].update({key: policy[key] for key in ('kind', 'budget', 'currency') if key in policy})
         if policy['kind'] == 'MONTHLY':
             unit = policy['currency']
@@ -947,6 +953,8 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
     inputs = trading_decisions.market_inputs(db, market, at=run['known_at'])
     inputs.update({'valuation/' + name + '/basis': value for name, value in trading_decisions.product_valuations(public).items()
                    if 'basis' in value})
+    inputs.update({'valuation/' + name + '/price_implication': value['price_implication']
+                   for name, value in trading_decisions.product_valuations(public).items() if value.get('price_implication')})
     inputs.update(trading_public_report._thesis_sources(db, market))
     for name, text in trading_public_report.forecast_sources(public.get('event_comparisons', {})).items():
         inputs.setdefault(name, text)
@@ -969,7 +977,7 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
         if subject != trading_policy.POSITION_SUBJECT:
             result = record['payload']['result']
             basis['allocation.' + subject] = {key: result[key] for key in
-                ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone')
+                ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone', 'price_basis')
                 if key in result}
             if 'runner_up_amount' in result:
                 basis['allocation.' + subject]['runner_up'] = next(
@@ -1076,10 +1084,15 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         members, terms = report_allocation(records, status, base, allocation_edits)
         basis = report_basis(db, run, market, records, chosen, confirmations,
                              (portfolio or {}).get('payload', {}).get('member_reviews'))
+        from .trading_report_inputs import allocation_changes, monthly_price_edits
         if 'allocation' in changes:
-            from .trading_report_inputs import allocation_changes
             changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
                                                       correction=purpose == 'CORRECTION', assessed_at=assessed_at)
+        authored_allocation = dict(changes.get('allocation', {}))
+        monthly_edits = monthly_price_edits(base, authored_allocation, terms)
+        if monthly_edits:
+            changes.setdefault('allocation', {}).update(monthly_edits)
+            reviewed.difference_update('allocation.' + subject for subject in monthly_edits)
         market_end = market['payload']['result']['valid_until']
         expiries = {section + '.' + entry: market_end for section, (_, entries) in trading_report.SECTIONS.items()
                     for entry in entries}
@@ -1118,7 +1131,6 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         if missing:
             raise Conflict('update or explicitly review the unchanged text against revised inputs: ' + ', '.join(missing))
         before = base['modules']['allocation']
-        after = document['modules']['allocation']
         for subject, prior in base.get('allocation_terms', {}).items():
             if subject == trading_policy.POSITION_SUBJECT or subject not in terms or prior == terms[subject]:
                 continue
@@ -1127,7 +1139,7 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
             # A new month can legitimately keep the exact same wording and amounts.
             fields = ('decision', 'amount', 'budget', 'currency')
             different_terms = subject == 'cash' or any(prior.get(k) != terms[subject].get(k) for k in fields)
-            if different_terms and before.get(subject) == after.get(subject):
+            if different_terms and authored_allocation.get(subject, before.get(subject)) == before.get(subject):
                 raise Conflict('the changed action or monetary terms need an updated allocation entry: ' + subject)
     elif reviewed:
         raise ValueError('reviewed_unchanged applies only when reviewing an existing regular edition')

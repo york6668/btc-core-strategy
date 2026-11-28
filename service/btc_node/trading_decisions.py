@@ -269,6 +269,32 @@ def _monthly(result, judgement, budget):
         judgement['amount_basis'] = _text(result.get('amount_basis'), 'why a partial amount beats the full plan')
 
 
+def monthly_price_basis(selected, choice):
+    """Select the decisive economics from the product valuations actually adopted by this basket."""
+    valuations = {k: v for k, v in selected.items() if k.startswith('valuation/')}
+    source = choice.get('price_basis')
+    if isinstance(source, dict):
+        if set(source) != {'valuation', 'quote'}:
+            raise ValueError('price_basis cites the bound valuation and its economic sentence')
+        name, quote = source['valuation'], _text(source['quote'], 'economic sentence from the frozen valuation')
+    else:
+        name, quote = source, None
+        if name is None:
+            written = [k for k, v in valuations.items() if v.get('price_implication')]
+            if len(written) == 1:
+                name = written[0]
+            elif len(valuations) == 1:
+                name = next(iter(valuations))
+    if not isinstance(name, str) or name not in valuations:
+        raise ValueError('select the decisive bound valuation in price_basis, or cite {valuation,quote} from its basis')
+    value = valuations[name]
+    if quote is None:
+        quote = value.get('price_implication') or value['basis']
+    if quote not in (value.get('price_implication'), value.get('assessment')) and quote not in value['basis']:
+        raise ValueError('use the economic sentence from the selected frozen product valuation')
+    return {'valuation': name, 'quote': quote}
+
+
 def _monthly_window(policy, judgement, run):
     try:
         tz = ZoneInfo(_text(policy.get('calendar'), 'applicable planning calendar'))
@@ -349,7 +375,7 @@ def _valuation_observation(database, source, quote, basis):
 
 
 def _valuation(database, name, terms, condition_ids, evidence):
-    allowed = {'assessment', 'basis', 'reference', 'evidence', 'assets', 'value_zone', 'condition_ids'}
+    allowed = {'assessment', 'basis', 'reference', 'evidence', 'assets', 'value_zone', 'condition_ids', 'price_implication'}
     if not isinstance(terms, dict) or terms.keys() - allowed or 'reference' not in terms:
         raise ValueError('identify the factual value comparison for this product, or explicitly record reference=null')
     basis = _text(terms.get('basis'), 'the independent value comparison that supports this price judgement')
@@ -378,6 +404,8 @@ def _valuation(database, name, terms, condition_ids, evidence):
     item = {'assessment': _text(terms.get('assessment'), 'price attractiveness over the investment horizon'),
             'basis': basis, 'reference': reference,
             'evidence': sources, 'assets': sorted(set(a.strip() for a in assets))}
+    if 'price_implication' in terms:
+        item['price_implication'] = _text(terms['price_implication'], 'what this price requires and what remains at risk')
     if refs:
         item['condition_ids'] = sorted(refs)
     if 'value_zone' in terms:
@@ -434,7 +462,7 @@ def market_inputs(database, record, *, at, state=None):
                 check['outcome'] = (condition['review'] or {}).get('outcome')
                 checks[condition['id']] = (check, condition.get('review_ref'))
     for name, terms in valuations.items():
-        value = {key: terms[key] for key in ('assessment', 'basis', 'reference', 'assets', 'evidence', 'value_zone') if key in terms}
+        value = {key: terms[key] for key in ('assessment', 'basis', 'reference', 'assets', 'evidence', 'value_zone', 'price_implication') if key in terms}
         if 'condition_ids' in terms:
             value['conditions'] = {key: {**checks[key][0], 'review_ref': checks[key][1]}
                                    if 'evidence' in terms else checks[key][0] for key in terms['condition_ids']}
@@ -554,6 +582,8 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
             judgement['month'] = _monthly_window(policy, judgement, run)
         if kind == 'MONTHLY':
             _monthly(result, judgement, budget)
+            if choice != 'UNRESOLVED':
+                judgement['price_basis'] = monthly_price_basis(selected, result)
         else:
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':

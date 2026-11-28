@@ -145,7 +145,7 @@ MARKET_RESULT = {
 PERSONAL_RESULT = {
     **DECISION_RESULT,
     'description': DECISION_RESULT['description'] + ' Monthly baskets compare zero, the budget and feasible tranches. '
-                   'Give runner_up_amount and why the selected contribution beats it at current prices. '
+                   'Give runner_up_amount and why the selected amount beats it. For a monthly choice select price_basis by its bound valuation/key or {valuation,quote}. '
                    'DEFER selects zero with a review later in the same month; SKIP closes this month. '
                    'Only actionable contingencies have plan_steps[condition_id] '
                    '{outcome: SUPPORTED or REFUTED, action}; other conditions are for reassessment. For an existing-position short that may still be open, '

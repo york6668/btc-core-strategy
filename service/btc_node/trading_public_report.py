@@ -254,6 +254,8 @@ def _sources(db, market):
         sources['valuation/' + name] = terms['assessment']
         if 'basis' in terms:
             sources['valuation/' + name + '/basis'] = terms['basis']
+        if terms.get('price_implication'):
+            sources['valuation/' + name + '/price_implication'] = terms['price_implication']
         sources.setdefault('assessment/' + name, terms['assessment'])
     sources.update({'condition/' + c['id']: c['criterion'] for c in result['conditions']})
     sources.update(_thesis_sources(db, market))

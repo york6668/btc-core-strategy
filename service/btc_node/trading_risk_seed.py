@@ -92,6 +92,8 @@ def _choice_text(subject, record, scope):
             if candidate['amount'] == choice['runner_up_amount']:
                 parts.append('备选 ' + candidate['amount'] + ' ' + unit + '。' + candidate['reason'])
                 break
+    if choice.get('price_basis') and choice['price_basis']['quote'] not in choice['reason']:
+        parts.append(choice['price_basis']['quote'])
     for field in ('reason', 'amount_basis', 'opportunity_cost', 'gap'):
         if choice.get(field) and choice[field] not in parts:
             parts.append(choice[field])
