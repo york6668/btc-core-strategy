@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .codec import Conflict, millis
-from .trading_decisions import binding, product_valuations
+from .trading_decisions import binding, monthly_decision_text, product_valuations
 from .trading_policy import POSITION_SUBJECT
 
 
@@ -24,10 +24,18 @@ def _cash_components(terms):
 def allocation_changes(base, edits, terms, basis, records, portfolio, *, correction, assessed_at):
     """Apply edits to confirmed allocation text only where its own sources or scope warrant them."""
     from .trading_report import edit_item
-    if not base or not base['seeded']:
-        return edits
-    old_terms = base.get('allocation_terms', {})
+    edits = dict(edits)
     output = {}
+    prior_copy = (base or {}).get('modules', {}).get('allocation', {})
+    for subject, record in records.items():
+        paragraph = monthly_decision_text(record['payload']['result'])
+        if paragraph is not None:
+            if subject in edits or prior_copy.get(subject) != paragraph:
+                output[subject] = paragraph
+            edits.pop(subject, None)
+    if not base or not base['seeded']:
+        return {**edits, **output}
+    old_terms = base.get('allocation_terms', {})
     for subject, change in edits.items():
         prior = base['modules']['allocation'].get(subject)
         if prior is None or subject == POSITION_SUBJECT or change == prior:
@@ -237,9 +245,12 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'comparisons', 'runner_up_amount', 'price_basis', 'supporting_price_bases',
+                                       'comparisons', 'runner_up_amount', 'price_basis', 'supporting_price_bases', 'comparison_at_price',
                                        'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
+        paragraph = monthly_decision_text(choice)
+        if paragraph is not None:
+            member['decision_paragraph'] = paragraph
         previous = plan.get('member_reviews', {}).get(subject, {})
         if previous.get('input_review'):
             member['input_review'] = previous['input_review']

@@ -298,6 +298,51 @@ def monthly_price_bases(selected, choice):
     return list(anchors.values())
 
 
+def _return_percent(value):
+    try:
+        rate = Decimal(str(value))
+    except InvalidOperation as error:
+        raise ValueError('give a scenario total return in percent') from error
+    if not rate.is_finite() or rate < -100:
+        raise ValueError('a cash or unlevered spot scenario return must be finite and at least -100 percent')
+    return rate
+
+
+def _basket_comparison(raw, policy, judgement):
+    if not isinstance(raw, dict):
+        raise ValueError('compare the two amounts through the same next opportunity in comparison_at_price: '
+                         'give horizon, switch_when and, where measurable, cases with assumption, returns_pct and cash_pct')
+    comparison = {'horizon': _text(raw.get('horizon'), 'common comparison horizon'),
+                  'switch_when': _text(raw.get('switch_when'), 'reader-facing condition under which the other amount wins')}
+    cases = raw.get('cases', [])
+    if not isinstance(cases, list):
+        raise ValueError('cases must be a list of comparable scenarios')
+    weights = policy['inputs']['weights']
+    extra = abs(Decimal(judgement['amount']) - Decimal(judgement['runner_up_amount']))
+    for case in cases:
+        if not isinstance(case, dict) or not isinstance(case.get('returns_pct'), dict) or case['returns_pct'].keys() != weights.keys():
+            raise ValueError('each measured scenario needs total returns for the confirmed constituents, including assumed flat legs')
+        assumption = _text(case.get('assumption'), 'basis and assumptions of the scenario')
+        rates = {k: _return_percent(v) for k, v in case['returns_pct'].items()}
+        cash = _return_percent(case.get('cash_pct'))
+        basket = sum(Decimal(str(w)) * rates[k] for k, w in weights.items()) / 100
+        comparison.setdefault('cases', []).append({
+            'assumption': assumption, 'returns_pct': {k: _amount_text(v) for k, v in rates.items()},
+            'cash_pct': _amount_text(cash), 'more_invested_advantage': _amount_text(extra * (basket - cash) / 100)})
+    return comparison
+
+
+def monthly_decision_text(choice):
+    comparison = choice.get('comparison_at_price')
+    if not comparison:
+        return None
+    parts = [choice['reason']]
+    for sentence in (choice['opportunity_cost'], comparison['switch_when']):
+        if not any(sentence in part for part in parts):
+            parts.append(sentence)
+    return '\n\n'.join(parts)
+
+
 def _monthly_window(policy, judgement, run):
     try:
         tz = ZoneInfo(_text(policy.get('calendar'), 'applicable planning calendar'))
@@ -594,6 +639,9 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
                 judgement['price_basis'] = primary
                 if supporting:
                     judgement['supporting_price_bases'] = supporting
+                judgement['comparison_at_price'] = _basket_comparison(result.get('comparison_at_price'), policy, judgement)
+                from .trading_report import check_allocation_amounts
+                check_allocation_amounts(subject, monthly_decision_text(judgement), {**applied_policy, **judgement})
         else:
             _opportunity(judgement, policy, result, budget)
     if kind == 'POSITION':

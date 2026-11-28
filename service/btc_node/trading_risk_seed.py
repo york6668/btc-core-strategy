@@ -74,6 +74,9 @@ def _label(subject, policy, scoped):
 
 def _choice_text(subject, record, scope):
     policy, choice = record['payload']['policy'], record['payload']['result']
+    paragraph = trading_decisions.monthly_decision_text(choice)
+    if paragraph is not None:
+        return paragraph
     name = _label(subject, policy, scope.get(subject))
     decisions = {'CONTINUE': '继续', 'DEFER': '本轮暂缓，月内复核', 'SKIP': '本月跳过', 'PARTICIPATE': '参与', 'WAIT': '等待', 'AVOID': '回避',
                  'UNRESOLVED': '待复评', 'KEEP': '维持', 'REDUCE': '减持', 'EXIT': '退出', 'HEDGE': '对冲',

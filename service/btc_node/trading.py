@@ -333,7 +333,7 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
     if absent:
         return {**state, 'status': 'NEEDS_REVIEW', 'changed_fact_sources': sorted(set(absent))}
     if (not frozen_display and policy['kind'] == 'MONTHLY' and payload['result']['decision'] != 'UNRESOLVED'
-            and not {'runner_up_amount', 'price_basis'} <= payload['result'].keys()):
+            and not {'runner_up_amount', 'price_basis', 'comparison_at_price'} <= payload['result'].keys()):
         return {**state, 'status': 'NEEDS_REVIEW', 'review_monthly_alternatives': True}
     before = payload['market_inputs']
     live_conditions = any(key.startswith('valuation/') and value.get('conditions') for key, value in before.items())
@@ -982,7 +982,7 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
             result = record['payload']['result']
             basis['allocation.' + subject] = {key: result[key] for key in
                 ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone',
-                 'price_basis', 'supporting_price_bases')
+                 'price_basis', 'supporting_price_bases', 'comparison_at_price')
                 if key in result}
             if 'runner_up_amount' in result:
                 basis['allocation.' + subject]['runner_up'] = next(
@@ -1090,9 +1090,10 @@ def compose_report(db, run, release, target, refs, support, complete, params, *,
         basis = report_basis(db, run, market, records, chosen, confirmations,
                              (portfolio or {}).get('payload', {}).get('member_reviews'))
         from .trading_report_inputs import allocation_changes
-        if 'allocation' in changes:
-            changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
-                                                      correction=purpose == 'CORRECTION', assessed_at=assessed_at)
+        changes['allocation'] = allocation_changes(base, allocation_edits, terms, basis, records, portfolio,
+                                                  correction=purpose == 'CORRECTION', assessed_at=assessed_at)
+        reviewed.difference_update('allocation.' + subject for subject, record in records.items()
+                                   if subject in changes['allocation'] and record['payload']['result'].get('comparison_at_price'))
         market_end = market['payload']['result']['valid_until']
         expiries = {section + '.' + entry: market_end for section, (_, entries) in trading_report.SECTIONS.items()
                     for entry in entries}

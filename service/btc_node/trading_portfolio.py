@@ -138,7 +138,7 @@ def _followup(objects, original, at):
     saved = objects.get('REVIEW', key, as_of=at)
     result = original['payload']['result']
     return {'target': exact, 'object_id': key, 'record': decisions.binding(saved) if saved else None,
-            'expected': {k: result[k] for k in ('decision', 'reason', 'risk', 'opportunity_cost', 'comparisons',
+            'expected': {k: result[k] for k in ('decision', 'reason', 'risk', 'opportunity_cost', 'comparisons', 'comparison_at_price',
                                                 'direction_comparison', 'conditional_actions') if k in result},
             **(saved['payload'] if saved else {'confirmations': [], 'adoption': 'UNKNOWN', 'execution': 'UNKNOWN'})}
 

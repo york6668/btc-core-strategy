@@ -148,7 +148,12 @@ PERSONAL_RESULT = {
     **DECISION_RESULT,
     'description': DECISION_RESULT['description'] + ' Monthly baskets compare zero, the budget and feasible tranches. '
                    'Give runner_up_amount. Explain in reason why the weighted basket at this price beats that amount, '
-                   'what waiting costs and what would reverse the ranking. For resolved monthly choices, price_basis '
+                   'what waiting costs and what would reverse the ranking. Supply comparison_at_price={horizon,switch_when,cases?}. '
+                   'For each measurable case give assumption, returns_pct for all confirmed constituents, and cash_pct over the same horizon. '
+                   'The service computes the advantage of the larger amount from the actual weights. For a qualitative comparison '
+                   'explain the observable change that overcomes the weighted disadvantage. The monthly reader sees reason, '
+                   'opportunity_cost and switch_when directly: open with the group and chosen amount, include budget, runner-up and currency. '
+                   'For resolved monthly choices, price_basis '
                    'selects one or more bound valuation keys with price_implication. An explicit {valuation,quote} cites that exact judgement. '
                    'DEFER selects zero with a review later in the same month; SKIP closes this month. '
                    'Only actionable contingencies have plan_steps[condition_id] '
