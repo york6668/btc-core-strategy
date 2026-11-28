@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from . import market_events as events
@@ -63,17 +64,29 @@ def forecast_record(db, ref):
     return row
 
 
-def pending(db):
+def comparison_at(db, row, *, at=None, version=None):
+    record = Entities(db).get('REVIEW', row['object_id'] + '/comparison', as_of=at, version=version)
+    if not record or (at is not None and record['known_ms'] > millis(at)):
+        return None
+    return {**record['payload'], 'review': theses.reference(record)}
+
+
+def pending(db, at=None):
+    at = at or stamp()
     rows = db.rows("SELECT f.object_id FROM entities f LEFT JOIN entities r ON r.kind='REVIEW' "
-                   "AND r.object_id=CONCAT(f.object_id,'/settlement') WHERE f.kind='HYPOTHESIS' "
+                   "AND r.object_id=CONCAT(f.object_id,'/settlement') AND r.first_identified_ms<=%s "
+                   "WHERE f.kind='HYPOTHESIS' AND f.first_identified_ms<=%s "
                    "AND f.object_id LIKE %s AND r.entity_key IS NULL ORDER BY f.valid_until_ms,f.object_id",
-                   (PREFIX + '%',))
+                   (millis(at), millis(at), PREFIX + '%'))
     items = []
     for item in rows:
         row = Entities(db).get('HYPOTHESIS', item['object_id'])
         data = row['payload']
+        last = comparison_at(db, row, at=at)
         items.append({'forecast': theses.reference(row), 'slug': data['terms']['slug'], 'outcome': data['outcome'],
-                      'cutoff': data['cutoff'], 'prediction': data['prediction'], 'basis_mode': data['basis_mode']})
+                      'cutoff': data['cutoff'], 'prediction': data['prediction'], 'basis_mode': data['basis_mode'],
+                      'latest_decision': last and {'review': last['review'], **{
+                          k: last['comparison'][k] for k in ('assessed_at', 'conclusion', 'probability')}}})
     return items
 
 
@@ -83,6 +96,19 @@ def save_run(db, run, snapshot, row, entry):
     entries[row['payload']['terms']['slug']] = entry
     db.metadata(material_key(run['ref']), {**snapshot, 'event_forecasts': entries}, write=True)
     return entry
+
+
+def odds_exposed(db, terms, evidence):
+    subjects = [terms['condition_id'], *('event.' + i for i in terms['event_ids'])]
+    if any(db.metadata('trading.forecast.seen.' + k) for k in subjects):
+        return True
+    for ref in evidence:
+        if ref['type'] == 'BLOB':
+            stored = db.value(ref['digest'].removeprefix('sha256:'))
+            host = urlsplit(stored.get('url', '')).hostname if isinstance(stored, dict) else None
+            if host and (host == 'polymarket.com' or host.endswith('.polymarket.com')):
+                return True
+    return False
 
 
 def register(db, run, snapshot, *, terms, outcome, prediction, basis, invalidation, evidence, seen_odds,
@@ -100,14 +126,7 @@ def register(db, run, snapshot, *, terms, outcome, prediction, basis, invalidati
     if not millis(run['known_at']) < millis(deadline) <= millis(terms['end_at']):
         raise ValueError('the forecast must precede the effective outcome cutoff')
     theses.source_index(db, evidence, run['known_at'])
-    subjects = [terms['condition_id'], *('event.' + i for i in terms['event_ids'])]
-    seen_odds = seen_odds or any(db.metadata('trading.forecast.seen.' + k) for k in subjects)
-    for ref in evidence:
-        if ref['type'] == 'BLOB':
-            stored = db.value(ref['digest'].removeprefix('sha256:'))
-            host = urlsplit(stored.get('url', '')).hostname if isinstance(stored, dict) else None
-            if host and (host == 'polymarket.com' or host.endswith('.polymarket.com')):
-                seen_odds = True
+    seen_odds = seen_odds or odds_exposed(db, terms, evidence)
     row_id = PREFIX + terms['condition_id']
     existing = Entities(db).get('HYPOTHESIS', row_id)
     data = {'terms': terms, 'outcome': outcome, 'prediction': plain(prediction, 'initial prediction'),
@@ -131,35 +150,59 @@ def register(db, run, snapshot, *, terms, outcome, prediction, basis, invalidati
     return save_run(db, run, snapshot, row, entry)
 
 
-def detail(db, snapshot, ref):
+def detail(db, snapshot, ref, at, comparison_version=None):
     row = forecast_record(db, ref)
+    if row['known_ms'] > millis(at):
+        raise Conflict('this prediction was not yet known at the assessment time')
+    if comparison_version is not None and (type(comparison_version) is not int or comparison_version < 1):
+        raise ValueError('comparison_version must be a positive version number')
+    selected = comparison_at(db, row, at=at, version=comparison_version)
+    if comparison_version is not None and not selected:
+        raise ValueError('comparison version is unavailable at this assessment time')
+    settlement = result_of(db, row, at=at)
+    if comparison_version is None and settlement:
+        selected = settlement['last_decision']
     return {'forecast': ref, 'registered_at': row['known_ms'], **row['payload'],
             'this_run': snapshot.get('event_forecasts', {}).get(row['payload']['terms']['slug'], {}),
-            'settlement': result_of(db, row)}
+            'comparison': selected, 'settlement': settlement}
 
 
-def result_of(db, row):
+def result_of(db, row, *, at=None):
     objects = Entities(db)
-    review = objects.get('REVIEW', row['object_id'] + '/settlement') or objects.get('REVIEW', row['object_id'] + '/dispute')
-    return {'review': theses.reference(review), **review['payload']} if review else None
+    review = (objects.get('REVIEW', row['object_id'] + '/settlement', as_of=at)
+              or objects.get('REVIEW', row['object_id'] + '/dispute', as_of=at))
+    if review:
+        result = dict(review['payload'])
+        # Earlier releases stored just the first comparison. Keep its actual clock and provenance.
+        if 'last_decision' not in result:
+            last = comparison_at(db, row, at=at, version=1) if result.get('first_decision') else None
+            end = millis(row['payload']['cutoff'])
+            if result.get('official_source'):
+                source = db.value(result['official_source']['digest'].removeprefix('sha256:'))
+                end = min(end, millis(source['observed_at']))
+            result['last_decision'] = last if last and millis(last['comparison']['assessed_at']) < end else None
+            if result['last_decision'] and result.get('brier'):
+                result['last_brier'] = {k: result['brier'][k] for k in ('final', 'market_midpoint')}
+        return {'review': theses.reference(review), **result}
 
 
-def history(db, *, after='', limit=50):
+def history(db, *, after='', limit=50, at=None):
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError('use a history page of 1 to 100 closed forecasts')
+    at = at or stamp()
     rows = db.rows("SELECT f.object_id FROM entities f JOIN entities r ON r.kind='REVIEW' "
                    "AND r.object_id=CONCAT(f.object_id,'/settlement') WHERE f.kind='HYPOTHESIS' "
-                   "AND f.object_id LIKE %s AND f.object_id>%s ORDER BY f.object_id LIMIT %s",
-                   (PREFIX + '%', after, limit + 1))
+                   "AND r.first_identified_ms<=%s AND f.object_id LIKE %s AND f.object_id>%s ORDER BY f.object_id LIMIT %s",
+                   (millis(at), PREFIX + '%', after, limit + 1))
     records = []
     for item in rows[:limit]:
         forecast = Entities(db).get('HYPOTHESIS', item['object_id'])
         decision = forecast['payload']
-        review = result_of(db, forecast)
+        review = result_of(db, forecast, at=at)
         records.append({'forecast': theses.reference(forecast), 'slug': decision['terms']['slug'],
                         'event_ids': decision['terms']['event_ids'], 'cutoff': decision['cutoff'],
                         'basis_mode': decision['basis_mode'], 'review': review['review'],
-                        'status': review['status'], 'brier': review.get('brier')})
+                        'status': review['status'], 'brier': review.get('brier'), 'last_brier': review.get('last_brier')})
     return {'records': records, 'next_after': rows[limit-1]['object_id'] if len(rows) > limit else None}
 
 
@@ -175,8 +218,15 @@ def from_receipt(db, run, row, receipt):
     if events.utc(receipt['retrieved_at']) <= events.utc(row['payload']['registered_at']):
         raise ValueError('use a retrieval made after forecast registration')
     source = register_evidence(db, run, **receipt)
-    if events.terms(raw) != expected:
-        return {'status': 'TERMS_CHANGED', 'source': source}
+    current = events.terms(raw)
+    # Parent group membership is useful for identifying related forecasts. It is not a settlement term.
+    changes = {}
+    for key in ('question', 'rules', 'end_at', 'outcomes', 'resolution_source', 'bracket'):
+        old, new = expected[key], current[key]
+        if old != new and not (isinstance(old, str) and isinstance(new, str) and old.split() == new.split()):
+            changes[key] = {'original': old, 'current': new}
+    if changes:
+        return {'status': 'TERMS_CHANGED', 'source': source, 'changes': changes}
     quote = events.pricing(raw, row['payload']['outcome'], receipt['retrieved_at'])
     return {**quote, 'source': source, 'updated_at': receipt['observed_at'], 'retrieved_at': receipt['retrieved_at']}
 
@@ -199,49 +249,93 @@ def quote(db, run, snapshot, *, forecast, receipt=None, failure=None):
     return save_run(db, run, snapshot, row, {**entry, 'quote': data})
 
 
-def adjudicate(db, run, snapshot, submitted):
+def adjudicate(db, run, snapshot, submitted, evidence):
     from .trading import plain
-    entries = snapshot.get('event_forecasts', {})
-    if not isinstance(submitted, dict) or submitted.keys() != entries.keys():
-        raise ValueError('conclude each event forecast opened in this public assessment')
+    entries = dict(snapshot.get('event_forecasts', {}))
+    if not isinstance(submitted, dict):
+        raise ValueError('key the event comparisons by their original market slugs')
+    for slug, answer in submitted.items():
+        if isinstance(answer, dict) and 'forecast' in answer:
+            entry = entries.setdefault(slug, {'forecast': answer['forecast']})
+            if entry['forecast'] != answer['forecast']:
+                raise ValueError('this comparison names a different forecast')
+        elif slug not in entries:
+            raise ValueError('cite the original forecast when revising without a fresh quote')
     comparisons, dependencies = {}, []
     for slug, entry in entries.items():
-        answer = submitted[slug]
-        if not isinstance(answer, dict) or type(answer.get('same_information')) is not bool:
-            raise ValueError('assess whether the two forecasts used a comparable information window')
         row = forecast_record(db, entry['forecast'])
         original = row['payload']
+        if original['terms']['slug'] != slug or row['known_ms'] > millis(run['known_at']):
+            raise ValueError('use the known forecast for the same question')
         side = entry.get('quote', {'status': 'UNAVAILABLE'})
-        comparable = (answer['same_information'] and side['status'] == 'QUOTED'
-                      and millis(run['known_at']) < millis(original['cutoff']))
-        comparison = {'forecast': entry['forecast'], 'basis_mode': original['basis_mode'],
+        if (millis(run['known_at']) >= millis(original['cutoff']) or result_of(db, row)
+                or side['status'] in {'PENDING', 'RESOLVED', 'TERMS_CHANGED', 'AFTER_CUTOFF'}):
+            continue  # Keep the retrieval, never turn an outcome or expired question into a new forecast.
+        answer = submitted.get(slug)
+        if not isinstance(answer, dict) or type(answer.get('same_information')) is not bool:
+            raise ValueError('conclude each open forecast and assess whether the information windows match')
+        sources = answer.get('evidence', evidence)
+        theses.source_index(db, sources, run['known_at'])
+        comparable = answer['same_information'] and side['status'] == 'QUOTED'
+        exposed = side.get('bid') is not None or odds_exposed(db, original['terms'], sources)
+        comparison = {'forecast': entry['forecast'], 'initial_basis_mode': original['basis_mode'],
+                      'basis_mode': 'MARKET_AWARE' if exposed else original['basis_mode'],
+                      'evidence': sources,
                       'quote': side, 'same_information': answer['same_information'],
                       'comparable': comparable, 'assessed_at': run['known_at'], 'probability': interval(answer.get('probability')),
                       'conclusion': plain(answer.get('conclusion'), 'final event forecast'),
                       'reason': plain(answer.get('reason'), 'what the comparison changes or preserves')}
-        probability = original['probability']
-        if comparable and probability:
-            low, high = map(events.price, probability)
-            comparison['relative_to_quote'] = ('BELOW' if high < events.price(side['bid']) else
-                                               'ABOVE' if low > events.price(side['ask']) else 'OVERLAP')
+        if comparable:
+            probabilities = {'revised_relative_to_quote': comparison['probability']}
+            if row['source_ref'] == run['ref']:
+                probabilities['relative_to_quote'] = original['probability']
+            for key, probability in probabilities.items():
+                if probability:
+                    low, high = map(events.price, probability)
+                    comparison[key] = ('BELOW' if high < events.price(side['bid']) else
+                                       'ABOVE' if low > events.price(side['ask']) else 'OVERLAP')
         comparisons[slug] = comparison
         dependencies.append(theses.dependency(entry['forecast']))
+        dependencies.extend(ref for ref in sources if ref not in dependencies)
         if side.get('source'):
             dependencies.append(side['source'])
     return comparisons, dependencies
 
 
-def save_first_decisions(db, run, market, comparisons):
-    # A fresh comparison can support retaining the existing market decision.
+def save_decisions(db, run, market, comparisons):
     for comparison in comparisons.values():
         forecast = comparison['forecast']
-        subject = forecast['object_id'] + '/comparison'
-        if not Entities(db).get('REVIEW', subject):
-            refs = [theses.dependency(forecast), theses.dependency(market)]
-            if comparison['quote'].get('source'):
-                refs.append(comparison['quote']['source'])
-            theses.put(db, 'REVIEW', subject, {'market': market, 'comparison': comparison}, refs,
-                       'First public decision after the event forecast', run, 0)
+        prior = comparison_at(db, forecast)
+        refs = [theses.dependency(forecast), theses.dependency(market), *comparison['evidence']]
+        quote_source = comparison['quote'].get('source')
+        if quote_source and quote_source not in refs:
+            refs.append(quote_source)
+        payload = {'market': market, 'comparison': comparison}
+        if prior:
+            payload['previous'] = prior['review']
+        theses.put(db, 'REVIEW', forecast['object_id'] + '/comparison', payload, refs,
+                   comparison['reason'], run, prior['review']['version'] if prior else 0)
+
+
+def prospective_decisions(db, row, end):
+    # Knowledge times are stored in milliseconds. A judgement at the first knowable instant is too late.
+    before = datetime.fromtimestamp((end - 1) / 1000, timezone.utc)
+    return (comparison_at(db, row, at=before, version=1), comparison_at(db, row, at=before))
+
+
+def comparison_score(decision, actual, *, initial=None):
+    if not decision or not decision['comparison']['comparable']:
+        return None
+    comparison = decision['comparison']
+    scores = {}
+    for key, probability in (('initial', initial), ('final', comparison['probability'])):
+        if probability and probability[0] == probability[1]:
+            scores[key] = str((events.price(probability[0]) - actual) ** 2)
+    if not scores:
+        return None
+    quote = comparison['quote']
+    midpoint = (events.price(quote['bid']) + events.price(quote['ask'])) / 2
+    return {**scores, 'market_midpoint': str((midpoint - actual) ** 2)}
 
 
 def settle(db, run, snapshot, *, forecast, receipt, evidence=None, observed_value=None, official_outcome=None, reason=None,
@@ -258,8 +352,11 @@ def settle(db, run, snapshot, *, forecast, receipt, evidence=None, observed_valu
         return state
     terms = row['payload']['terms']
     status = 'VOID' if state['status'] == 'RESOLVED' and state.get('winner') is None else state['status']
-    first = Entities(db).get('REVIEW', row['object_id'] + '/comparison')
-    result = {'forecast': forecast, 'status': status, 'platform': state, 'first_decision': first and first['payload']}
+    end = millis(row['payload']['cutoff'])
+    if status in {'TERMS_CHANGED', 'VOID'}:
+        end = min(end, millis(receipt['observed_at']))
+    first, last = prospective_decisions(db, row, end)
+    result = {'forecast': forecast, 'status': status, 'platform': state, 'first_decision': first, 'last_decision': last}
     refs = [theses.dependency(forecast), state['source']]
     if status == 'RESOLVED':
         if official_receipt is not None:
@@ -286,18 +383,17 @@ def settle(db, run, snapshot, *, forecast, receipt, evidence=None, observed_valu
                       reason=plain(reason, 'how the terms apply to this observation'),
                       status='CONFIRMED' if official_outcome == state['winner'] else 'DISPUTED')
         refs.append(evidence)
-        decision = result['first_decision']
-        if decision and result['status'] == 'CONFIRMED' and row['payload']['basis_mode'] == 'PRE_QUOTE':
-            c = decision['comparison']
-            initial, final = row['payload']['probability'], c['probability']
-            if (c['comparable'] and millis(source['observed_at']) >= millis(c['assessed_at'])
-                    and initial and initial[0] == initial[1] and final and final[0] == final[1]):
-                actual = int(official_outcome == row['payload']['outcome'])
-                mid = (events.price(c['quote']['bid']) + events.price(c['quote']['ask'])) / 2
-                result['brier'] = {k: str((p - actual) ** 2) for k, p in (
-                    ('initial', events.price(initial[0])), ('market_midpoint', mid), ('final', events.price(final[0])))}
-    if result['first_decision']:
-        refs.append(theses.dependency(result['first_decision']['market']))
+        first, last = prospective_decisions(db, row, min(end, millis(source['observed_at'])))
+        result.update(first_decision=first, last_decision=last)
+        if result['status'] == 'CONFIRMED':
+            actual = int(official_outcome == row['payload']['outcome'])
+            result['last_brier'] = comparison_score(last, actual)
+            if (first and row['payload']['basis_mode'] == 'PRE_QUOTE'
+                    and Entities(db).get('REVIEW', first['review']['object_id'], version=1)['source_ref'] == row['source_ref']):
+                result['brier'] = comparison_score(first, actual, initial=row['payload']['probability'])
+    for decision in (first, last):
+        if decision and theses.dependency(decision['review']) not in refs:
+            refs.append(theses.dependency(decision['review']))
     disputed = result['status'] == 'DISPUTED'
     review = theses.put(db, 'REVIEW', row['object_id'] + ('/dispute' if disputed else '/settlement'), result, refs,
                         'Event settlement review', run, prior['review']['version'] if prior and disputed else 0)

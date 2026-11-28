@@ -141,7 +141,7 @@ def public_context(db, run):
             'limitations': market['limitations'], 'current_market': current,
             'auxiliary': db.value(snapshot['auxiliary']), 'auxiliary_evidence': {'type': 'BLOB', 'digest': snapshot['auxiliary']},
             'review': review, 'review_targets': targets, 'theses': trading_theses.context(db, current, as_of), 'archive': archive,
-            'research': research_records(db, 'PUBLIC'), 'pending_forecasts': trading_forecasts.pending(db),
+            'research': research_records(db, 'PUBLIC'), 'pending_forecasts': trading_forecasts.pending(db, as_of if binding else run['known_at']),
             'event_forecasts': snapshot.get('event_forecasts', {})}
 
 
@@ -204,7 +204,7 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
         raise Conflict('event comparisons belong to the independent public decision')
     comparisons, extra_refs = ({}, [])
     if independent:
-        comparisons, extra_refs = trading_forecasts.adjudicate(db, run, snapshot, forecast_comparisons or {})
+        comparisons, extra_refs = trading_forecasts.adjudicate(db, run, snapshot, forecast_comparisons or {}, refs)
         refs = [*refs, *(ref for ref in extra_refs if ref not in refs)]
     if result is not None:
         updated = trading_theses.revisions(db, current, result.get('theses', {}), checks, refs, run)
@@ -222,7 +222,7 @@ def market_ready(db, run, *, evidence, market=None, expected_version=None, resul
     review = {'reason': reason, 'evidence': refs}
     if independent:
         if comparisons:
-            trading_forecasts.save_first_decisions(db, run, bound, comparisons)
+            trading_forecasts.save_decisions(db, run, bound, comparisons)
             review['event_comparisons'] = comparisons
         review.update(public_market=bound, assessed_at=run['known_at'], mode='ADOPT' if result is not None else 'REUSE')
         trading_theses.hourly(db, original, trading_theses.bindings(record), checks, refs, run,
@@ -331,6 +331,9 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
                   if files.get(name, {}).get('digest') != digest)
     if absent:
         return {**state, 'status': 'NEEDS_REVIEW', 'changed_fact_sources': sorted(set(absent))}
+    if (not frozen_display and policy['kind'] == 'MONTHLY' and payload['result']['decision'] != 'UNRESOLVED'
+            and 'runner_up_amount' not in payload['result']):
+        return {**state, 'status': 'NEEDS_REVIEW', 'review_monthly_alternatives': True}
     before = payload['market_inputs']
     live_conditions = any(key.startswith('valuation/') and value.get('conditions') for key, value in before.items())
     spot = policy['kind'] in {'MONTHLY', 'OPPORTUNITY'}
@@ -658,11 +661,14 @@ def invoke(db, method, params):
                      'forecast_settle': trading_forecasts.settle}[action]
         return operation(db, run, material(db, run), **params)
     if action == 'public':
-        if 'forecast_history' in params:
-            material(db, run)
-            return trading_forecasts.history(db, **params['forecast_history'])
-        if 'forecast' in params:
-            return trading_forecasts.detail(db, material(db, run), params['forecast'])
+        if 'forecast_history' in params or 'forecast' in params or 'comparison_version' in params:
+            snapshot = material(db, run)
+            at = snapshot.get('market_review', {}).get('assessed_at') or run['known_at']
+            if 'forecast_history' in params:
+                return trading_forecasts.history(db, at=at, **params['forecast_history'])
+            if 'forecast' not in params:
+                raise ValueError('comparison_version requires the original forecast')
+            return trading_forecasts.detail(db, snapshot, params['forecast'], at, params.get('comparison_version'))
         if 'thesis_history' in params:
             snapshot = material(db, run)
             cutoff = (snapshot.get('market_review', {}).get('assessed_at') or snapshot.get('thesis_recap_at')
@@ -905,7 +911,7 @@ def report_allocation(records, status, base, edits):
     for subject, record in records.items():
         payload = record['payload']
         policy, choice = payload['policy'], payload['result']
-        terms[subject] = {key: choice[key] for key in ('decision', 'amount', 'month') if key in choice}
+        terms[subject] = {key: choice[key] for key in ('decision', 'amount', 'month', 'runner_up_amount') if key in choice}
         terms[subject].update({key: policy[key] for key in ('kind', 'budget', 'currency') if key in policy})
         if policy['kind'] == 'MONTHLY':
             unit = policy['currency']
@@ -965,6 +971,9 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
             basis['allocation.' + subject] = {key: result[key] for key in
                 ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone')
                 if key in result}
+            if 'runner_up_amount' in result:
+                basis['allocation.' + subject]['runner_up'] = next(
+                    item for item in result['comparisons'] if item['amount'] == result['runner_up_amount'])
             review = (member_reviews or {}).get(subject, {}).get('input_review')
             if review:
                 basis['allocation.' + subject]['input_review'] = review

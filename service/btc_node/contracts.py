@@ -133,7 +133,9 @@ DECISION_RESULT = {
 }
 MARKET_RESULT = {
     **DECISION_RESULT,
-    'description': DECISION_RESULT['description'] + ' Write each product valuation once in valuations[name] with '
+    'description': DECISION_RESULT['description'] + ' Distinguish the event, its transmission and what the current '
+                   'asset price implies. Account for overlapping cash-flow or discount-rate effects once. '
+                   'Write each product valuation once in valuations[name] with '
                    'assessment (current-price judgement), basis (independent value comparison and downside), '
                    'evidence (exact references from this market), optional assets (defaults to name), value_zone '
                    'and condition_ids. Include reference={source,quote}, with the observed datum in both the frozen source and basis. '
@@ -142,7 +144,10 @@ MARKET_RESULT = {
 }
 PERSONAL_RESULT = {
     **DECISION_RESULT,
-    'description': DECISION_RESULT['description'] + ' Only actionable contingencies have plan_steps[condition_id] '
+    'description': DECISION_RESULT['description'] + ' Monthly baskets compare zero, the budget and feasible tranches. '
+                   'Give runner_up_amount and why the selected contribution beats it at current prices. '
+                   'DEFER selects zero with a review later in the same month; SKIP closes this month. '
+                   'Only actionable contingencies have plan_steps[condition_id] '
                    '{outcome: SUPPORTED or REFUTED, action}; other conditions are for reassessment. For an existing-position short that may still be open, '
                    'give the economic basis for REDUCE, KEEP and INCREASE in direction_comparison.',
 }
@@ -156,7 +161,7 @@ PERSONAL_DECISION_FIELDS = (
 )
 TRADING_FIELDS = {
     'open': ({'market': OBJECT}, ['market']),
-    'public': ({'condition': CONDITION_LOOKUP, 'forecast': OBJECT, 'forecast_history': obj({'after': TEXT, 'limit': VERSION}),
+    'public': ({'condition': CONDITION_LOOKUP, 'forecast': OBJECT, 'comparison_version': VERSION, 'forecast_history': obj({'after': TEXT, 'limit': VERSION}),
                 'thesis_history': obj(
         {'key': TEXT, 'version': VERSION, 'as_of': TIME, 'after': VERSION,
          'stream': {'type': 'string', 'enum': ['THESES', 'REVIEWS', 'RECAPS']},
@@ -178,7 +183,10 @@ TRADING_FIELDS = {
     'evidence': ({'source': TEXT, 'url': TEXT, 'observed_at': TIME, 'retrieved_at': TIME, 'content': TEXT},
                  ['source', 'url', 'observed_at', 'retrieved_at', 'content']),
     'market': ({'evidence': OBJECTS, 'result': MARKET_RESULT, 'expected_version': VERSION,
-                'market': OBJECT, 'reason': TEXT, 'thesis_reviews': OBJECT, 'forecast_comparisons': OBJECT,
+                'market': OBJECT, 'reason': TEXT, 'thesis_reviews': OBJECT,
+                'forecast_comparisons': {'type': 'object', 'description': 'Per market slug give conclusion, reason, '
+                    'same_information and optional probability and evidence. Supply its original forecast reference '
+                    'to revise on new evidence without taking a quote.'},
                 'notification': OBJECT, 'public_copy': OBJECT}, ['evidence']),
     'forecast': ({'terms': OBJECT, 'outcome': TEXT, 'prediction': TEXT, 'basis': TEXT, 'invalidation': TEXT,
                   'seen_odds': {'type': 'boolean'}, 'evidence': OBJECTS, 'cutoff': TIME, 'probability': {'type': 'array'}},

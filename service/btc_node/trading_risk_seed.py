@@ -75,7 +75,7 @@ def _label(subject, policy, scoped):
 def _choice_text(subject, record, scope):
     policy, choice = record['payload']['policy'], record['payload']['result']
     name = _label(subject, policy, scope.get(subject))
-    decisions = {'CONTINUE': '继续', 'SKIP': '跳过', 'PARTICIPATE': '参与', 'WAIT': '等待', 'AVOID': '回避',
+    decisions = {'CONTINUE': '继续', 'DEFER': '本轮暂缓，月内复核', 'SKIP': '本月跳过', 'PARTICIPATE': '参与', 'WAIT': '等待', 'AVOID': '回避',
                  'UNRESOLVED': '待复评', 'KEEP': '维持', 'REDUCE': '减持', 'EXIT': '退出', 'HEDGE': '对冲',
                  'NO_POSITION': '未持有'}
     selection = decisions.get(choice['decision'], choice['decision'])
@@ -87,7 +87,12 @@ def _choice_text(subject, record, scope):
     if 'amount' in choice:
         amount = choice['amount']
         parts.append(('本次计划 ' + amount + ' ' + unit + '。') if amount is not None else '本次金额待核定。')
-    for field in ('reason', 'amount_basis', 'gap'):
+    if choice.get('runner_up_amount') is not None:
+        for candidate in choice['comparisons']:
+            if candidate['amount'] == choice['runner_up_amount']:
+                parts.append('备选 ' + candidate['amount'] + ' ' + unit + '。' + candidate['reason'])
+                break
+    for field in ('reason', 'amount_basis', 'opportunity_cost', 'gap'):
         if choice.get(field) and choice[field] not in parts:
             parts.append(choice[field])
     return ' '.join(parts)

@@ -37,14 +37,16 @@ BTC 的链上已实现市值与供应量可估计持有人上次转移的成本�
 
 ## 事前预测与市场定价
 
-优先选择会改变市场情景、现价投入价值或原有保护需求的问题。题目绑定标的、计价产品、时间、触及或收盘、区间边界及实际结算源。以当时可知的基本面、现货需求、供给、估值和适用的期权价格形成自己的预期，记录决定性理由和反证。有可复算的同口径基准才给概率，方向性判断也能支持具体资金安排。利率事件要再验证传导到资产的渠道。机构的成交意图需另有归属证据。[预测竞赛的同题检验](https://pubsonline.informs.org/doi/10.1287/mnsc.2015.2374)与[Cboe 的真实头寸复核](https://www.cboe.com/insights/posts/volatility-insights-evaluating-the-market-impact-of-spx-0-dte-options/)说明这两类比较所需的数据。
+先把会分别对错的判断拆开，如事件发生、影响持续期、盈利或需求传导、当前价格的补偿。保留形成时可知的事实、可比历史、最强竞争解释、各自观察窗口和足以交换排序的证据。对照事件前后市场赔率、对应期限期货或期权以及资产自身价格。已进入贴现率、现金流或风险补偿的影响只计算一次；识别额外损失，也承认价格有时已经反应过度。按相关性选择政策、监管、经济、地缘或价格问题。用独立定价来源核股票或现货。
 
 - 经宿主 `btc-core trading` 使用 `trading.public {event_search:"…"}` 找相关事件，`trading.public {event_slug:"…"}` 只取原题与规则。BTC 日度价格事件通常可按美东日期查 `bitcoin-price-on-<英文月份>-<日>-<年>`。先从自己的现价判断选择值得比较的区间。不同日期、价格源、触价与终值各按自身命题核验。
 - 公开阶段按需取 `trading.public {options_expiry:"YYYY-MM-DD"}`。返回 Deribit BTC 反向期权每个到期日的持仓集中、25 Delta 看跌和看涨的双边隐含波动率、看跌减看涨的报价范围及原件引用。引用用每项 evidence 的 source。Delta 用实际 ticker，缺乏同侧包围报价时按已取得的范围判断。持仓观察对应源快照之前八小时。要量化变化，把上次同到期返回的整组 evidence 作为 previous_options 原样交回同一调用。程序按真实原件重算两次双边波动率差的变化范围及相同行权价的持仓变化，时间重叠的报价保留为单次观察。需要判断新增流向才读逐笔的主动方、大宗、组合标识和披露时点，限制对开平与身份的归因。[Deribit 口径](https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency)
 - `trading.forecast {market_slug,outcome,prediction,basis,invalidation,evidence,seen_odds}` 登记初判。outcome 是所评估的标签，可选 `probability:[下限,上限]`，点估计的两端相同。规则中的公告或结果可知时刻早于挂牌结束时传 `cutoff`。已看到同题赔率时如实给 seen_odds=true。原题原预测直接使用 pending_forecasts 中的 forecast 引用。宿主从 Gamma 提取题面；当轮来源、原预测及服务器登记时点保留在公开历史。
-- `trading.forecast_quote {forecast}` 在登记后从该具体合约读取并冻结原报价。公开阶段的 `trading.public {forecast}` 可读回本轮报价。接口的更新时间是源记录的更新时间。用买卖两侧、信息截止和规则判断可比性，盘口与系统区间重叠时只在新事实足以改变原判断的情况下修订。单边、宽价差、错期、已结算均按实际状态处理，跨资产的同一驱动只算一次。
-- 在同一次 `trading.market` 的顶层提交 `forecast_comparisons:{市场slug:{conclusion,reason,same_information,probability?}}`，覆盖本轮已开启的预测。写清分歧怎样影响原判断，缺报价时 same_information=false，仍给综合结论。新决定中的 `forecast/<市场slug>` 可供实际受影响的成员引用；估值继续引用标的自身的经济量。只核准沿用原市场时，比较留在这次独立复核。报告在原模块交代改变本人安排的原因。
-- 后续从 `pending_forecasts` 取原身份，调用 `trading.forecast_settle {forecast}`。币安美东正午 BTCUSDT 收盘区间按规则抓到期一分钟和平台正式结算，等于分界值归较高区间。其他合约须沿题面指定的一手来源用 `trading.evidence` 保存实际事后观测，再在 settle 传 `evidence,observed_value,official_outcome,reason`。未正式结算或两方不一致时继续追踪。原预测、第一份综合决定和结算分别可回读，同一题只计一次。只有信息可比且独立初判及终判都事前给过点概率，才用当时盘口中点和两项预测分别计算 Brier 误差。通过 trading.public {forecast_history:{limit,after?}} 分页读取已结算的原件与误差，同一事件的多个区间按其 event_ids 识别关联。单例用于核验该题结果，连续可比样本才用于评价预测表现。
+- 只读市场共识时使用 `trading.public {expectation_quote:{market_slug,outcome}}`，返回原题、买卖报价或实际状态、来源时间和证据，可直接引入 `trading.market`。比较变动时保留两个观察时点与当时信息集。检验自己时，登记后以 `trading.forecast_quote {forecast}` 取原报价；后来已见赔率的修订保留知价背景。单边、宽价差或条款改变只限制对应比较。
+- 在同一次 `trading.market` 顶层给仍在窗口内的预测提交 `forecast_comparisons:{市场slug:{conclusion,reason,same_information,probability?,evidence?,forecast?}}`。reason 说明哪些证据增强、削弱或推翻哪条解释，影响的是概率、时间、传导还是价格补偿。指定本题证据时用公开引用，省略则采用本轮市场证据。只根据新事实修订时给原 forecast 引用和 same_information=false，可直接更新。新决定与沿用市场的实质复核都按同题续存。`trading.public {forecast}` 的 comparison 是最近一次，previous 指向上一版，用同一入口加 comparison_version 读原版本。金融赔率已变时，自身观点或组合金额都可以有理由维持。
+- 到期用 `trading.forecast_settle {forecast}`。币安正午区间按约定终局分钟和边界结算，其他题目从规则指定来源登记事后观察并提交 evidence、observed_value、official_outcome、reason。迟报等待原始披露，规则变化、取消和争议保留实际状态。first_decision 与 last_decision 分别保留首次对照和结果可知前的末次判断。brier 比较同信息窗口的点概率，last_brier 用末次判断自己的同时点盘口。区间和文字判断按原话复盘；通过 `trading.public {forecast_history:{limit,after?}}` 分页读取，同一题的修订只算一题，相关区间用 event_ids 识别。
+
+同一投资判断不同部分可分别到期。窗口已过就撤下过时的入场理由，有窗口内实证时核对兑现或时点落空，披露延迟时保留待核。哪条前提失效就重估依赖它的价值。事件已经兑现或价格提前到位时，以今天仍能取得的净收益决定是否继续投入或保留保护。随后追踪的新期限独立登记。预测竞赛中准确者常作渐进修订，决定性反证也可一次改判。伯克希尔对 Tesco 的减持和退出说明，数个可单独核实的经营变化可以共同推翻原判断。[预测修订研究](https://faculty.wharton.upenn.edu/wp-content/uploads/2022/03/1-s2.0-S0749597819300949-main.pdf) · [伯克希尔股东信](https://www.berkshirehathaway.com/letters/2014ltr.pdf)
 
 ## 再完成个人决定
 
@@ -92,7 +94,7 @@ BTC 的链上已实现市值与供应量可估计持有人上次转移的成本�
 
 现行 `trading.personal` 返回已采纳的组合及其成员，`trading.report` 引用确切市场、组合和所用成员版本。旧版 `decision_results`、`priorities` 和 `allocation_choice.exposure_decisions` 用于原结果查证。正文先交付独立市场判断，再表达组合选择、适用条件和改判依据。事实变化先重评依赖它的个人决定。
 
-月度方案适用时，正文直接交付每组本月继续还是跳过及其决定性理由，保留原预算、规划金额及改判条件。分批继续时说明为何选这个金额。完整月度方案说明留存，再接额外 BTC 和存量纪律。引用额外 BTC 计划时带上本轮金额。原保护性空单的常规正文采用该成员的本轮动作、决定性取舍和有据的改判条件。实际覆盖按已确认事实计入组合评估。若理由来自本轮匹配的个人适用性复核，引用该复核的确切结果。审阅以实际正文和对应的上游选择为准。
+月度方案适用时，正文直接交付各组本轮投入、暂缓或本月跳过，写清所选金额为何优于次选、等待代价及改判条件。保留原预算。完整月度方案说明留存，再接额外 BTC 和存量纪律。引用额外 BTC 计划时带上本轮金额。原保护性空单的常规正文采用该成员的本轮动作、决定性取舍和有据的改判条件。实际覆盖按已确认事实计入组合评估。若理由来自本轮匹配的个人适用性复核，引用该复核的确切结果。审阅以实际正文和对应的上游选择为准。
 
 报告以本轮真实评估时间起首，用简短加粗的完整结论领起自然段。每份都保留完整模块及其阅读顺序，依次覆盖核心结论与定价、未来 1–3 个月前瞻、机会与风险收益、配置持仓纪律、交叉验证与分歧、风险与失效应对。只替换本轮实质变更的内容，依据、期限及分歧须说明对相应判断的影响。模块内的段数按内容需要决定。
 

@@ -25,7 +25,25 @@ def event_request(release, method, params, operation, call, run_key):
         ready = call('trading.public', {})
         if not ready['ok']:
             return ready
-        if 'options_expiry' in params:
+        if 'expectation_quote' in params:
+            request = params['expectation_quote']
+            if not isinstance(request, dict) or set(request) != {'market_slug', 'outcome'}:
+                raise ValueError('expectation_quote needs the exact market_slug and outcome')
+            try:
+                source = events.receipt(request['market_slug'])
+                raw = json.loads(source['content'])
+                terms = events.terms(raw)
+            except (OSError, ValueError, KeyError) as error:
+                return {'ok': True, 'result': {'status': 'SOURCE_UNAVAILABLE', 'source': 'Polymarket Gamma',
+                                                'reason': str(error)}}
+            quote = events.pricing(raw, request['outcome'], source['retrieved_at'])
+            identity = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+            saved = call('trading.evidence', source, 'expectation:' + run_key + ':' + identity)
+            if not saved['ok']:
+                return saved
+            result = {**quote, 'terms': terms, 'outcome': request['outcome'], 'updated_at': source['observed_at'],
+                      'retrieved_at': source['retrieved_at'], 'evidence': saved['result']}
+        elif 'options_expiry' in params:
             import deribit_options
             try:
                 result, sources = deribit_options.collect(params['options_expiry'])
@@ -155,7 +173,7 @@ def request(config, run_id, arguments, stdin):
         return decode_node_response(response, operation)
 
     if (method in {'trading.forecast', 'trading.forecast_quote', 'trading.forecast_settle'} or
-            method == 'trading.public' and params.keys() & {'event_search', 'event_slug', 'options_expiry'}):
+            method == 'trading.public' and params.keys() & {'event_search', 'event_slug', 'expectation_quote', 'options_expiry'}):
         return event_request(release, method, params, value.get('operation_id'), call, key)
 
     if method == 'trading.open':

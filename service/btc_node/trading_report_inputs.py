@@ -237,7 +237,7 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         policy, choice = payload['policy'], payload['result']
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
-                                       'comparisons', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
+                                       'comparisons', 'runner_up_amount', 'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         previous = plan.get('member_reviews', {}).get(subject, {})
         if previous.get('input_review'):

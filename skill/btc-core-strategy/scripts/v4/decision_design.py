@@ -45,7 +45,7 @@ MONTHLY_PLAN_INSTRUCTIONS = (
 
 BASKET_PLAN_INSTRUCTIONS = (
     '保留analysis_scope及原short_position投影。组合数量、成员、权重、预算和用途按当期有效的已确认配置。'
-    '先对每个已确认组合回答本月继续还是跳过及其理由，再决定金额。长期定投以该组原计划为基准，'
+    '各组合按原计划比较本轮继续、暂缓或本月跳过，给出选定金额及相对次选的理由。'
     '比较全额、跳过和有实际依据的小额或分批。跳过须说明小额参与为何也不划算；'
     '继续但偏离原金额时须说明增减该笔资金的风险、放弃的收益和为什么选这个金额。'
     '使用同一冻结市场、相同期限、可比价格和各组有效权重，多组适用时先比较等额投入的组别风险收益，'
@@ -56,8 +56,8 @@ BASKET_PLAN_INSTRUCTIONS = (
     'monthly_plan包括month、currency、regular{baskets:[{symbols,target_amount,decision,amount,basis,amount_basis,'
     'change_condition,comparison_scope,comparison_amounts,evaluation_window_id}],deferred,basis}。'
     '每行对应一个原政策组。decision为CONTINUE时amount为正且不超过预算，低于预算时amount_basis说明选量依据，'
-    '足额时amount_basis为null。SKIP是本月跳过，amount为零。只有排序受真实缺口影响时才用UNRESOLVED，amount为null；'
-    'SKIP和UNRESOLVED的amount_basis为null。basis回答为什么，change_condition说明什么证据会改判。'
+    '足额时amount_basis为null。DEFER为本轮暂缓并在月内按change_condition复核，SKIP为本月跳过，两者amount均为零。'
+    '排序受真实缺口影响时用UNRESOLVED，amount为null。三者的amount_basis均为null。basis说明取舍及等待成本。'
     'comparison_scope引用该组的定投比较，comparison_amounts按候选ID写该组的可比方案金额，覆盖原预算及零投入，'
     '本轮金额与所选候选一致。evaluation_window_id引用该组独立的事前验证窗口。'
     '窗口记录可比行情起点、实际可核的后继过程、原计划、适用的等额对照和预期被支持或推翻的依据。'
@@ -499,12 +499,12 @@ def _validate_basket_decision(row, amount, target, comparison, planning):
     require(all(0 <= value <= target for value in amounts.values()) and {0, target} <= set(amounts.values()),
             'basket comparison must include its original plan and zero within its own budget')
     decision = row['decision']
-    require(decision in ('CONTINUE', 'SKIP', 'UNRESOLVED'), 'invalid current monthly basket decision')
+    require(decision in ('CONTINUE', 'DEFER', 'SKIP', 'UNRESOLVED'), 'invalid current monthly basket decision')
     ranked = comparison['ranking'] == 'RANKED'
     if decision == 'CONTINUE':
         require(ranked and amount is not None and amount > 0, 'continuing a basket needs a ranked positive plan')
-    elif decision == 'SKIP':
-        require(ranked and amount == 0, 'skipping a basket needs a ranked zero plan')
+    elif decision in ('DEFER', 'SKIP'):
+        require(ranked and amount == 0, 'a deferred or skipped basket needs a ranked zero plan')
     else:
         require(not ranked and amount is None and any(g['effect'] == 'RANKING' for g in comparison['gap_effects']),
                 'unresolved basket needs a real ranking gap and no chosen amount')

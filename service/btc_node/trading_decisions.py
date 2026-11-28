@@ -22,7 +22,7 @@ PRICE_BASELINE_DIRECTIONAL = 'PRICE_BASELINE_DIRECTIONAL'
 SHORT_DIRECTIONS = ('REDUCE', 'KEEP', 'INCREASE')
 POSITION_ACTIONS = {'KEEP', 'REDUCE', 'EXIT'}
 CHOICES = {
-    'MONTHLY': {'CONTINUE', 'SKIP', 'UNRESOLVED'},
+    'MONTHLY': {'CONTINUE', 'DEFER', 'SKIP', 'UNRESOLVED'},
     'OPPORTUNITY': {'PARTICIPATE', 'WAIT', 'AVOID', 'UNRESOLVED'},
     'POSITION': POSITION_ACTIONS | {'INCREASE', 'HEDGE', 'NO_POSITION', 'UNRESOLVED'},
 }
@@ -252,9 +252,19 @@ def _monthly(result, judgement, budget):
     # The selected alternative is the amount source. Accept `amount` as its
     # spelling for callers that already express a choice by contribution size.
     amount = _decimal(result.get('amount'), 'selected basket contribution')
-    if amount not in alternatives or ((amount == 0) != (choice == 'SKIP')):
+    if amount not in alternatives or ((amount == 0) != (choice in {'SKIP', 'DEFER'})):
         raise ValueError('the selected contribution must match the chosen basket alternative')
     judgement['amount'] = _amount_text(amount)
+    other = alternatives.keys() - {amount}
+    if 'runner_up_amount' in result:
+        runner_up = _decimal(result['runner_up_amount'], 'next-best contribution')
+    elif len(other) == 1:
+        runner_up = next(iter(other))
+    else:
+        raise ValueError('identify the next-best compared contribution in runner_up_amount')
+    if runner_up not in other:
+        raise ValueError('the next-best contribution must be a different compared alternative')
+    judgement['runner_up_amount'] = _amount_text(runner_up)
     if 0 < amount < budget:
         judgement['amount_basis'] = _text(result.get('amount_basis'), 'why a partial amount beats the full plan')
 
@@ -266,8 +276,12 @@ def _monthly_window(policy, judgement, run):
         raise ValueError('unknown planning calendar') from exc
     decided = utc(run['known_at']).astimezone(tz)
     year, month = (decided.year + 1, 1) if decided.month == 12 else (decided.year, decided.month + 1)
-    if millis(judgement['valid_until']) > millis(datetime(year, month, 1, tzinfo=tz)):
+    month_end = millis(datetime(year, month, 1, tzinfo=tz))
+    if millis(judgement['valid_until']) > month_end:
         raise ValueError('a monthly choice cannot outlive the confirmed planning month')
+    if judgement['decision'] == 'DEFER' and not any(
+            millis(run['known_at']) < millis(c['review_at']) < month_end for c in judgement['conditions']):
+        raise ValueError('deferring this contribution needs an outstanding review within the planning month')
     return decided.strftime('%Y-%m')
 
 
@@ -415,6 +429,8 @@ def market_inputs(database, record, *, at, state=None):
         for condition in state['conditions']:
             if not condition.get('from_prior_version'):
                 check = {key: condition[key] for key in ('criterion', 'observation_end') if key in condition}
+                if condition.get('observation_closed'):
+                    check['observation_closed'] = True
                 check['outcome'] = (condition['review'] or {}).get('outcome')
                 checks[condition['id']] = (check, condition.get('review_ref'))
     for name, terms in valuations.items():
@@ -783,7 +799,8 @@ def _condition_check(objects, record, condition, *, at, versions):
                                            or (last['outcome'] == 'NOT_TRIGGERED' and
                                                (original_deadline is None or review['known_ms'] < original_deadline))))
     now = millis(at)
-    return {**condition, 'target': binding(record), 'origin': binding(origin), 'next_review_at': deadline, 'review': last,
+    window = {'observation_closed': millis(condition['observation_end']) <= now} if condition.get('observation_end') else {}
+    return {**condition, **window, 'target': binding(record), 'origin': binding(origin), 'next_review_at': deadline, 'review': last,
             'pending': open_check, 'due': open_check and deadline is not None and millis(deadline) <= now,
             'prior_due_unchecked': original_deadline is not None and original_deadline <= now and review is None,
             'reviewed_ms': review['recorded_ms'] if review else None,

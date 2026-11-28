@@ -133,15 +133,17 @@ def check_allocation_amounts(item, text, terms):
     if item == 'cash':
         required = terms.items()
     else:
-        keys = ('amount', 'budget') if terms.get('kind') == 'MONTHLY' else ('amount',)
+        keys = ('amount', 'budget', 'runner_up_amount') if terms.get('kind') == 'MONTHLY' else ('amount',)
         required = [(terms.get('currency'), terms[key]) for key in keys if key in terms]
     prose = _REFERENCES.sub(' ', text)
+    number = r'\d+(?:,\d{3})*(?:\.\d+)?'
+    amounts = number + r'(?:\s*(?:、|，|/|／|和|与|或)\s*' + number + r')*'
     for currency, amount in required:
         if amount is None or not currency:
             continue
-        pattern = r'(?<![\d.,−-])(\d+(?:,\d{3})*(?:\.\d+)?)\s*' + re.escape(currency) + r'(?![A-Za-z])'
-        if not any(Decimal(number.replace(',', '')) == Decimal(str(amount))
-                   for number in re.findall(pattern, prose, flags=re.IGNORECASE)):
+        pattern = r'(?<![\d.,−-])(' + amounts + r')\s*' + re.escape(currency) + r'(?![A-Za-z])'
+        if not any(Decimal(value.replace(',', '')) == Decimal(str(amount))
+                   for group in re.findall(pattern, prose, flags=re.IGNORECASE) for value in re.findall(number, group)):
             raise Conflict('show the adopted amount and its currency in the allocation item: ' + item)
 
 

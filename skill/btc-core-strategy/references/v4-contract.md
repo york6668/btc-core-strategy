@@ -306,7 +306,7 @@ AUTHORED_REPORT_V1 的源稿与会话文本允许单个文件结束 LF，以及�
 
 `investment-policy` 的 `MONTHLY_PORTFOLIO_PLANNING_V1` 从已确认的 `regular_baskets` 承接组合配置。正常个人入口通过 `decision_contract` 提供适用格式。分组月度决定使用 `BTC_ALLOCATION_CHOICE_V5`，其他月度规划保留 `BTC_ALLOCATION_CHOICE_V4`，非月度组合规划使用 `BTC_ALLOCATION_CHOICE_V3`。历史决定按原格式读取。
 
-`portfolio_plan.monthly_plan.regular.baskets` 逐组对应输入配置的成员及预算。`comparison_scope` 和 `comparison_amounts` 绑定该组定投候选和所选金额，`evaluation_window_id` 绑定原决定的该组窗口。`CONTINUE` 是正的规划金额，部分继续需要 `amount_basis`。`SKIP` 金额为零。`UNRESOLVED` 金额为 null，对应会影响排序的具体缺口。比较和复核使用既有 `investment_decision` 与 `judgement-evaluate`。
+`portfolio_plan.monthly_plan.regular.baskets` 逐组对应输入配置的成员及预算。`comparison_scope` 和 `comparison_amounts` 绑定该组定投候选和所选金额，`evaluation_window_id` 绑定原决定的该组窗口。`CONTINUE` 是正的规划金额，部分继续需要 `amount_basis`。`DEFER` 为本轮暂缓并在月内复核，`SKIP` 为本月跳过，两者金额为零。`UNRESOLVED` 金额为 null，对应会影响排序的具体缺口。比较和复核使用既有 `investment_decision` 与 `judgement-evaluate`。
 
 `report_contract_revision=10` 对已完成的分组月度方案校验逐组的决定、理由、适用金额和改判条件。完整月度稿核已确认的全部组，有界更新核其实际展示的组。缺逐组决定的历史方案沿正常个人评估补足，原决定及其已送达正文按原契约读取。语义审阅与报告表达见[手机报告](mobile-report.md)。
 
