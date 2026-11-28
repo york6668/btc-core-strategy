@@ -131,10 +131,17 @@ def public_context(db, run):
     archive = trading_archive.context(db, scope='PUBLIC', at=run['known_at'])
     targets = archive.pop('review_targets', [])
     if current:
-        missing = [name for name, value in current['payload']['result'].get('valuations', {}).items()
-                   if 'reference' not in value or not value.get('price_implication')]
+        valuations = current['payload']['result'].get('valuations', {})
+        nav_review = [name for name, value in valuations.items() if decisions.needs_nav_review(name, value)]
+        missing = [name for name, value in valuations.items()
+                   if 'reference' not in value or not value.get('price_implication') or name in nav_review]
         if missing:
             review['valuations_to_compare'] = missing
+        if nav_review:
+            review['fund_price_review'] = {
+                'valuations': nav_review, 'reason': 'Check the fund NAV fixing against the market quote. Different times '
+                'measure different observations. Correct any inferred entry cost in assessment and price_implication. '
+                'Set nav_comparison to {market_at,nav_at}, or null when no comparable marks are used.'}
         targets.extend({'subject': current['payload']['subject'], **condition} for condition in review['conditions'])
     return {'as_of': snapshot['public_known_at'], 'market_cutoff': snapshot['public_cutoff'],
             'market_evidence': {'type': 'BLOB', 'digest': snapshot['market']},
@@ -335,6 +342,9 @@ def personal_state(db, record, policy, files, run, *, market_inputs=None, portfo
     if (not frozen_display and policy['kind'] == 'MONTHLY' and payload['result']['decision'] != 'UNRESOLVED'
             and not {'runner_up_amount', 'price_basis', 'comparison_at_price'} <= payload['result'].keys()):
         return {**state, 'status': 'NEEDS_REVIEW', 'review_monthly_alternatives': True}
+    if (not frozen_display and policy['kind'] == 'MONTHLY' and payload['result']['decision'] == 'SKIP'
+            and not payload['result'].get('month_close_reason')):
+        return {**state, 'status': 'NEEDS_REVIEW', 'review_remaining_month_opportunity': True}
     before = payload['market_inputs']
     live_conditions = any(key.startswith('valuation/') and value.get('conditions') for key, value in before.items())
     spot = policy['kind'] in {'MONTHLY', 'OPPORTUNITY'}
@@ -982,7 +992,7 @@ def report_basis(db, run, market, records, selected, confirmations=None, member_
             result = record['payload']['result']
             basis['allocation.' + subject] = {key: result[key] for key in
                 ('decision', 'reason', 'risk', 'opportunity_cost', 'amount_basis', 'conditions', 'gap', 'value_zone',
-                 'price_basis', 'supporting_price_bases', 'comparison_at_price')
+                 'price_basis', 'supporting_price_bases', 'comparison_at_price', 'month_close_reason')
                 if key in result}
             if 'runner_up_amount' in result:
                 basis['allocation.' + subject]['runner_up'] = next(
@@ -1264,6 +1274,10 @@ def feedback(db, run, release, action, params):
                 prior_position(db, target, position, run['known_at']) if position else None,
                 confirmations=trading_portfolio.arrangement_confirmations(db, portfolio))}
         before = {**delivery.context(db, destination=target, at=run['known_at']), **edition}
+        if not params:
+            missing = delivery.missing_monthly_comparison(db, base, trading_portfolio.current(db), reference(market))
+            if missing:
+                before['monthly_comparison_due'] = missing
         if 'decision_id' in params:
             before['previous_display'] = delivery.previous_display(db, destination=target, at=run['known_at'], **params)
             from .trading_decisions import PERSONAL_PREFIX
@@ -1508,13 +1522,25 @@ def assess_feedback(db, run, release, *, outcome, reason, evidence):
     if outcome not in ('SILENT', 'EVIDENCE_LIMITED', 'REPORT_REQUIRED'):
         raise ValueError('record the real feedback determination')
     refs = public_evidence(db, evidence, required=outcome != 'EVIDENCE_LIMITED')
+    correction = None
+    if outcome != 'EVIDENCE_LIMITED' and snapshot.get('market_binding'):
+        target = destination(db)
+        correction = delivery.missing_monthly_comparison(db, delivery.report_base(db, target),
+                                                          trading_portfolio.current(db), snapshot['market_binding'])
     if outcome == 'SILENT':
         market = frozen_market(db, run)
         status = delivery.context(db, destination=destination(db), at=run['known_at'])
-        if status['daily_due'] or status['due_obligation_ids']:
+        if not correction and (status['daily_due'] or status['due_obligation_ids']):
             raise Conflict('daily or due material feedback is outstanding; check the original obligation and delivery')
         _require_current_feedback_review(db, run, release, market)
+    if correction:
+        obligation = delivery.require_report(db, subject='material-feedback', trigger_ref=correction['report_id'],
+                                            reason=correction['reason'], kind='CORRECTION', due_at=run['known_at'],
+                                            legacy_destination=target)
+        outcome, reason = 'REPORT_REQUIRED', correction['reason']
     result = {'outcome': outcome, 'reason': plain(reason, 'actual feedback basis'), 'evidence': refs,
               'decided_at': run['known_at'], 'recorded_by': 'ASSESS_FEEDBACK'}
+    if correction:
+        result.update(correction_of=correction['report_id'], obligation_id=obligation['obligation_id'])
     db.metadata(material_key(run['ref']), {**snapshot, 'feedback_assessment': result}, write=True)
     return result

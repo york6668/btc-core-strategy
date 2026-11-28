@@ -141,6 +141,8 @@ MARKET_RESULT = {
                    'and condition_ids. For valuations used to rank a monthly basket, write price_implication: what the dated buy price '
                    'requires, the remaining upside or downside, and what changes that comparison. '
                    'Include reference={source,quote}, with the observed datum in both the frozen source and basis. '
+                   'For fund NAV comparisons give nav_comparison={market_at,nav_at} using the underlying valuation fixings, '
+                   'or null when no same-time premium can be established. Do not price an asynchronous difference as a cost. '
                    'Use reference=null when a product comparison cannot be established. Spot decisions cite valuations covering their products. Propose substantive changes to named independent '
                    'cycle judgements in theses; unchanged judgements retain their exact references.',
 }
@@ -155,7 +157,8 @@ PERSONAL_RESULT = {
                    'opportunity_cost and switch_when directly: open with the group and chosen amount, include budget, runner-up and currency. '
                    'For resolved monthly choices, price_basis '
                    'selects one or more bound valuation keys with price_implication. An explicit {valuation,quote} cites that exact judgement. '
-                   'DEFER selects zero with a review later in the same month; SKIP closes this month. '
+                   'DEFER selects zero with a review later in the same month. SKIP closes the month and needs month_close_reason, '
+                   'the reader-facing reason to forgo the remaining investable windows even after a possible improvement. '
                    'Only actionable contingencies have plan_steps[condition_id] '
                    '{outcome: SUPPORTED or REFUTED, action}; other conditions are for reassessment. For an existing-position short that may still be open, '
                    'give the economic basis for REDUCE, KEEP and INCREASE in direction_comparison.',

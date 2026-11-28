@@ -246,7 +246,7 @@ def writing_inputs(market, portfolio, records, position_line, previous_position=
         member = _fields(policy, ('kind', 'budget', 'currency'))
         member.update(_fields(choice, ('decision', 'amount', 'month', 'reason', 'risk', 'opportunity_cost',
                                        'comparisons', 'runner_up_amount', 'price_basis', 'supporting_price_bases', 'comparison_at_price',
-                                       'amount_basis', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
+                                       'amount_basis', 'month_close_reason', 'gap', 'value_zone', 'valid_until', 'plan_steps')))
         member.update(source=ref, conditions=_conditions(choice), market_refs=list(payload['market_inputs']))
         paragraph = monthly_decision_text(choice)
         if paragraph is not None:

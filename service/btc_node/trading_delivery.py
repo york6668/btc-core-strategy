@@ -122,6 +122,44 @@ def _check_report_base(db, destination, expected):
         raise Conflict('a different complete edition was displayed; rebase the changes before dispatch')
 
 
+def missing_monthly_comparison(db, base, portfolio, market):
+    """Find a first substantive tranche comparison that never reached the last confirmed edition."""
+    if not base or not portfolio or portfolio['payload']['market'] != market:
+        return None
+    objects = Entities(db)
+    displayed = {r['object_id']: r for r in base.get('decisions', ())}
+    affected = []
+    for subject, ref in portfolio['payload']['decisions'].items():
+        terms = base.get('allocation_terms', {}).get(subject, {})
+        before = displayed.get(ref['object_id'])
+        if terms.get('kind') != 'MONTHLY' or not before:
+            continue
+        current = objects.get(ref['kind'], ref['object_id'], version=ref['version'])
+        if not current or current['digest'] != ref['digest']:
+            continue
+        choice = current['payload']['result']
+        comparison = choice.get('comparison_at_price')
+        if not comparison or terms.get('month') != choice.get('month'):
+            continue
+        prior = objects.get(before['kind'], before['object_id'], version=before['version'])
+        if not prior or prior['digest'] != before['digest']:
+            continue
+        leads = [lead['quote'] for lead in trading_report.lead_excerpts(base.get('presentation') or {})
+                 if lead['path'] == 'allocation.' + subject]
+        shown = '\n'.join([*leads, base['modules']['allocation'].get(subject, '')])
+        for decision in (prior['payload']['result'], choice):
+            pivot = decision.get('comparison_at_price', {}).get('switch_when')
+            close = decision.get('month_close_reason') if decision['decision'] == 'SKIP' else None
+            if (pivot and pivot in shown and decision['opportunity_cost'] in shown
+                    and (decision['decision'] != 'SKIP' or (close and close in shown))):
+                break
+        else:
+            affected.append(subject)
+    if affected:
+        return {'report_id': base['report_id'], 'subjects': affected,
+                'reason': '上份实收的月度段落缺少已核定的分批与留存取舍或本月安排，需要向原目的地交付更正。'}
+
+
 def _later_display(displayed, previous):
     return not previous or (utc(displayed['completed_at']), displayed['report_id']) > (
         utc(previous['completed_at']), previous['report_id'])

@@ -269,12 +269,18 @@ def _monthly(result, judgement, budget):
         judgement['amount_basis'] = _text(result.get('amount_basis'), 'why a partial amount beats the full plan')
 
 
+def needs_nav_review(name, value):
+    # GLD's official fund NAV and its US closing quote normally have different fixings.
+    return ('GLD' in value.get('assets', (name,)) and value.get('reference') is not None
+            and 'nav_comparison' not in value)
+
+
 def monthly_price_bases(selected, choice):
     """Bind the current-price judgements used to rank the basket. Raw observations stay in basis."""
     valuations = {key: v for key, v in selected.items() if key.startswith('valuation/')}
     sources = choice.get('price_basis')
     if sources is None:
-        sources = [key for key, value in valuations.items() if value.get('price_implication')]
+        sources = [key for key, value in valuations.items() if value.get('price_implication') and not needs_nav_review(key, value)]
     elif not isinstance(sources, list):
         sources = [sources]
     supporting = choice.get('supporting_price_bases', [])
@@ -291,6 +297,9 @@ def monthly_price_bases(selected, choice):
         implication = valuations[name].get('price_implication')
         if not implication:
             raise ValueError('complete the current-price judgement for ' + name + ' before ranking the basket')
+        if needs_nav_review(name, valuations[name]):
+            raise ValueError('the fund price and NAV fixing have not been compared; rank from another decisive valuation '
+                             'or reassess the fund without treating their difference as a cost')
         anchor = {'valuation': name, 'quote': implication}
         if isinstance(source, dict) and source != anchor:
             raise ValueError('price_basis must cite the current frozen price implication for ' + name)
@@ -337,8 +346,8 @@ def monthly_decision_text(choice):
     if not comparison:
         return None
     parts = [choice['reason']]
-    for sentence in (choice['opportunity_cost'], comparison['switch_when']):
-        if not any(sentence in part for part in parts):
+    for sentence in (choice['opportunity_cost'], comparison['switch_when'], choice.get('month_close_reason')):
+        if sentence and not any(sentence in part for part in parts):
             parts.append(sentence)
     return '\n\n'.join(parts)
 
@@ -423,7 +432,7 @@ def _valuation_observation(database, source, quote, basis):
 
 
 def _valuation(database, name, terms, condition_ids, evidence):
-    allowed = {'assessment', 'basis', 'reference', 'evidence', 'assets', 'value_zone', 'condition_ids', 'price_implication'}
+    allowed = {'assessment', 'basis', 'reference', 'evidence', 'assets', 'value_zone', 'condition_ids', 'price_implication', 'nav_comparison'}
     if not isinstance(terms, dict) or terms.keys() - allowed or 'reference' not in terms:
         raise ValueError('identify the factual value comparison for this product, or explicitly record reference=null')
     basis = _text(terms.get('basis'), 'the independent value comparison that supports this price judgement')
@@ -454,6 +463,14 @@ def _valuation(database, name, terms, condition_ids, evidence):
             'evidence': sources, 'assets': sorted(set(a.strip() for a in assets))}
     if 'price_implication' in terms:
         item['price_implication'] = _text(terms['price_implication'], 'what this price requires and what remains at risk')
+    if 'nav_comparison' in terms:
+        nav = terms['nav_comparison']
+        if nav is not None:
+            if not isinstance(nav, dict) or not {'market_at', 'nav_at'} <= nav.keys():
+                raise ValueError('supply the actual price and NAV fixing instants, or nav_comparison=null')
+            same = _time(nav['market_at'], 'market price fixing') == _time(nav['nav_at'], 'fund NAV fixing')
+            nav = {'market_at': nav['market_at'], 'nav_at': nav['nav_at'], 'same_time': same}
+        item['nav_comparison'] = nav
     if refs:
         item['condition_ids'] = sorted(refs)
     if 'value_zone' in terms:
@@ -513,7 +530,8 @@ def market_inputs(database, record, *, at, state=None):
                 check['outcome'] = (condition['review'] or {}).get('outcome')
                 checks[condition['id']] = (check, condition.get('review_ref'))
     for name, terms in valuations.items():
-        value = {key: terms[key] for key in ('assessment', 'basis', 'reference', 'assets', 'evidence', 'value_zone', 'price_implication') if key in terms}
+        value = {key: terms[key] for key in ('assessment', 'basis', 'reference', 'assets', 'evidence',
+                                             'value_zone', 'price_implication', 'nav_comparison') if key in terms}
         if 'condition_ids' in terms:
             value['conditions'] = {key: {**checks[key][0], 'review_ref': checks[key][1]}
                                    if 'evidence' in terms else checks[key][0] for key in terms['condition_ids']}
@@ -634,6 +652,10 @@ def adopt_personal(database, *, subject, expected_version, market, policy, resul
         if kind == 'MONTHLY':
             _monthly(result, judgement, budget)
             if choice != 'UNRESOLVED':
+                if choice == 'SKIP':
+                    judgement['month_close_reason'] = _text(result.get('month_close_reason'),
+                        'why forgo the remaining investable opportunities this month even if the price improves; '
+                        'use DEFER if the next in-month session could change the amount')
                 primary, *supporting = monthly_price_bases(selected, result)
                 # Existing readers consume this single binding, including during recovery.
                 judgement['price_basis'] = primary
